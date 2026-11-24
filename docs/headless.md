@@ -505,7 +505,12 @@ installed before bootstrap starts any server, and the shutdown is bounded
   the wait runs out; a command left running is stopped and named; the
   system prompt flags place their text, outrank `ALTER_ZERO_SYSTEM_PROMPT`,
   read a file relative to `-C`, and refuse an unreadable file before any
-  request (`docs/system-prompt.md`).
+  request (`docs/system-prompt.md`); and a reply whose connection drops
+  mid-body (a thought and a draft streamed, then the body cut off) is sent
+  again and reported as the retry streamed it, in `text`, `json` and
+  `stream-json`, quiet and with `--verbose`, and in the rollout. None of
+  them shows the dropped attempt's thought or draft (`docs/offline.md` *A
+  connection lost mid-reply*).
 - `scripts/smoke.sh` Phase 153: `alter-zero -p --verbose` from a tmux pane —
   the log and the answer on the terminal, its modes unchanged (`stty -g`), and none
   of the TUI's escapes in the raw byte stream (no DSR, no alternate screen,

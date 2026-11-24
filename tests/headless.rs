@@ -482,13 +482,50 @@ fn serve(mut stream: TcpStream, log: &Mutex<Vec<String>>) {
             r#"{"object":"list","data":[{"id":"stub-model"}]}"#.to_string(),
         )
     } else {
-        log.lock().expect("the log").push(body.clone());
+        let attempt = {
+            let mut log = log.lock().expect("the log");
+            log.push(body.clone());
+            log.iter().filter(|chat| chat.contains(DROP)).count()
+        };
+        if body.contains(DROP) && attempt == 1 {
+            drop_mid_reply(&mut stream);
+            return;
+        }
         ("text/event-stream", chat_reply(&body))
     };
     let response = format!(
         "HTTP/1.1 200 OK\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
         reply.len()
     );
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
+}
+
+/// The stand-in's first answer to [`DROP`]: a chunked stream carrying a
+/// thought, two finished lines of a draft and the start of a third — then
+/// the connection closes with no terminating chunk, so the body read fails
+/// the way a reset or timed-out connection's does.
+fn drop_mid_reply(stream: &mut TcpStream) {
+    let frame = |delta: serde_json::Value| {
+        format!(
+            "data: {}\n\n",
+            serde_json::json!({"choices": [{"index": 0, "delta": delta}]})
+        )
+    };
+    let mut response = String::from(
+        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n",
+    );
+    let thought = serde_json::json!({"role": "assistant", "reasoning_content": DROPPED_THOUGHT});
+    let draft = [
+        "the parser reads tokens.\n",
+        "then it builds a tree.\n",
+        "and then",
+    ]
+    .map(|line| serde_json::json!({"content": format!("{DROPPED_DRAFT}: {line}")}));
+    for delta in std::iter::once(thought).chain(draft) {
+        let data = frame(delta);
+        response.push_str(&format!("{:x}\r\n{data}\r\n", data.len()));
+    }
     let _ = stream.write_all(response.as_bytes());
     let _ = stream.flush();
 }
@@ -504,6 +541,19 @@ const STALL: &str = "HEADLESS_STALL";
 /// report usage on every reply of that conversation — what the rollout's
 /// `tool` and `usage` lines record (docs/rollout-records.md).
 const RECORD: &str = "HEADLESS_RECORD";
+/// What a prompt says to make the stand-in's first reply die under it: a
+/// thought and the start of a draft are streamed, then the connection
+/// closes mid-body ([`drop_mid_reply`]). The request sent again is answered
+/// whole with [`RETRIED_REPLY`] (docs/offline.md *A connection lost
+/// mid-reply*).
+const DROP: &str = "HEADLESS_DROP";
+/// What each line of the dropped attempt's draft opens with — words nothing
+/// else the stand-in or the app writes contains.
+const DROPPED_DRAFT: &str = "Draft one";
+/// The dropped attempt's thought.
+const DROPPED_THOUGHT: &str = "Pondering draft one.";
+/// The whole reply the retried request streams.
+const RETRIED_REPLY: &str = "Second attempt: the whole reply streams once.";
 
 /// The stand-in model's turn. After a tool result it answers `Done.`; to a
 /// user message it makes one call, chosen by what the message says:
@@ -545,6 +595,12 @@ fn chat_reply(body: &str) -> String {
         // user message, the picture itself (docs/imagegen.md).
         vec![
             serde_json::json!({"choices": [{"delta": {"content": "Done."}}]}),
+            serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        ]
+    } else if said.contains(DROP) {
+        // The request sent again after the dropped reply: answered whole.
+        vec![
+            serde_json::json!({"choices": [{"delta": {"content": RETRIED_REPLY}}]}),
             serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
         ]
     } else if said.contains(DRAW) {
@@ -759,6 +815,86 @@ fn the_system_prompt_tells_the_model_it_runs_headless() {
     assert!(out.status.success(), "{}", stderr(&out));
     let chats = stand_in.chat_requests();
     assert!(chats[0].contains("## Headless"), "{}", chats[0]);
+}
+
+// ===== a connection lost mid-reply (docs/offline.md) =====
+
+/// A reply whose connection dies under it is sent again, and the run
+/// reports the reply the retry streamed — never the dropped attempt's draft
+/// glued to it — in every format, quiet or logged, and in the rollout a
+/// `--continue` reads back (docs/headless.md *Output*: nothing is printed
+/// that the session later takes back).
+#[test]
+fn a_reply_whose_connection_drops_reports_only_what_the_retry_streamed() {
+    for format in ["text", "json", "stream-json"] {
+        for verbose in [false, true] {
+            let run = format!("{format}{}", if verbose { " --verbose" } else { "" });
+            let world = World::new("dropped");
+            let stand_in = StandIn::start();
+            let prompt = format!("{DROP} explain the parser");
+            let mut args = vec!["-p", "--output-format", format, prompt.as_str()];
+            if verbose {
+                args.insert(1, "--verbose");
+            }
+            let mut command = world.command(&args);
+            stand_in.configure(&world, &mut command);
+            // The thinking display on: a thought that leaked would be an
+            // item of its own.
+            let out = command
+                .env("ALTER_ZERO_SHOW_THINKING", "1")
+                .stdin(Stdio::null())
+                .output()
+                .expect("the binary runs");
+            assert!(out.status.success(), "{run}: {}", stderr(&out));
+            assert_eq!(stand_in.chat_requests().len(), 2, "{run}: sent again once");
+            let (printed, log) = (stdout(&out), stderr(&out));
+            for withdrawn in [DROPPED_DRAFT, DROPPED_THOUGHT] {
+                assert!(!printed.contains(withdrawn), "{run}: {printed}");
+                assert!(!log.contains(withdrawn), "{run}: {log}");
+            }
+            // A retry that worked needs nothing from anyone: the step log's
+            // news, and quiet otherwise.
+            if verbose {
+                assert!(log.contains("retrying (1/3)"), "{run}: {log}");
+            } else {
+                assert_eq!(log, "", "{run}");
+            }
+            if format == "text" {
+                assert_eq!(printed, format!("{RETRIED_REPLY}\n"), "{run}");
+            } else {
+                let events = events(&out);
+                let result = events.last().expect("a result");
+                assert_eq!(result["subtype"], "success", "{run}: {result}");
+                assert_eq!(result["is_error"], false, "{run}: {result}");
+                assert_eq!(result["result"], RETRIED_REPLY, "{run}: {result}");
+                if format == "stream-json" {
+                    let items: Vec<&serde_json::Value> = events
+                        .iter()
+                        .filter(|event| event["type"] == "item.completed")
+                        .map(|event| &event["item"])
+                        .collect();
+                    let kinds: Vec<&str> = items
+                        .iter()
+                        .filter_map(|item| item["type"].as_str())
+                        .collect();
+                    assert_eq!(kinds, ["user_message", "agent_message"], "{run}: {items:?}");
+                    assert_eq!(items[1]["text"], RETRIED_REPLY, "{run}");
+                }
+            }
+            let recorded: String = rollout(&world)
+                .iter()
+                .map(serde_json::Value::to_string)
+                .collect();
+            for withdrawn in [DROPPED_DRAFT, DROPPED_THOUGHT] {
+                assert!(!recorded.contains(withdrawn), "{run}: {recorded}");
+            }
+            assert_eq!(
+                recorded.matches(RETRIED_REPLY).count(),
+                1,
+                "{run}: {recorded}"
+            );
+        }
+    }
 }
 
 // ===== the system prompt flags (docs/system-prompt.md) =====
