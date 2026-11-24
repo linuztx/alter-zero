@@ -350,6 +350,12 @@ pub struct App {
     /// `/compact` was typed while the agent worked and its checkpoint has not
     /// been taken yet — the next checkpoint is the user's, not automatic.
     compaction_requested: bool,
+    /// Where the running agent's last request went out from — the history's
+    /// generation and length at its last
+    /// [`CompactionRoundTop`](crate::stream::StreamEvent::CompactionRoundTop):
+    /// where a checkpoint it takes at the hard limit reaches back to
+    /// (`docs/compact.md` *The round that crossed the limit*).
+    round_top: Option<(u64, usize)>,
     /// How long the running background compaction has been at it — the
     /// boundary's clock, injected per draw (the `set_status_times` pattern).
     compaction_elapsed: Option<Duration>,

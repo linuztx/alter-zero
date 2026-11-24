@@ -57,8 +57,8 @@ impl Session<'_> {
 
     /// The running agent took checkpoint `id`: record its cut and start
     /// writing the summary of everything before it.
-    pub(crate) fn on_compaction_checkpoint(&mut self, id: u64) {
-        if !self.app.begin_background_compaction(id) {
+    pub(crate) fn on_compaction_checkpoint(&mut self, id: u64, back: bool) {
+        if !self.app.begin_background_compaction(id, back) {
             // One at a time — the agent never takes a second while one runs,
             // so this one is no compaction of ours to write.
             self.compaction_slot.fail(id);

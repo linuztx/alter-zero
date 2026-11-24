@@ -529,6 +529,10 @@ struct CompactionCutRecord {
     id: u64,
     #[serde(default)]
     timestamp: String,
+    /// What the cut reaches back over; omitted at 0, the shape a cut that
+    /// covers everything before it was always written in.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    back: u64,
 }
 
 /// `skip_serializing_if` helper for the gauge counts' 0-means-unknown default.
@@ -866,6 +870,7 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
         HistoryItem::CompactionCut(cut) => ItemRecord::CompactionCut(CompactionCutRecord {
             id: cut.id,
             timestamp: cut.timestamp.clone(),
+            back: cut.back,
         }),
         // The recorder mirrors history append-only, so a background entry's
         // later completion update (`App::settle_agent_completion`) never
@@ -1222,6 +1227,7 @@ fn push_history_item(items: &mut Vec<HistoryItem>, record: ItemRecord) {
             items.push(HistoryItem::CompactionCut(crate::app::CompactionCut {
                 id: cut.id,
                 timestamp: cut.timestamp,
+                back: cut.back,
             }));
         }
         ItemRecord::Reasoning(reasoning) => {
@@ -1802,6 +1808,7 @@ mod tests {
             HistoryItem::CompactionCut(crate::app::CompactionCut {
                 id: 42,
                 timestamp: "03:20 PM".into(),
+                back: 3,
             }),
             HistoryItem::Compaction(crate::app::Compaction {
                 summary: "we did the thing".into(),
@@ -1818,6 +1825,7 @@ mod tests {
             serde_json::from_str(&item_line(&items[0], "t")).expect("valid JSON");
         assert_eq!(cut_line["type"], "compaction_cut");
         assert_eq!(cut_line["payload"]["id"], 42);
+        assert_eq!(cut_line["payload"]["back"], 3, "what it reaches back over");
         let marker_line: serde_json::Value =
             serde_json::from_str(&item_line(&items[1], "t")).expect("valid JSON");
         assert_eq!(marker_line["payload"]["cut"], 42);

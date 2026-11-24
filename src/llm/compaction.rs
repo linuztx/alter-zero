@@ -354,8 +354,16 @@ pub struct AgentCompactor {
     /// or what the estimate made of them — so a reading estimates only what
     /// joined since.
     base: (u64, usize),
-    /// The checkpoint in flight: its id and the message count it covers.
-    pending: Option<(u64, usize)>,
+    /// The checkpoint in flight: its id, the message count it covers, and
+    /// the count when it was taken — more than it covers when it reached
+    /// back.
+    pending: Option<(u64, usize, usize)>,
+    /// Where the last request went out from — its message count and size —
+    /// while a window is known: where a checkpoint taken past the hard
+    /// limit at the next round top reaches back to, so the round that
+    /// crossed the limit stays verbatim (`docs/compact.md` *The round that
+    /// crossed the limit*).
+    last_top: Option<(usize, u64)>,
     /// The message count of the last checkpoint whose summary failed — a
     /// new automatic or forced one waits for something to join after it.
     failed_at: Option<usize>,
@@ -380,6 +388,7 @@ impl AgentCompactor {
             slot,
             base: (tools, 0),
             pending: None,
+            last_top: None,
             failed_at: None,
             floor: None,
             anchored: false,
@@ -419,11 +428,40 @@ impl AgentCompactor {
         self.base.0
     }
 
-    fn checkpoint(&mut self, messages: &[ChatMessage], tx: &UnboundedSender<StreamEvent>) -> u64 {
+    /// Take a checkpoint over everything the agent holds — or, `reach`,
+    /// over the first `reach` messages, where its last request went out
+    /// from — and tell the loop.
+    fn checkpoint(
+        &mut self,
+        messages: &[ChatMessage],
+        reach: Option<usize>,
+        tx: &UnboundedSender<StreamEvent>,
+    ) -> u64 {
         let id = self.slot.next_id();
-        self.pending = Some((id, messages.len()));
-        let _ = tx.send(StreamEvent::CompactionCheckpoint { id });
+        let covered = reach.unwrap_or(messages.len());
+        self.pending = Some((id, covered, messages.len()));
+        let _ = tx.send(StreamEvent::CompactionCheckpoint {
+            id,
+            back: reach.is_some(),
+        });
         id
+    }
+
+    /// Where a checkpoint taken now reaches back to: at or past the hard
+    /// limit the agent is about to wait for the summary, and a summary of
+    /// the round that took it there would leave the agent only a summary of
+    /// the output it is about to act on — so it covers what the last request
+    /// carried, when that request fit and held a round of its own.
+    fn reach(
+        messages: &[ChatMessage],
+        previous: Option<(usize, u64)>,
+        size: u64,
+        policy: Option<CompactionPolicy>,
+    ) -> Option<usize> {
+        let limit = hard_limit(policy?.window);
+        let (at, sent) = previous?;
+        (size >= limit && sent < limit && at < messages.len() && has_a_round(&messages[..at]))
+            .then_some(at)
     }
 
     /// Splice `handoff`'s head in place of the snapshot the checkpoint
@@ -445,7 +483,7 @@ impl AgentCompactor {
     /// Resolve the checkpoint in flight from what the slot holds — splice a
     /// published summary, forget a failed one.
     fn settle(&mut self, messages: &mut Vec<ChatMessage>, tx: &UnboundedSender<StreamEvent>) {
-        let Some((id, covered)) = self.pending else {
+        let Some((id, covered, taken_at)) = self.pending else {
             return;
         };
         match self.slot.take_outcome(id) {
@@ -455,8 +493,11 @@ impl AgentCompactor {
                 let _ = tx.send(StreamEvent::CompactionApplied { id });
             }
             Some(Outcome::Failed) => {
+                // Counted from when it was taken: one that reached back
+                // covered less than the agent held, and taking it again
+                // over the same messages would only fail the same way.
                 self.pending = None;
-                self.failed_at = Some(covered);
+                self.failed_at = Some(taken_at);
             }
             None => {}
         }
@@ -477,6 +518,30 @@ impl RoundTopSeam for AgentCompactor {
         tx: &UnboundedSender<StreamEvent>,
         cancel: &CancelToken,
     ) -> RoundTop {
+        let previous = self.last_top.take();
+        let step = self.decide(messages, previous, tx, cancel);
+        // The request goes out from here: where a checkpoint the next round
+        // top takes may reach back to, which the loop marks in its history.
+        if step == RoundTop::Go
+            && let Some(policy) = self.slot.policy()
+        {
+            let size = self.size(messages, policy.calibration);
+            self.last_top = Some((messages.len(), size));
+            let _ = tx.send(StreamEvent::CompactionRoundTop);
+        }
+        step
+    }
+}
+
+impl AgentCompactor {
+    /// [`before_round`](RoundTopSeam::before_round)'s answer.
+    fn decide(
+        &mut self,
+        messages: &mut Vec<ChatMessage>,
+        mut previous: Option<(usize, u64)>,
+        tx: &UnboundedSender<StreamEvent>,
+        cancel: &CancelToken,
+    ) -> RoundTop {
         self.spliced = false;
         let mut waited_for = None;
         loop {
@@ -484,6 +549,10 @@ impl RoundTopSeam for AgentCompactor {
                 return RoundTop::Stop;
             }
             self.settle(messages, tx);
+            if self.spliced {
+                // The list was rewritten: no spot in it is the last one sent.
+                previous = None;
+            }
             let policy = self.slot.policy();
             let size = self.size(
                 messages,
@@ -508,7 +577,8 @@ impl RoundTopSeam for AgentCompactor {
                 })
                 && self.grew_since_failure(messages);
             if requested || automatic {
-                self.checkpoint(messages, tx);
+                let reach = Self::reach(messages, previous, size, policy);
+                self.checkpoint(messages, reach, tx);
             }
             let Some(policy) = policy else {
                 return RoundTop::Go;
@@ -535,9 +605,10 @@ impl RoundTopSeam for AgentCompactor {
                         RoundTop::Fail(context_full_notice(size, policy.window))
                     };
                 }
-                self.checkpoint(messages, tx);
+                let reach = Self::reach(messages, previous, size, Some(policy));
+                self.checkpoint(messages, reach, tx);
             }
-            let Some((id, _)) = self.pending else {
+            let Some((id, _, _)) = self.pending else {
                 continue;
             };
             if waited_for != Some(id) {
@@ -647,7 +718,7 @@ mod tests {
         events
             .iter()
             .find_map(|event| match event {
-                StreamEvent::CompactionCheckpoint { id } => Some(*id),
+                StreamEvent::CompactionCheckpoint { id, .. } => Some(*id),
                 _ => None,
             })
             .expect("a checkpoint")
@@ -692,8 +763,11 @@ mod tests {
             RoundTop::Go
         );
         assert_eq!(
-            drain(&mut rx),
-            vec![StreamEvent::CompactionCheckpoint { id: 11 }]
+            without_round_tops(drain(&mut rx)),
+            vec![StreamEvent::CompactionCheckpoint {
+                id: 11,
+                back: false
+            }]
         );
         assert_eq!(messages, before, "nothing changes until the summary lands");
         assert!(!slot.is_requested(), "the request was taken");
@@ -708,7 +782,7 @@ mod tests {
         let mut messages = conversation(2, 40);
         slot.request();
         compactor.before_round(&mut messages, &tx, &cancel);
-        let id = checkpoint_id(&drain(&mut rx));
+        let id = checkpoint_id(&without_round_tops(drain(&mut rx)));
         let covered = messages.len();
         // The agent kept working while the summary was written.
         push_round(&mut messages, 2, 40);
@@ -727,7 +801,10 @@ mod tests {
         expected.extend(head());
         expected.extend(tail);
         assert_eq!(messages, expected, "[system] + head + the rounds since");
-        assert_eq!(drain(&mut rx), vec![StreamEvent::CompactionApplied { id }]);
+        assert_eq!(
+            without_round_tops(drain(&mut rx)),
+            vec![StreamEvent::CompactionApplied { id }]
+        );
         assert_eq!(
             compactor.size(&messages, Calibration::default()),
             30 + cost(&messages[2..]),
@@ -749,7 +826,7 @@ mod tests {
         });
         compactor.before_round(&mut messages, &tx, &CancelToken::new());
         assert_eq!(messages, before);
-        assert!(drain(&mut rx).is_empty());
+        assert!(without_round_tops(drain(&mut rx)).is_empty());
     }
 
     #[test]
@@ -770,7 +847,7 @@ mod tests {
             "under the hard limit the round goes out"
         );
         assert!(matches!(
-            drain(&mut rx).as_slice(),
+            without_round_tops(drain(&mut rx)).as_slice(),
             [StreamEvent::CompactionCheckpoint { .. }]
         ));
     }
@@ -783,7 +860,7 @@ mod tests {
         let mut compactor = AgentCompactor::new(slot, 0);
         let (tx, mut rx) = channel();
         compactor.before_round(&mut messages, &tx, &CancelToken::new());
-        assert!(drain(&mut rx).is_empty());
+        assert!(without_round_tops(drain(&mut rx)).is_empty());
     }
 
     #[test]
@@ -799,7 +876,7 @@ mod tests {
         let (tx, mut rx) = channel();
         compactor.before_round(&mut messages, &tx, &CancelToken::new());
         assert!(
-            drain(&mut rx).is_empty(),
+            without_round_tops(drain(&mut rx)).is_empty(),
             "past 90%, under 95%: no checkpoint"
         );
     }
@@ -870,7 +947,7 @@ mod tests {
             RoundTop::Go
         );
         drop(tx);
-        let events = worker.join().expect("the boundary stand-in");
+        let events = without_round_tops(worker.join().expect("the boundary stand-in"));
         assert!(
             matches!(
                 events.as_slice(),
@@ -940,7 +1017,7 @@ mod tests {
             RoundTop::Go
         );
         drop(tx);
-        let events = worker.join().expect("the boundary stand-in");
+        let events = without_round_tops(worker.join().expect("the boundary stand-in"));
         assert!(
             matches!(
                 events.as_slice(),
@@ -956,6 +1033,135 @@ mod tests {
             messages[1],
             head()[0],
             "spliced before the request went out"
+        );
+    }
+
+    /// The events of a run, round tops left out — the agent announces one
+    /// at every round top it sends from while a window is known.
+    fn without_round_tops(events: Vec<StreamEvent>) -> Vec<StreamEvent> {
+        events
+            .into_iter()
+            .filter(|event| !matches!(event, StreamEvent::CompactionRoundTop))
+            .collect()
+    }
+
+    /// A turn whose last round alone took the request from under the
+    /// threshold to past the hard limit: the request that went out before it
+    /// cost `sent`, the round since costs `round`. The window is one in which
+    /// the request before the round fit, the request after it does not, and
+    /// a summary plus that round would.
+    fn crossing_turn(slot: &CompactionSlot) -> (AgentCompactor, Vec<ChatMessage>, usize) {
+        let mut messages = conversation(1, 2_000);
+        let sent = cost(&messages);
+        let mut compactor = AgentCompactor::new(slot.clone(), 0);
+        let mut probe = messages.clone();
+        push_round(&mut probe, 1, 4_000);
+        let round = cost(&probe[messages.len()..]);
+        let window = (sent + round) * 100 / 96;
+        assert!(
+            sent < soft_threshold(window),
+            "the round top before it is calm"
+        );
+        assert!(
+            sent + round >= hard_limit(window),
+            "the round crosses the limit"
+        );
+        slot.set_policy(Some(policy(window)));
+        let (tx, mut rx) = channel();
+        assert_eq!(
+            compactor.before_round(&mut messages, &tx, &CancelToken::new()),
+            RoundTop::Go
+        );
+        assert_eq!(drain(&mut rx), vec![StreamEvent::CompactionRoundTop]);
+        let sent_from = messages.len();
+        compactor.observe(sent, sent_from);
+        push_round(&mut messages, 1, 4_000);
+        (compactor, messages, sent_from)
+    }
+
+    #[test]
+    fn a_checkpoint_forced_at_the_hard_limit_keeps_the_round_that_crossed_it() {
+        // One round took the request past the hard limit: a checkpoint here
+        // would summarize the very output the agent is about to act on. It
+        // reaches back to where the last request went out from instead, and
+        // the round since stays word for word after the summary.
+        let slot = CompactionSlot::default();
+        let (mut compactor, mut messages, sent_from) = crossing_turn(&slot);
+        let crossing = messages[sent_from..].to_vec();
+        let (tx, rx) = channel();
+        let cancel = CancelToken::new();
+        let worker = answer_the_wait(slot.clone(), rx, cancel.clone(), |slot, id| {
+            slot.publish(Handoff {
+                id,
+                head: head(),
+                head_tokens: 30,
+            });
+        });
+        assert_eq!(
+            compactor.before_round(&mut messages, &tx, &cancel),
+            RoundTop::Go
+        );
+        drop(tx);
+        let events = without_round_tops(worker.join().expect("the boundary stand-in"));
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    StreamEvent::CompactionCheckpoint { back: true, .. },
+                    StreamEvent::CompactionWait { .. },
+                    StreamEvent::CompactionApplied { .. },
+                ]
+            ),
+            "{events:?}"
+        );
+        let mut expected = vec![ChatMessage::system("sys")];
+        expected.extend(head());
+        expected.extend(crossing);
+        assert_eq!(
+            messages, expected,
+            "[system] + head + the round that crossed"
+        );
+    }
+
+    #[test]
+    fn a_checkpoint_reaching_back_that_fails_is_not_taken_again_over_the_same_round() {
+        // The summary of a checkpoint that reached back fails while the agent
+        // waits: nothing new has joined since it was taken, so the agent does
+        // not take it again — it sends what fits, or says why it cannot.
+        let slot = CompactionSlot::default();
+        let (mut compactor, mut messages, _) = crossing_turn(&slot);
+        let (tx, rx) = channel();
+        let cancel = CancelToken::new();
+        let worker = answer_the_wait(slot.clone(), rx, cancel.clone(), |slot, id| {
+            slot.fail(id);
+        });
+        let step = compactor.before_round(&mut messages, &tx, &cancel);
+        drop(tx);
+        let events = without_round_tops(worker.join().expect("the boundary stand-in"));
+        let checkpoints = events
+            .iter()
+            .filter(|event| matches!(event, StreamEvent::CompactionCheckpoint { .. }))
+            .count();
+        assert_eq!(checkpoints, 1, "{events:?}");
+        assert_ne!(step, RoundTop::Stop, "the wait ended without an Esc");
+    }
+
+    #[test]
+    fn a_checkpoint_under_the_hard_limit_covers_everything() {
+        // Past the threshold but under the limit, the agent sends the round
+        // anyway: nothing is left unseen, so the checkpoint covers it all.
+        let slot = CompactionSlot::default();
+        let mut messages = conversation(3, 400);
+        let mut compactor = AgentCompactor::new(slot.clone(), 0);
+        slot.set_policy(Some(policy(cost(&messages) * 100 / 92)));
+        let (tx, mut rx) = channel();
+        assert_eq!(
+            compactor.before_round(&mut messages, &tx, &CancelToken::new()),
+            RoundTop::Go
+        );
+        assert_eq!(
+            without_round_tops(drain(&mut rx)),
+            vec![StreamEvent::CompactionCheckpoint { id: 1, back: false }]
         );
     }
 
@@ -982,7 +1188,7 @@ mod tests {
             RoundTop::Go
         );
         drop(tx);
-        let events = worker.join().expect("the boundary stand-in");
+        let events = without_round_tops(worker.join().expect("the boundary stand-in"));
         assert!(
             matches!(
                 events.as_slice(),
@@ -1018,7 +1224,7 @@ mod tests {
         );
         assert!(started.elapsed() < Duration::from_secs(2), "Esc is prompt");
         drop(tx);
-        worker.join().expect("the boundary stand-in");
+        without_round_tops(worker.join().expect("the boundary stand-in"));
     }
 
     #[test]
@@ -1037,7 +1243,7 @@ mod tests {
             RoundTop::Go
         );
         drop(tx);
-        let events = worker.join().expect("the boundary stand-in");
+        let events = without_round_tops(worker.join().expect("the boundary stand-in"));
         assert_eq!(
             events
                 .iter()
@@ -1066,7 +1272,11 @@ mod tests {
             RoundTop::Go,
             "sent for the provider to judge"
         );
-        assert!(drain(&mut rx).is_empty(), "{:?}", drain(&mut rx));
+        assert!(
+            without_round_tops(drain(&mut rx)).is_empty(),
+            "{:?}",
+            without_round_tops(drain(&mut rx))
+        );
     }
 
     #[test]
@@ -1100,7 +1310,7 @@ mod tests {
         let worker = answer_the_wait(slot, rx, cancel.clone(), |slot, id| slot.fail(id));
         let outcome = compactor.before_round(&mut messages, &tx, &cancel);
         drop(tx);
-        worker.join().expect("the boundary stand-in");
+        without_round_tops(worker.join().expect("the boundary stand-in"));
         let RoundTop::Fail(message) = outcome else {
             panic!("the turn ends: {outcome:?}");
         };
@@ -1117,18 +1327,18 @@ mod tests {
         let (tx, mut rx) = channel();
         let cancel = CancelToken::new();
         compactor.before_round(&mut messages, &tx, &cancel);
-        let id = checkpoint_id(&drain(&mut rx));
+        let id = checkpoint_id(&without_round_tops(drain(&mut rx)));
         slot.fail(id);
         compactor.before_round(&mut messages, &tx, &cancel);
         assert!(
-            drain(&mut rx).is_empty(),
+            without_round_tops(drain(&mut rx)).is_empty(),
             "the same snapshot is not retried"
         );
         push_round(&mut messages, 3, 10);
         compactor.before_round(&mut messages, &tx, &cancel);
         assert!(
             matches!(
-                drain(&mut rx).as_slice(),
+                without_round_tops(drain(&mut rx)).as_slice(),
                 [StreamEvent::CompactionCheckpoint { .. }]
             ),
             "something new: a later retry"
@@ -1145,7 +1355,7 @@ mod tests {
         let (tx, mut rx) = channel();
         let cancel = CancelToken::new();
         compactor.before_round(&mut messages, &tx, &cancel);
-        let id = checkpoint_id(&drain(&mut rx));
+        let id = checkpoint_id(&without_round_tops(drain(&mut rx)));
         // The head alone is past the threshold: compacting cannot help.
         slot.publish(Handoff {
             id,
@@ -1154,13 +1364,13 @@ mod tests {
         });
         compactor.before_round(&mut messages, &tx, &cancel);
         assert!(matches!(
-            drain(&mut rx).as_slice(),
+            without_round_tops(drain(&mut rx)).as_slice(),
             [StreamEvent::CompactionApplied { .. }]
         ));
         push_round(&mut messages, 3, 10);
         compactor.before_round(&mut messages, &tx, &cancel);
         assert!(
-            drain(&mut rx).is_empty(),
+            without_round_tops(drain(&mut rx)).is_empty(),
             "no second compaction over a head that is itself too big"
         );
     }
@@ -1177,7 +1387,7 @@ mod tests {
         let mut compactor = AgentCompactor::new(slot, 0);
         let (tx, mut rx) = channel();
         compactor.before_round(&mut messages, &tx, &CancelToken::new());
-        assert!(drain(&mut rx).is_empty());
+        assert!(without_round_tops(drain(&mut rx)).is_empty());
     }
 
     #[test]
@@ -1190,7 +1400,7 @@ mod tests {
         for round in 0..3 {
             slot.request();
             compactor.before_round(&mut messages, &tx, &cancel);
-            let id = checkpoint_id(&drain(&mut rx));
+            let id = checkpoint_id(&without_round_tops(drain(&mut rx)));
             push_round(&mut messages, 10 + round, 40);
             slot.publish(Handoff {
                 id,
@@ -1198,7 +1408,10 @@ mod tests {
                 head_tokens: 30,
             });
             compactor.before_round(&mut messages, &tx, &cancel);
-            assert_eq!(drain(&mut rx), vec![StreamEvent::CompactionApplied { id }]);
+            assert_eq!(
+                without_round_tops(drain(&mut rx)),
+                vec![StreamEvent::CompactionApplied { id }]
+            );
             assert_eq!(messages[1], ChatMessage::user(format!("summary {round}")));
             assert_eq!(messages.len(), 4, "[system] + head + the one round since");
         }

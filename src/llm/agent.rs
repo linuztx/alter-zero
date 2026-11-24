@@ -4432,7 +4432,7 @@ mod tests {
                     _ => {}
                 }
                 while let Ok(event) = rx.try_recv() {
-                    if let StreamEvent::CompactionCheckpoint { id } = event {
+                    if let StreamEvent::CompactionCheckpoint { id, .. } = event {
                         *checkpoint.borrow_mut() = Some((id, msgs.len()));
                     }
                 }

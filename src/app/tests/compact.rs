@@ -771,7 +771,7 @@ fn compact_mid_turn_asks_for_a_background_compaction() {
 #[test]
 fn compact_while_a_compaction_runs_is_refused_with_a_toast() {
     let mut app = working_turn();
-    assert!(app.begin_background_compaction(7));
+    assert!(app.begin_background_compaction(7, false));
     type_str(&mut app, "/compact");
     assert_eq!(
         app.on_key(key(KeyCode::Enter)),
@@ -793,7 +793,7 @@ fn a_checkpoint_records_the_cut_where_the_turn_stands() {
     let mut app = working_turn();
     let len = app.history.len();
     let before = app.context_used();
-    assert!(app.begin_background_compaction(7));
+    assert!(app.begin_background_compaction(7, false));
     assert_eq!(app.history.len(), len + 1);
     assert!(matches!(app.history.last(), Some(HistoryItem::CompactionCut(cut)) if cut.id == 7));
     assert_eq!(
@@ -807,8 +807,61 @@ fn a_checkpoint_records_the_cut_where_the_turn_stands() {
     assert_eq!(compaction.phase, CompactionPhase::Summarizing);
     assert_eq!(compaction.before, before);
     assert!(
-        !app.begin_background_compaction(8),
+        !app.begin_background_compaction(8, false),
         "one compaction at a time"
+    );
+}
+
+#[test]
+fn a_checkpoint_reaching_back_covers_what_preceded_the_last_round_top() {
+    // The agent took it at the hard limit, reaching back to the round top
+    // its last request went out from: the round since — recorded before the
+    // checkpoint arrived — is no part of the summary and stays verbatim
+    // after it, in the agent's spliced list and in the derivation alike.
+    let mut app = working_turn();
+    app.mark_round_top();
+    let top = app.history.len();
+    app.start_tool("Bash", "cat big.log", None);
+    app.end_tool("the big log", true);
+    assert!(app.begin_background_compaction(7, true));
+    assert_eq!(
+        app.background_compaction_snapshot()
+            .map(<[HistoryItem]>::len),
+        Some(top),
+        "the snapshot ends at the round top"
+    );
+    summarize(&mut app, "built it");
+    let (id, head, _) = app.take_compaction_handoff().expect("a handoff");
+    assert!(app.apply_background_compaction(id, 1).is_some());
+    let derived = crate::context::context_messages(&app.history);
+    assert_eq!(
+        derived[..head.len()],
+        head[..],
+        "the head the agent spliced"
+    );
+    assert!(
+        derived[head.len()..]
+            .iter()
+            .any(|message| message.text == "the big log"),
+        "the round since stays: {derived:?}"
+    );
+    assert!(
+        !derived.iter().any(|message| message.text == "built"),
+        "the round before is summarized: {derived:?}"
+    );
+}
+
+#[test]
+fn a_checkpoint_reaching_back_with_no_round_top_covers_everything() {
+    // No round top was marked in this conversation: there is nowhere to
+    // reach back to, and the checkpoint covers the history as it stands.
+    let mut app = working_turn();
+    let len = app.history.len();
+    assert!(app.begin_background_compaction(7, true));
+    assert_eq!(
+        app.background_compaction_snapshot()
+            .map(<[HistoryItem]>::len),
+        Some(len)
     );
 }
 
@@ -816,7 +869,7 @@ fn a_checkpoint_records_the_cut_where_the_turn_stands() {
 fn a_checkpoint_the_user_asked_for_is_not_tagged_auto() {
     let mut app = working_turn();
     assert!(app.request_compaction());
-    assert!(app.begin_background_compaction(7));
+    assert!(app.begin_background_compaction(7, false));
     assert!(!running(&app).auto);
     assert!(!app.compaction_requested(), "the request was answered");
 }
@@ -826,7 +879,7 @@ fn the_summary_streams_off_screen_and_never_touches_the_turn() {
     let mut app = working_turn();
     app.push_chunk("the agent's own reply");
     let tally = app.status().expect("a turn").tokens;
-    app.begin_background_compaction(7);
+    app.begin_background_compaction(7, false);
     summarize(&mut app, "  the gist\n");
     assert_eq!(app.streaming_text(), Some("the agent's own reply"));
     assert_eq!(app.status().expect("a turn").tokens, tally);
@@ -837,7 +890,7 @@ fn the_summary_streams_off_screen_and_never_touches_the_turn() {
 #[test]
 fn a_retried_summary_attempt_is_withdrawn_before_the_next_one() {
     let mut app = working_turn();
-    app.begin_background_compaction(7);
+    app.begin_background_compaction(7, false);
     app.on_summary_event(&StreamEvent::Chunk("the first round. ".to_string()));
     app.on_summary_event(&StreamEvent::HookNote {
         label: "Reply cut off".to_string(),
@@ -861,7 +914,7 @@ fn the_summarizers_usage_is_billed_but_moves_neither_the_tally_nor_the_gauge() {
     let used = app.context_used();
     let tally = app.status().expect("a turn").tokens;
     let billed = app.usage_since_launch();
-    app.begin_background_compaction(7);
+    app.begin_background_compaction(7, false);
     app.on_summary_event(&StreamEvent::Usage(usage_of(30_000, 500)));
     assert_eq!(app.context_used(), used, "the gauge is the agent's");
     assert_eq!(
@@ -881,7 +934,7 @@ fn the_summarizers_usage_is_billed_but_moves_neither_the_tally_nor_the_gauge() {
 #[test]
 fn a_failed_summary_reports_its_error_and_leaves_the_conversation_as_it_was() {
     let mut app = working_turn();
-    app.begin_background_compaction(7);
+    app.begin_background_compaction(7, false);
     let derived = crate::context::context_messages(&app.history);
     assert_eq!(
         app.on_summary_event(&StreamEvent::Error("boom".to_string())),
@@ -906,7 +959,7 @@ fn a_summary_sent_again_starts_over() {
     // The summarization request did not fit and is sent again smaller: what
     // the refused one wrote is gone, the compaction itself goes on.
     let mut app = working_turn();
-    app.begin_background_compaction(7);
+    app.begin_background_compaction(7, false);
     app.on_summary_event(&StreamEvent::Chunk("half".to_string()));
     app.on_summary_event(&StreamEvent::Error("prompt is too long".to_string()));
     app.restart_background_summary();
@@ -919,7 +972,7 @@ fn a_summary_sent_again_starts_over() {
 fn the_handoff_is_the_derivations_own_head() {
     let mut app = working_turn();
     app.set_user_instructions(Some("be careful".to_string()));
-    app.begin_background_compaction(7);
+    app.begin_background_compaction(7, false);
     summarize(&mut app, "the gist");
     let (id, head, head_tokens) = app.take_compaction_handoff().expect("a handoff");
     assert_eq!(id, 7);
@@ -943,7 +996,7 @@ fn the_handoff_is_the_derivations_own_head() {
 #[test]
 fn the_marker_lands_where_the_agent_spliced_and_names_its_cut() {
     let mut app = working_turn();
-    app.begin_background_compaction(7);
+    app.begin_background_compaction(7, false);
     summarize(&mut app, "we built it");
     // The agent kept working while the summary was written.
     app.start_tool("Bash", "cargo test", None);
@@ -974,7 +1027,7 @@ fn the_gauge_drops_when_the_summary_lands_and_the_next_frame_snaps_it() {
     app.start_tool("Bash", "cat big.log", None);
     app.end_tool(&"log line words ".repeat(12_000), true);
     app.apply_usage(&usage_of(46_000, 100));
-    app.begin_background_compaction(7);
+    app.begin_background_compaction(7, false);
     summarize(&mut app, "we built it");
     let landed = app.apply_background_compaction(7, 1).expect("it lands");
     assert_eq!(landed.marker.before, 46_000);
@@ -987,7 +1040,7 @@ fn the_gauge_drops_when_the_summary_lands_and_the_next_frame_snaps_it() {
 #[test]
 fn esc_drops_the_background_compaction_and_never_lands_a_marker() {
     let mut app = working_turn();
-    app.begin_background_compaction(7);
+    app.begin_background_compaction(7, false);
     summarize(&mut app, "we built it");
     app.interrupt_turn(3).expect("an interrupt");
     assert!(app.background_compaction().is_none());
@@ -1003,7 +1056,7 @@ fn esc_drops_the_background_compaction_and_never_lands_a_marker() {
 fn clear_drops_the_background_compaction_and_the_request() {
     let mut app = working_turn();
     app.request_compaction();
-    app.begin_background_compaction(7);
+    app.begin_background_compaction(7, false);
     app.request_compaction();
     app.clear_conversation();
     assert!(app.background_compaction().is_none());
@@ -1016,7 +1069,7 @@ fn a_turn_that_ends_mid_summary_finishes_as_an_idle_compaction() {
     // the session's turn — queued input waits for it — and lands at the end
     // of the history, still covering only its snapshot.
     let mut app = working_turn();
-    app.begin_background_compaction(7);
+    app.begin_background_compaction(7, false);
     app.on_summary_event(&StreamEvent::Chunk("we bui".to_string()));
     app.start_tool("Bash", "cargo test", None);
     app.end_tool("ok", true);
@@ -1046,7 +1099,7 @@ fn a_turn_that_ends_mid_summary_finishes_as_an_idle_compaction() {
 #[test]
 fn a_summary_ready_when_the_turn_ends_lands_at_its_end() {
     let mut app = working_turn();
-    app.begin_background_compaction(7);
+    app.begin_background_compaction(7, false);
     summarize(&mut app, "we built it");
     app.push_chunk("All done.");
     app.finish_stream();
@@ -1067,7 +1120,7 @@ fn a_summary_ready_when_the_turn_ends_lands_at_its_end() {
 #[test]
 fn the_waiting_flag_says_the_agent_paused_at_the_hard_limit() {
     let mut app = working_turn();
-    app.begin_background_compaction(7);
+    app.begin_background_compaction(7, false);
     assert!(!running(&app).waiting);
     app.set_compaction_waiting(8);
     assert!(!running(&app).waiting, "not ours");

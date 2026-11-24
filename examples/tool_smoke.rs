@@ -105,6 +105,7 @@ fn main() {
             // This harness attaches no compaction slot, so the lead never
             // compacts mid-turn here (docs/compact.md).
             StreamEvent::CompactionCheckpoint { .. }
+            | StreamEvent::CompactionRoundTop
             | StreamEvent::CompactionWait { .. }
             | StreamEvent::CompactionApplied { .. } => {}
             // A task tool call: cell-less in the TUI; the harness just logs it.

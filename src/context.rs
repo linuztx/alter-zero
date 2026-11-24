@@ -684,7 +684,14 @@ fn cut_position(history: &[HistoryItem], at: usize, cut: Option<u64>) -> usize {
     cut.and_then(|id| {
         history[..at]
             .iter()
-            .rposition(|item| matches!(item, HistoryItem::CompactionCut(c) if c.id == id))
+            .enumerate()
+            .rev()
+            .find_map(|(index, item)| match item {
+                HistoryItem::CompactionCut(c) if c.id == id => {
+                    Some(index.saturating_sub(usize::try_from(c.back).unwrap_or(usize::MAX)))
+                }
+                _ => None,
+            })
     })
     .unwrap_or(at)
 }
@@ -2976,10 +2983,35 @@ mod tests {
 
     /// The checkpoint a running agent took (`HistoryItem::CompactionCut`).
     fn cut(id: u64) -> HistoryItem {
+        reaching_cut(id, 0)
+    }
+
+    /// A cut whose summary leaves out the `back` items before it.
+    fn reaching_cut(id: u64, back: u64) -> HistoryItem {
         HistoryItem::CompactionCut(crate::app::CompactionCut {
             id,
             timestamp: String::new(),
+            back,
         })
+    }
+
+    #[test]
+    fn a_cut_reaching_back_keeps_the_round_before_it_verbatim() {
+        // The agent took its checkpoint at the hard limit, reaching back to
+        // the round top before round 2: round 2 — recorded before the cut —
+        // is no part of the summary and stays as it ran.
+        let history = vec![
+            message(Role::User, "fix the bug"),
+            round(1, "cat main.rs", "fn main() {}"),
+            round(2, "cat big.log", "a very big log"),
+            reaching_cut(7, 1),
+            marker("we read main.rs", Some(7), 0),
+        ];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx.len(), 3, "{ctx:?}");
+        assert!(ctx[0].text.ends_with("we read main.rs"), "{ctx:?}");
+        assert_eq!(ctx[1].tool_calls[0].id, "toolu_2");
+        assert_eq!(ctx[2].text, "a very big log");
     }
 
     /// A marker whose summary covers what came before cut `id`.

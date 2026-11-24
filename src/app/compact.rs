@@ -159,7 +159,7 @@ impl App {
     /// The head `compaction`'s marker derives — the reminder, the recent
     /// user messages and the bridge — from the history as it stands.
     fn marker_head(&self, compaction: &Compaction) -> Vec<crate::context::ContextMessage> {
-        let cut = compaction.cut.and_then(|id| self.cut_index(id));
+        let cut = compaction.cut.and_then(|id| self.covered_end(id));
         let covered = &self.history[..cut.unwrap_or(self.history.len())];
         crate::context::compacted_head(
             self.user_instructions.as_deref(),
@@ -168,6 +168,17 @@ impl App {
             &compaction.summary,
             usize::try_from(compaction.user_budget).unwrap_or(usize::MAX),
         )
+    }
+
+    /// Where the summary of the [`CompactionCut`] with `id` ends: its
+    /// position, less the items it reaches back over.
+    fn covered_end(&self, id: u64) -> Option<usize> {
+        let at = self.cut_index(id)?;
+        let back = match &self.history[at] {
+            HistoryItem::CompactionCut(cut) => usize::try_from(cut.back).unwrap_or(usize::MAX),
+            _ => 0,
+        };
+        Some(at.saturating_sub(back))
     }
 
     /// Where the [`CompactionCut`] with `id` sits in the history.
@@ -216,7 +227,7 @@ impl App {
     /// order, exactly the snapshot the agent holds — and open the background
     /// compaction, its summary to be written off screen. `false` (nothing
     /// recorded) while another is still running: one at a time.
-    pub fn begin_background_compaction(&mut self, id: u64) -> bool {
+    pub fn begin_background_compaction(&mut self, id: u64, back: bool) -> bool {
         if self.background_compaction.is_some() || self.is_compacting() {
             return false;
         }
@@ -224,8 +235,21 @@ impl App {
         let user_budget = u64::try_from(crate::context::compact_user_budget(self.context_window))
             .unwrap_or(u64::MAX);
         let timestamp = self.now_stamp();
-        self.history
-            .push(HistoryItem::CompactionCut(CompactionCut { id, timestamp }));
+        // Reaching back: the items since the agent's last round top are the
+        // round that crossed the hard limit — no part of the summary.
+        let here = self.history.len();
+        let reach = if back {
+            self.round_top
+                .filter(|(generation, at)| *generation == self.history_generation && *at <= here)
+                .map_or(0, |(_, at)| u64::try_from(here - at).unwrap_or(0))
+        } else {
+            0
+        };
+        self.history.push(HistoryItem::CompactionCut(CompactionCut {
+            id,
+            timestamp,
+            back: reach,
+        }));
         self.background_compaction = Some(BackgroundCompaction {
             id,
             auto,
@@ -241,6 +265,13 @@ impl App {
         true
     }
 
+    /// The running agent's next request goes out from here
+    /// ([`CompactionRoundTop`](crate::stream::StreamEvent::CompactionRoundTop)):
+    /// where a checkpoint it takes at the hard limit may reach back to.
+    pub fn mark_round_top(&mut self) {
+        self.round_top = Some((self.history_generation, self.history.len()));
+    }
+
     /// The compaction running beside the agent's turn, if any.
     #[must_use]
     pub const fn background_compaction(&self) -> Option<&BackgroundCompaction> {
@@ -252,7 +283,7 @@ impl App {
     #[must_use]
     pub fn background_compaction_snapshot(&self) -> Option<&[HistoryItem]> {
         let id = self.background_compaction.as_ref()?.id;
-        Some(&self.history[..self.cut_index(id)?])
+        Some(&self.history[..self.covered_end(id)?])
     }
 
     /// Fold one event of the background summarizer's stream
@@ -769,6 +800,13 @@ pub struct CompactionCut {
     pub id: u64,
     /// Wall-clock stamp (recorded like every item's; never displayed).
     pub timestamp: String,
+    /// How many items right before this one the summary does **not**
+    /// cover: a checkpoint the agent took at the hard limit reaches back to
+    /// the round top its last request went out from, so the round since —
+    /// recorded before the checkpoint arrived — stays verbatim
+    /// (`docs/compact.md` *The round that crossed the limit*). 0 for every
+    /// other cut: it covers everything before it.
+    pub back: u64,
 }
 
 /// A compaction running **beside** the agent's turn (`docs/compact.md`

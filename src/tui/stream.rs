@@ -486,8 +486,14 @@ impl Session<'_> {
             // a checkpoint at this round top: in channel order the history is
             // exactly its snapshot, so the cut is recorded here and the
             // summary is started beside the turn — which goes on.
-            StreamEvent::CompactionCheckpoint { id } => {
-                self.on_compaction_checkpoint(id);
+            StreamEvent::CompactionCheckpoint { id, back } => {
+                self.on_compaction_checkpoint(id, back);
+                false
+            }
+            // The agent's next request goes out from here: where a
+            // checkpoint it takes at the hard limit may reach back to.
+            StreamEvent::CompactionRoundTop => {
+                self.app.mark_round_top();
                 false
             }
             // It waits at the hard limit for that summary: the strip says so.

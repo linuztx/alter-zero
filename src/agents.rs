@@ -630,6 +630,7 @@ impl AgentRun {
             // round-top compaction seam, which is the lead's alone
             // (docs/compact.md *Subagents*).
             StreamEvent::CompactionCheckpoint { .. }
+            | StreamEvent::CompactionRoundTop
             | StreamEvent::CompactionWait { .. }
             | StreamEvent::CompactionApplied { .. } => {}
             // A reasoning delta: counted so the footer tally ticks while the

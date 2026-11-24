@@ -2658,6 +2658,7 @@ mod tests {
         HistoryItem::CompactionCut(crate::app::CompactionCut {
             id,
             timestamp: String::new(),
+            back: 0,
         })
     }
 

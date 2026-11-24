@@ -635,6 +635,13 @@ const ROUNDS: usize = 30;
 /// summary is written — rather than every crossing landing past the hard
 /// limit, where it waits.
 const ROUND_LINES: usize = 12;
+/// What a [`COMPACT`] prompt adds to make every round print so much that one
+/// round takes the request from under the threshold to past the hard limit
+/// — more than the twentieth of the window between them, less than what is
+/// left under the threshold after a compaction.
+const BIG_ROUNDS: &str = "HEADLESS_BIG_ROUNDS";
+/// How many lines of prose a [`BIG_ROUNDS`] round prints.
+const BIG_ROUND_LINES: usize = 140;
 /// What each round's command prints, ahead of its bulk: which round it was.
 const ROUND_MARK: &str = "ROUND-";
 /// What a [`COMPACT`] conversation's summarizer answers, ahead of the
@@ -755,8 +762,13 @@ fn compact_sse(body: &str, log: &Mutex<Vec<String>>) -> String {
             SUMMARY_OF
         };
         let done = marks(&said, mark).into_iter().max().unwrap_or(0);
+        let lines = if body.contains(BIG_ROUNDS) {
+            BIG_ROUND_LINES
+        } else {
+            ROUND_LINES
+        };
         if done < ROUNDS {
-            run(done + 1, ROUND_LINES)
+            run(done + 1, lines)
         } else {
             // A checkpoint taken at this very round top sends its summary
             // request beside this one: give it the moment to arrive.
@@ -1345,6 +1357,65 @@ fn a_long_turn_compacts_in_the_background_and_its_history_derives_what_the_agent
         derived[..held.len()],
         held[..],
         "the history derives exactly what the agent held"
+    );
+}
+
+/// A round that takes the request from under the threshold to past the hard
+/// limit at once is the newest thing the agent has: the checkpoint the agent
+/// forces there reaches back to where the last request went out from, so
+/// that round reaches the model word for word rather than only through a
+/// summary (docs/compact.md *The round that crossed the limit*).
+#[test]
+fn a_round_that_crosses_the_hard_limit_reaches_the_model_word_for_word() {
+    let world = World::new("crossing-round");
+    let stand_in = StandIn::start();
+    let probe = real_run(
+        &world,
+        &stand_in,
+        &["-p", "--permission-mode", "master", "measure"],
+    );
+    assert!(probe.status.success(), "{}", stderr(&probe));
+    let overhead = stand_in.chat_requests()[0].len() / 4;
+    let window = overhead + 3_000;
+    let _ = std::fs::remove_dir_all(world.dir("sessions"));
+    std::fs::create_dir_all(world.dir("sessions")).expect("a sessions dir");
+    let before = stand_in.chat_requests().len();
+    let mut command = world.command(&[
+        "-p",
+        "--permission-mode",
+        "master",
+        &format!("{COMPACT} {BIG_ROUNDS} run the rounds"),
+    ]);
+    stand_in.configure(&world, &mut command);
+    let out = command
+        .env("ALTER_ZERO_CONTEXT_WINDOW", window.to_string())
+        .stdin(Stdio::null())
+        .output()
+        .expect("the binary runs");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let chats: Vec<String> = stand_in.chat_requests()[before..].to_vec();
+    let agent: Vec<&String> = chats.iter().filter(|chat| offers_tools(chat)).collect();
+    for round in 1..=ROUNDS {
+        let mark = format!("{ROUND_MARK}{round}\n");
+        assert!(
+            agent.iter().any(|chat| {
+                request_messages(chat).iter().any(|message| {
+                    message["role"] == "tool" && content_text(message).contains(&mark)
+                })
+            }),
+            "round {round}'s output never reached the model itself"
+        );
+    }
+    for chat in &agent {
+        assert!(chat.len() / 4 <= window, "{} > {window}", chat.len() / 4);
+    }
+    let lines = rollout(&world);
+    assert!(
+        lines.iter().any(|line| line["type"] == "compaction_cut"
+            && line["payload"]["back"]
+                .as_u64()
+                .is_some_and(|back| back > 0)),
+        "a checkpoint reached back over the round that crossed: {lines:#?}"
     );
 }
 

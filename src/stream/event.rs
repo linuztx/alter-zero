@@ -601,8 +601,16 @@ pub enum StreamEvent {
     /// and so everything the history holds as this event lands, in channel
     /// order — is the snapshot a background summary will cover. The loop
     /// records the cut there and starts the summarizer; the agent keeps
-    /// working. `id` names the checkpoint on the shared slot.
-    CompactionCheckpoint { id: u64 },
+    /// working. `id` names the checkpoint on the shared slot. `back`: the
+    /// checkpoint was taken at the hard limit and **reaches back** to the
+    /// last round top the agent announced ([`CompactionRoundTop`](Self::CompactionRoundTop)) —
+    /// the round since, which crossed the limit, stays verbatim
+    /// (`docs/compact.md` *The round that crossed the limit*).
+    CompactionCheckpoint { id: u64, back: bool },
+    /// The running agent's next request goes out from here: where a
+    /// checkpoint it takes at its next round top may reach back to. Sent at
+    /// every round top while a window is known (`docs/compact.md`).
+    CompactionRoundTop,
     /// The running agent reached the **hard limit** with the summary of
     /// checkpoint `id` not in yet, and waits at the round boundary for it —
     /// the one pause background compaction ever costs (`docs/compact.md`
@@ -663,6 +671,7 @@ impl StreamEvent {
             | Self::Permission(_)
             | Self::AskUser(_)
             | Self::CompactionCheckpoint { .. }
+            | Self::CompactionRoundTop
             | Self::CompactionWait { .. }
             | Self::CompactionApplied { .. }
             | Self::Error(_)

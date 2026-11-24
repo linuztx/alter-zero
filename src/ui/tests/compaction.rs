@@ -60,7 +60,7 @@ fn a_requested_compaction_says_it_starts_at_the_next_step() {
 #[test]
 fn a_running_compaction_says_so_with_its_own_clock() {
     let mut app = working_turn();
-    app.begin_background_compaction(7);
+    app.begin_background_compaction(7, false);
     app.set_compaction_elapsed(Some(Duration::from_secs(12)));
     assert_eq!(
         row_text(&app),
@@ -79,7 +79,7 @@ fn a_running_compaction_says_so_with_its_own_clock() {
 #[test]
 fn an_agent_waiting_at_the_hard_limit_is_said_in_amber() {
     let mut app = working_turn();
-    app.begin_background_compaction(7);
+    app.begin_background_compaction(7, false);
     app.set_compaction_waiting(7);
     app.set_compaction_elapsed(Some(Duration::from_secs(65)));
     assert_eq!(
@@ -100,7 +100,7 @@ fn an_agent_waiting_at_the_hard_limit_is_said_in_amber() {
 #[test]
 fn a_finished_summary_waits_for_the_agents_next_step() {
     let mut app = working_turn();
-    app.begin_background_compaction(7);
+    app.begin_background_compaction(7, false);
     app.on_summary_event(&StreamEvent::Chunk("gist".to_string()));
     app.on_summary_event(&StreamEvent::StreamDone);
     assert_eq!(
@@ -112,7 +112,7 @@ fn a_finished_summary_waits_for_the_agents_next_step() {
 #[test]
 fn the_row_wraps_under_its_gutter_and_never_past_the_width() {
     let mut app = working_turn();
-    app.begin_background_compaction(7);
+    app.begin_background_compaction(7, false);
     app.on_summary_event(&StreamEvent::StreamDone);
     let lines = compacting_lines(&app, 30);
     assert!(lines.len() > 1);
@@ -129,7 +129,7 @@ fn the_row_wraps_under_its_gutter_and_never_past_the_width() {
 fn the_strip_reserves_the_row_and_paints_it_under_the_status_line() {
     let mut app = working_turn();
     let idle = height(&app, 80);
-    app.begin_background_compaction(7);
+    app.begin_background_compaction(7, false);
     app.set_compaction_elapsed(Some(Duration::from_secs(3)));
     assert_eq!(compacting_rows(&app, 80), 1);
     assert_eq!(hang_rows(&app, 80), 1, "the strip's one hanging row");
@@ -150,7 +150,7 @@ fn no_row_without_a_status_line_to_hang_from() {
     // The turn ended with a summary still being written: that compaction is
     // the session's own turn now, its status line `Compacting…` itself.
     let mut app = working_turn();
-    app.begin_background_compaction(7);
+    app.begin_background_compaction(7, false);
     app.finish_stream();
     let _ = app.take_turn_summary(1);
     assert!(!app.turn_active());
