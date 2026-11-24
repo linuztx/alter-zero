@@ -504,21 +504,13 @@ fn serve(mut stream: TcpStream, log: &Mutex<Vec<String>>) {
 /// What the stand-in streams of a request's reply before it drops it
 /// ([`drop_mid_reply`]), or `None` to answer it whole. It drops the first
 /// sending of two requests and answers each when it is sent again: a
-/// [`DROP`] prompt's (a thought and the start of a draft) and the
-/// continuation of a [`CUT_SUMMARY`] summary ([`SUMMARY_DRAFT`]). `log` holds
-/// every chat request so far, this one included.
+/// [`DROP`] prompt's ([`dropped_attempt`]) and the continuation of a
+/// [`CUT_SUMMARY`] summary ([`SUMMARY_DRAFT`]). `log` holds every chat
+/// request so far, this one included.
 fn dropped_deltas(body: &str, log: &[String]) -> Option<Vec<serde_json::Value>> {
     let first = |is: fn(&str) -> bool| is(body) && log.iter().filter(|chat| is(chat)).count() == 1;
     if first(|chat| chat.contains(DROP)) {
-        let thought =
-            serde_json::json!({"role": "assistant", "reasoning_content": DROPPED_THOUGHT});
-        let draft = [
-            "the parser reads tokens.\n",
-            "then it builds a tree.\n",
-            "and then",
-        ]
-        .map(|line| serde_json::json!({"content": format!("{DROPPED_DRAFT}: {line}")}));
-        Some(std::iter::once(thought).chain(draft).collect())
+        Some(dropped_attempt())
     } else if first(continues_a_cut_summary) {
         Some(vec![serde_json::json!({"content": SUMMARY_DRAFT})])
     } else {
@@ -581,17 +573,33 @@ const STALL: &str = "HEADLESS_STALL";
 /// report usage on every reply of that conversation — what the rollout's
 /// `tool` and `usage` lines record (docs/rollout-records.md).
 const RECORD: &str = "HEADLESS_RECORD";
-/// What a prompt says to make the stand-in's first reply die under it: a
-/// thought and the start of a draft are streamed, then the connection
-/// closes mid-body ([`drop_mid_reply`]). The request sent again is answered
-/// whole with [`RETRIED_REPLY`] (docs/offline.md *A connection lost
-/// mid-reply*).
+/// What a prompt says to make the stand-in's first reply die under it:
+/// [`dropped_attempt`] is streamed, then the connection closes mid-body
+/// ([`drop_mid_reply`]). The request sent again is answered whole with
+/// [`RETRIED_REPLY`] (docs/offline.md *A connection lost mid-reply*).
 const DROP: &str = "HEADLESS_DROP";
-/// What each line of the dropped attempt's draft opens with — words nothing
-/// else the stand-in or the app writes contains.
-const DROPPED_DRAFT: &str = "Draft one";
-/// The dropped attempt's thought.
-const DROPPED_THOUGHT: &str = "Pondering draft one.";
+
+/// What the stand-in's first reply to a [`DROP`] prompt streams before its
+/// connection dies, one delta each: a thought, a finished line, a second
+/// thought and the start of another line. With the thinking display on, the
+/// second thought finalises the line before it into the history, so by the
+/// time it fails the attempt has recorded a reply and two thoughts, and the
+/// retry withdraws all of them. Every piece says `draft one`, which nothing
+/// else the stand-in or the app writes does ([`has_dropped_text`]).
+fn dropped_attempt() -> Vec<serde_json::Value> {
+    vec![
+        serde_json::json!({"role": "assistant", "reasoning_content": "Pondering draft one."}),
+        serde_json::json!({"content": "Draft one: the parser reads tokens.\n"}),
+        serde_json::json!({"reasoning_content": "Reconsidering draft one."}),
+        serde_json::json!({"content": "Draft one: and then"}),
+    ]
+}
+
+/// Whether `text` carries anything of [`dropped_attempt`].
+fn has_dropped_text(text: &str) -> bool {
+    text.to_lowercase().contains("draft one")
+}
+
 /// The whole reply the retried request streams.
 const RETRIED_REPLY: &str = "Second attempt: the whole reply streams once.";
 /// What a conversation says to make its summary stop at the output cap:
@@ -886,7 +894,9 @@ fn the_system_prompt_tells_the_model_it_runs_headless() {
 /// reports the reply the retry streamed — never the dropped attempt's draft
 /// glued to it — in every format, quiet or logged, and in the rollout a
 /// `--continue` reads back (docs/headless.md *Output*: nothing is printed
-/// that the session later takes back).
+/// that the session later takes back). The attempt has recorded a reply and
+/// two thoughts by the time it fails ([`dropped_attempt`]), so the
+/// `stream-json` runs also prove that its items wait for the settled history.
 #[test]
 fn a_reply_whose_connection_drops_reports_only_what_the_retry_streamed() {
     for format in ["text", "json", "stream-json"] {
@@ -911,10 +921,8 @@ fn a_reply_whose_connection_drops_reports_only_what_the_retry_streamed() {
             assert!(out.status.success(), "{run}: {}", stderr(&out));
             assert_eq!(stand_in.chat_requests().len(), 2, "{run}: sent again once");
             let (printed, log) = (stdout(&out), stderr(&out));
-            for withdrawn in [DROPPED_DRAFT, DROPPED_THOUGHT] {
-                assert!(!printed.contains(withdrawn), "{run}: {printed}");
-                assert!(!log.contains(withdrawn), "{run}: {log}");
-            }
+            assert!(!has_dropped_text(&printed), "{run}: {printed}");
+            assert!(!has_dropped_text(&log), "{run}: {log}");
             // A retry that worked needs nothing from anyone: the step log's
             // news, and quiet otherwise.
             if verbose {
@@ -948,9 +956,7 @@ fn a_reply_whose_connection_drops_reports_only_what_the_retry_streamed() {
                 .iter()
                 .map(serde_json::Value::to_string)
                 .collect();
-            for withdrawn in [DROPPED_DRAFT, DROPPED_THOUGHT] {
-                assert!(!recorded.contains(withdrawn), "{run}: {recorded}");
-            }
+            assert!(!has_dropped_text(&recorded), "{run}: {recorded}");
             assert_eq!(
                 recorded.matches(RETRIED_REPLY).count(),
                 1,

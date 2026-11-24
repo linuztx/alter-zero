@@ -506,10 +506,10 @@ installed before bootstrap starts any server, and the shutdown is bounded
   system prompt flags place their text, outrank `ALTER_ZERO_SYSTEM_PROMPT`,
   read a file relative to `-C`, and refuse an unreadable file before any
   request (`docs/system-prompt.md`); and a reply whose connection drops
-  mid-body (a thought and a draft streamed, then the body cut off) is sent
+  mid-body, after the attempt has recorded a line and two thoughts, is sent
   again and reported as the retry streamed it, in `text`, `json` and
   `stream-json`, quiet and with `--verbose`, and in the rollout. None of
-  them shows the dropped attempt's thought or draft (`docs/offline.md` *A
+  them shows anything of the dropped attempt (`docs/offline.md` *A
   connection lost mid-reply*). A summary the output cap cut off, whose
   continuation drops the same way, keeps its first round in the compaction
   a `-c` run makes before its prompt.
