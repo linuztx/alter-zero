@@ -9,7 +9,8 @@ smoke_begin
 # a checkpoint at a round boundary, keeps working while the summary is
 # written beside it, and splices it in at a later round boundary — so the
 # `● Context compacted … · auto` cell commits in the middle of the turn,
-# above the turn's own `… for Ns` summary, and the turn completes.
+# below the rounds it covers and above the turn's own `… for Ns` summary,
+# the turn completes, and no request the model is sent is past the window.
 #
 # A stub chat-completions server plays the model through the real backend:
 # `smoke170 rounds` makes it run ten bash rounds of bulky prose, then answer;
@@ -143,6 +144,9 @@ expect_has "$done_pane" -E "Context compacted · .* tokens .*· auto" \
 cells="$(printf '%s\n' "$done_pane" | grep -cF "Context compacted")"
 [ "$cells" -ge 1 ] || fail "expected a compaction cell, found $cells"
 first_cell="$(printf '%s\n' "$done_pane" | grep -nF "Context compacted" | head -1 | cut -d: -f1)"
+first_call="$(printf '%s\n' "$done_pane" | grep -nE '^● Bash\(' | head -1 | cut -d: -f1)"
+[ -n "$first_call" ] && [ "$first_call" -lt "$first_cell" ] ||
+	fail "the compaction cell sits above the rounds it covers (first call $first_call, cell $first_cell)"
 summary_row="$(printf '%s\n' "$done_pane" | grep -nE "^$SUMMARY_RE" | tail -1 | cut -d: -f1)"
 [ -n "$first_cell" ] && [ -n "$summary_row" ] && [ "$first_cell" -lt "$summary_row" ] ||
 	fail "the compaction cell did not land before the turn's summary (cell $first_cell, summary $summary_row)"
@@ -162,5 +166,9 @@ print(sum(1 for r in agent if r["rounds"] and 1 not in r["rounds"]))
 PY
 )"
 [ "$spliced" -ge 1 ] || fail "no request after the compaction dropped the summarized rounds"
+
+note "every request the model was sent fits the window"
+over="$(python3 -c 'import json, sys; w = int(sys.argv[2]); print(sum(1 for l in open(sys.argv[1]) if l.strip() and json.loads(l)["tools"] and json.loads(l)["bytes"] // 4 > w))' "$LOG" "$window")"
+expect_eq "$over" "0" "a request past the window went out"
 
 tmux kill-session -t "$S170" 2>/dev/null

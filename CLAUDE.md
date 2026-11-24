@@ -3209,12 +3209,18 @@ head + messages[n..]` at its next round top (`CompactionApplied`) and the
 marker lands there naming its cut (`Compaction::cut`), the rounds since
 deriving verbatim and the cell committing mid-turn; at **95%** the agent never
 sends — it waits for the summary (`CompactionWait`, polling the cancel token
-every 20 ms) or forces one, and ends the turn on an error only when the
-provider's own count is past the window and nothing can help; the
-summarization request is **fitted** to three quarters of the window, in
-the provider's tokens through the same calibration
-(`context::summarization_request` — largest tool results cut, oldest rounds
-dropped whole, user texts cut) and a background one the provider refuses as
+every 20 ms) or forces one — **reaching back** to the round top its last
+request went out from (`StreamEvent::CompactionRoundTop`, which the loop
+marks, `App::mark_round_top`; the cut records `CompactionCut::back`) when
+one round crossed the limit, so that round stays verbatim — and ends the
+turn on an error only when the provider's own count is past the window and
+nothing can help; the
+summarization request is **fitted** to the window, in the provider's
+tokens through the same calibration
+(`context::summarization_request` — the bulk cut, tool results and call
+arguments alike (still a JSON object), then the oldest rounds dropped whole
+behind a note, then every text cut — leaving an eighth of the window, at
+most 16k, for the summary) and a background one the provider refuses as
 too long is resent smaller, twice at most; chained summaries close on
 `prompts/compact_chain_note.md`; never a loop — no checkpoint before a round
 has run, one at a time, none over a snapshot whose summary failed, and none

@@ -12,6 +12,25 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **A long turn no longer runs out of context.** Compaction used to run only
+  between turns, so one long agentic turn could fill the model's window and
+  end on the provider's refusal. Now, past 90% of the window, the agent takes
+  a checkpoint and keeps working while the summary is written beside it, and
+  splices the summary in at a later step; what it did meanwhile stays word
+  for word. The `● Context compacted · … · auto` cell lands where that
+  happened, mid-turn, and a row under the status line says a compaction is
+  running.
+  - At 95% the agent waits for the summary instead of sending a request the
+    window cannot hold. Esc ends the wait. When one tool output takes it
+    there at once, that output stays word for word beside the summary.
+  - `/compact` works mid-turn too, the same way.
+  - A turn can compact as often as it needs to, and never loops.
+  - Headless runs do the same; `--verbose` and `stream-json` report each
+    step.
+  - Subagents do not compact yet.
+
 ### Fixed
 
 - **`/copy` and `/export` reach your clipboard from tmux on a remote

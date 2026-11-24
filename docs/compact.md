@@ -196,7 +196,8 @@ the tests build have no compactor, and a subagent's loop runs the
 In channel order on the turn's reply channel:
 
 ```text
-agent  ──CompactionCheckpoint{id}──►  boundary records the cut, starts the summarizer
+agent  ──CompactionRoundTop──►        boundary marks the history's length (every round top)
+agent  ──CompactionCheckpoint{id, back}──►  boundary records the cut, starts the summarizer
 agent  (keeps working; rounds n+1…)
 agent  ──CompactionWait{id}──►        only at the hard limit
 boundary publishes Handoff{id, head} on the slot
@@ -206,8 +207,9 @@ agent  ──CompactionApplied{id}──►     boundary appends the marker ther
 
 1. At a round top past the threshold — 90% of the window, codex's — the
    agent takes a **checkpoint**: it remembers how many messages it holds
-   (`n`) and sends `CompactionCheckpoint { id }`. Then it sends the round as
-   usual.
+   (`n`) and sends `CompactionCheckpoint { id, back: false }`. Then it sends
+   the round as usual. (At the hard limit it may cover less — *The round
+   that crossed the limit*.)
 2. The boundary receives the event **in channel order** — every event the
    agent sent before it has already been folded into the history — so the
    history at that instant is exactly the snapshot the agent holds. It
@@ -228,6 +230,12 @@ agent  ──CompactionApplied{id}──►     boundary appends the marker ther
    the cell — mid-turn, under the rounds it kept verbatim and above the next.
 
 ### Where a summary's coverage ends
+
+The cut covers everything before it — or, for a checkpoint that reached
+back (*The round that crossed the limit*), everything before it **less the
+`back` items right before it**: the round that crossed the limit, recorded
+before the checkpoint arrived. That count spans one round at most, recorded
+in the same few events, so the cut's own position still anchors it.
 
 The cut is a **history item**, not an index. An index would be a claim about
 the history's shape that the history cannot check, while the item is the
@@ -292,13 +300,37 @@ provider's own count — past the window. At a round top past it:
 
 The strip's row turns amber while the agent waits (*What the strip shows*).
 
+### The round that crossed the limit
+
+One tool output can take the request from under the threshold to past the
+hard limit in a single round — a file bigger than the twentieth of the
+window between them. A checkpoint taken there and covering everything would
+summarize the very output the agent is about to act on: in the first live
+runs the agent took every file it had just read in only through a summary.
+
+So while a window is known the agent announces every round top it sends
+from (`StreamEvent::CompactionRoundTop`; the loop notes the history's length
+there, `App::mark_round_top`), and a checkpoint taken at or past the hard
+limit **reaches back** to the last one when that request fit and held a
+round: it covers what that request carried, and the round since stays
+verbatim after the summary (`CompactionCheckpoint { back: true }`; the cut
+records how many items it reaches back over, `CompactionCut::back`). After a
+splice in the same round top there is no such spot — the list was rewritten
+— and a checkpoint covers everything. A reaching checkpoint whose summary
+fails is not taken again until something new joins. The headless suite's
+`a_round_that_crosses_the_hard_limit_reaches_the_model_word_for_word` drives
+rounds big enough that every compaction is forced, and checks every round's
+output reached the model itself.
+
 ### Chained compactions
 
 There is no limit on how many times a turn compacts. A second summary is
 written over a snapshot that already holds the first one's bridge, and the
 summarization request closes the prompt with `prompts/compact_chain_note.md`
 — carry over what the earlier summary still says matters, since its text is
-replaced — so nothing the first summary held is lost. Each marker derives
+replaced, and treat the work it records as done, never to be checked again
+(a live run's second summary called the earlier results unverified, and the
+agent read every file again) — so nothing the first summary held is lost. Each marker derives
 from its own cut, and only the last marker is applied, so the context is
 always one head plus the rounds since.
 
@@ -318,17 +350,22 @@ derives the same head the agent spliced.
 A summary is most needed exactly when the conversation is too big to send —
 and the summarization request carries the conversation. So it is **fitted**
 first, deterministically (`context::summarization_request` with
-`summarization_budget`: three quarters of the window in the provider's
-tokens — turned into the estimate's through the session's calibration,
-since the request is measured by the estimate — less the system prompt, the
-last quarter left for the summary itself):
+`summarization_budget`: the window less room for the summary — an eighth
+of it, at most 16k tokens — in the provider's tokens, turned into the
+estimate's through the session's calibration since the request is measured
+by the estimate, less the system prompt):
 
-1. the largest tool results are cut in the middle to a common cap no lower
-   than 200 tokens — a water level, so the small ones are untouched;
+1. the bulk — the tool results and the calls' arguments (a file written
+   whole) — is cut in the middle to a common cap no lower than 200 tokens: a
+   water level, so the small ones are untouched; a call's cut arguments stay
+   a JSON object, the cut text under `truncated_arguments`;
 2. then the oldest rounds go whole (an assistant message and its results
-   together, so the wire's pairing holds);
-3. then the user-role texts are cut the same way — every user message and
-   the earlier summary kept as long as anything else can go.
+   together, so the wire's pairing holds), behind one note saying how many
+   messages were left out to fit — joined to the user message before them,
+   as the derivation joins user texts — so the summarizer knows the gap is
+   the request's;
+3. then every text is cut, the last resort — every user message and the
+   earlier summary kept as long as anything else can go.
 
 The provider has the last word: a background summarizer the provider refuses
 as too long (`is_context_window_refusal`, read off the words providers use)
@@ -614,6 +651,9 @@ compaction*.)
   cost the agent a retry.
 - The idle path fits its request but does not retry a refusal; only the
   background summarizer does.
+- A reaching cut counts the items it reaches back over (one round's, at
+  most): a rollout line inside that round lost on a reload shifts its
+  coverage by one item. A cut that covers everything before it is exact.
 - Codex's post-compact "Heads up: Long threads and multiple compactions…"
   warning cell is not ported — the marker cell is the whole record.
 - The bridge re-tokenizes as `bytes/4`, not the app's token estimate — same
