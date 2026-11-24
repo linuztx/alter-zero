@@ -1087,6 +1087,22 @@ fn the_policy_carries_the_window_the_knob_and_what_compacting_can_reach() {
 }
 
 #[test]
+fn the_policy_carries_what_the_usage_frames_taught_about_the_providers_tokens() {
+    // The agent reads what it appended since its last report through the
+    // session's calibration, as the gauge does (docs/compact.md *The hard
+    // limit*).
+    let mut app = App::new();
+    app.set_context_window(Some(50_000));
+    calibrated_at_three_halves(&mut app, &"word ".repeat(600));
+    let policy = app.compaction_policy().expect("a window");
+    assert!(
+        (1_499..=1_500).contains(&policy.calibration.ratio_permille()),
+        "{policy:?}"
+    );
+    assert_eq!(policy.calibration, app.context_calibration());
+}
+
+#[test]
 fn a_compaction_that_cannot_reach_the_threshold_says_so_and_stops_the_automatic_ones() {
     // A 100-token window: the summary bridge alone is past 90 of it.
     let mut app = App::new();

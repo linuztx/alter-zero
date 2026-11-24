@@ -3195,7 +3195,8 @@ never twice over an unchanged history — `compact_watermark` — the cell tagge
 (`docs/compact.md` *Background compaction*): the lead agent decides *when* at
 every round top through the `llm::compaction::RoundTopSeam` that
 `llm::agent::run_agent_with` consults after the pending inputs — its size the
-last usage frame plus the estimate of what it appended since — taking a
+last usage frame plus the estimate of what it appended since, read through
+the session's calibration (`CompactionPolicy::calibration`) — taking a
 **checkpoint** past 90% (`StreamEvent::CompactionCheckpoint { id }`, in
 channel order, so the boundary appends an invisible
 `HistoryItem::CompactionCut { id }` exactly where the agent's snapshot ends
@@ -3210,7 +3211,8 @@ deriving verbatim and the cell committing mid-turn; at **95%** the agent never
 sends — it waits for the summary (`CompactionWait`, polling the cancel token
 every 20 ms) or forces one, and ends the turn on an error only when the
 provider's own count is past the window and nothing can help; the
-summarization request is **fitted** to three quarters of the window
+summarization request is **fitted** to three quarters of the window, in
+the provider's tokens through the same calibration
 (`context::summarization_request` — largest tool results cut, oldest rounds
 dropped whole, user texts cut) and a background one the provider refuses as
 too long is resent smaller, twice at most; chained summaries close on

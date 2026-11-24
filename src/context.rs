@@ -777,15 +777,27 @@ pub fn summarization_request(
 }
 
 /// The estimated tokens a summarization request may cost for a `window`-token
-/// context window: three quarters of it, less the `system` prompt the
-/// summarizer is sent beside the request — the last quarter is the summary's
-/// own room and the slack for a provider that counts more tokens than the
-/// estimate does. `None` (no cap) when the window is unknown. See
-/// `docs/compact.md` *The summarization request must fit*.
+/// context window: three quarters of it in the provider's tokens — turned
+/// into the estimate's through `calibration`, what the session's usage
+/// reports taught — less the estimated `system` prompt the summarizer is sent
+/// beside the request. The last quarter is the summary's own room and the
+/// slack for whatever the calibration has not learned yet. `None` (no cap)
+/// when the window is unknown. See `docs/compact.md` *The summarization
+/// request must fit*.
 #[must_use]
-pub fn summarization_budget(window: Option<u64>, system: usize) -> Option<usize> {
-    let window = usize::try_from(window?).unwrap_or(usize::MAX);
-    Some((window / 4).saturating_mul(3).saturating_sub(system))
+pub fn summarization_budget(
+    window: Option<u64>,
+    system: usize,
+    calibration: crate::tokens::Calibration,
+) -> Option<usize> {
+    let window = window?;
+    let counted = (window / 4).saturating_mul(3);
+    let estimated = counted.saturating_mul(1000) / calibration.ratio_permille().max(1);
+    Some(
+        usize::try_from(estimated)
+            .unwrap_or(usize::MAX)
+            .saturating_sub(system),
+    )
 }
 
 /// How far down [`fit_to_budget`] cuts a single text before it starts
@@ -3054,9 +3066,33 @@ mod tests {
         // The rest is the summary's own room, and slack for a provider that
         // counts more tokens than the estimate does — less the system prompt
         // the summarizer is sent beside the request.
-        assert_eq!(summarization_budget(None, 0), None, "no window, no cap");
-        assert_eq!(summarization_budget(Some(50_000), 4_000), Some(33_500));
-        assert_eq!(summarization_budget(Some(1_000), 5_000), Some(0));
+        let uncalibrated = crate::tokens::Calibration::default();
+        assert_eq!(
+            summarization_budget(None, 0, uncalibrated),
+            None,
+            "no window, no cap"
+        );
+        assert_eq!(
+            summarization_budget(Some(50_000), 4_000, uncalibrated),
+            Some(33_500)
+        );
+        assert_eq!(
+            summarization_budget(Some(1_000), 5_000, uncalibrated),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn a_summarization_budget_is_three_quarters_of_the_window_in_the_providers_tokens() {
+        // The request is fitted by the estimate; a provider counting twice
+        // the estimate fills three quarters of the window with half the
+        // estimated tokens.
+        let mut doubling = crate::tokens::Calibration::default();
+        doubling.learn(2_000, 1_000);
+        assert_eq!(
+            summarization_budget(Some(40_000), 1_000, doubling),
+            Some(15_000 - 1_000)
+        );
     }
 
     #[test]

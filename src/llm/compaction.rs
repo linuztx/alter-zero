@@ -34,6 +34,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::{ChatMessage, ContentPart, MessageContent};
 use crate::stream::{CancelToken, StreamEvent};
+use crate::tokens::Calibration;
 
 /// How often a wait at the hard limit looks at the turn's cancel token —
 /// the cadence every blocking wait on the backend thread polls it at, so
@@ -81,6 +82,13 @@ pub struct CompactionPolicy {
     /// compacting cannot get under it, so the agent does not try
     /// (`docs/compact.md` *When compacting cannot help*).
     pub floor: Option<u64>,
+    /// What the session's usage reports taught about the provider's tokens
+    /// against the estimate (`docs/token-estimate.md`): the agent reads what
+    /// it appended since its last report through it, as the gauge does.
+    /// Read raw, a provider counting twice the estimate would see a request
+    /// the reading put under the hard limit go out past the window
+    /// (`docs/compact.md` *The hard limit*).
+    pub calibration: Calibration,
 }
 
 impl CompactionPolicy {
@@ -397,13 +405,17 @@ impl AgentCompactor {
     }
 
     /// What `messages` cost: the base, plus the estimate of what joined
-    /// after it — folded into the base, so each reading estimates only the
-    /// newest messages.
-    fn size(&mut self, messages: &[ChatMessage]) -> u64 {
+    /// after it read through `calibration` into the provider's tokens —
+    /// folded into the base, so each reading estimates only the newest
+    /// messages.
+    fn size(&mut self, messages: &[ChatMessage], calibration: Calibration) -> u64 {
         let (tokens, count) = self.base;
         let count = count.min(messages.len());
         let added: u64 = messages[count..].iter().map(message_tokens).sum();
-        self.base = (tokens.saturating_add(added), messages.len());
+        self.base = (
+            tokens.saturating_add(calibration.correct(added)),
+            messages.len(),
+        );
         self.base.0
     }
 
@@ -473,7 +485,10 @@ impl RoundTopSeam for AgentCompactor {
             }
             self.settle(messages, tx);
             let policy = self.slot.policy();
-            let size = self.size(messages);
+            let size = self.size(
+                messages,
+                policy.map(|policy| policy.calibration).unwrap_or_default(),
+            );
             // Only a conversation with a round in it has anything to fold
             // into a summary: before the first, the size is the user's
             // message and the fixed overhead, which no summary shrinks.
@@ -612,7 +627,16 @@ mod tests {
             window,
             auto: true,
             floor: None,
+            calibration: Calibration::default(),
         }
+    }
+
+    /// A calibration that has learned the provider counts twice the
+    /// estimate.
+    fn doubling() -> Calibration {
+        let mut calibration = Calibration::default();
+        calibration.learn(2_000, 1_000);
+        calibration
     }
 
     fn head() -> Vec<ChatMessage> {
@@ -705,7 +729,7 @@ mod tests {
         assert_eq!(messages, expected, "[system] + head + the rounds since");
         assert_eq!(drain(&mut rx), vec![StreamEvent::CompactionApplied { id }]);
         assert_eq!(
-            compactor.size(&messages),
+            compactor.size(&messages, Calibration::default()),
             30 + cost(&messages[2..]),
             "the head's cost is the new base"
         );
@@ -785,13 +809,78 @@ mod tests {
         let slot = CompactionSlot::default();
         let mut compactor = AgentCompactor::new(slot, 7);
         let mut messages = conversation(1, 40);
-        assert_eq!(compactor.size(&messages), 7 + cost(&messages));
+        let uncalibrated = Calibration::default();
+        assert_eq!(compactor.size(&messages, uncalibrated), 7 + cost(&messages));
         compactor.observe(5_000, messages.len());
         push_round(&mut messages, 1, 40);
         assert_eq!(
-            compactor.size(&messages),
+            compactor.size(&messages, uncalibrated),
             5_000 + cost(&messages[messages.len() - 2..]),
             "the provider's count, plus the estimate of what joined"
+        );
+    }
+
+    #[test]
+    fn what_joined_since_the_report_is_read_in_the_providers_tokens() {
+        let slot = CompactionSlot::default();
+        let mut compactor = AgentCompactor::new(slot, 0);
+        let mut messages = conversation(1, 40);
+        compactor.observe(5_000, messages.len());
+        push_round(&mut messages, 1, 4_000);
+        let joined = cost(&messages[messages.len() - 2..]);
+        assert_eq!(
+            compactor.size(&messages, doubling()),
+            5_000 + doubling().correct(joined),
+            "a provider counting twice the estimate counts what joined twice"
+        );
+    }
+
+    #[test]
+    fn a_round_the_estimate_undercounts_is_held_at_the_hard_limit() {
+        // The provider counts twice what the estimate makes of the newest
+        // round: read raw, the next request is under the threshold — sent,
+        // it would fill the window. Read through the session's calibration,
+        // it is past the hard limit, so the agent compacts first.
+        let slot = CompactionSlot::default();
+        let mut messages = conversation(1, 40);
+        let mut compactor = AgentCompactor::new(slot.clone(), 0);
+        compactor.observe(1_000, messages.len());
+        push_round(&mut messages, 1, 8_000);
+        let joined = cost(&messages[messages.len() - 2..]);
+        let window = 1_000 + 2 * joined;
+        assert!(
+            1_000 + joined < soft_threshold(window),
+            "raw, it looks small"
+        );
+        slot.set_policy(Some(CompactionPolicy {
+            calibration: doubling(),
+            ..policy(window)
+        }));
+        let (tx, rx) = channel();
+        let cancel = CancelToken::new();
+        let worker = answer_the_wait(slot.clone(), rx, cancel.clone(), |slot, id| {
+            slot.publish(Handoff {
+                id,
+                head: head(),
+                head_tokens: 30,
+            });
+        });
+        assert_eq!(
+            compactor.before_round(&mut messages, &tx, &cancel),
+            RoundTop::Go
+        );
+        drop(tx);
+        let events = worker.join().expect("the boundary stand-in");
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    StreamEvent::CompactionCheckpoint { .. },
+                    StreamEvent::CompactionWait { .. },
+                    StreamEvent::CompactionApplied { .. },
+                ]
+            ),
+            "{events:?}"
         );
     }
 

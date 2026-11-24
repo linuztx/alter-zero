@@ -634,6 +634,7 @@ impl App {
             window,
             auto: self.settings.auto_compact,
             floor: self.current_floor(),
+            calibration: self.context_meter.calibration(),
         })
     }
 

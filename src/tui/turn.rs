@@ -310,7 +310,14 @@ impl Session<'_> {
             .backend()
             .system_prompt()
             .map_or(0, |prompt| alter_zero::tokens::estimate(&prompt));
-        context::summarization_budget(self.app.context_window(), system)
+        // In the provider's tokens: the request is fitted by the estimate,
+        // which the session's usage reports have calibrated.
+        let calibration = self
+            .app
+            .compaction_policy()
+            .map(|policy| policy.calibration)
+            .unwrap_or_default();
+        context::summarization_budget(self.app.context_window(), system, calibration)
     }
 
     /// Spawn the session backend on `prompt` and hold the turn's cancel token +

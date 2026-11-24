@@ -172,10 +172,12 @@ hard limit.
   pending inputs and before the request goes out). It is the one place that
   knows the request's size exactly when it matters: the provider's own
   count of the last request (its usage frame) plus the estimate of what it
-  appended since — no race with the loop, one count.
+  appended since, read through the session's calibration — no race with the
+  loop, one count.
 - **The boundary decides policy and does the work.** It publishes a
   `CompactionPolicy` — the window, the `/settings` **Auto compact** knob, the
-  last compaction's head (*When compacting cannot help*) — on a shared
+  last compaction's head (*When compacting cannot help*), the calibration
+  the session's usage reports taught (`docs/token-estimate.md`) — on a shared
   `CompactionSlot`, records the checkpoint, runs the summarizer on a thread
   of its own, builds the head the agent splices in, and commits the marker.
 - **`App` holds the state** (`App::background_compaction`, a
@@ -268,7 +270,12 @@ afresh (the system prompt names the process's scratchpad, and the
 ### The hard limit
 
 The agent never sends a request at or past **95% of the window** — the last
-twentieth is the reply's own room. At a round top past it:
+twentieth is the reply's own room. What it appended since its last usage
+report — a tool's output, mostly — it reads through the session's
+calibration, as the gauge does: read raw, a live run on a provider counting
+about twice the estimate put a round top between the threshold and the hard
+limit (18–19k of a 20k window), and the request went out at 21.4k by the
+provider's own count — past the window. At a round top past it:
 
 - with a compaction running, it sends `CompactionWait { id }` once and waits
   for the handoff, polling the turn's `CancelToken` every 20 ms
@@ -311,8 +318,10 @@ derives the same head the agent spliced.
 A summary is most needed exactly when the conversation is too big to send —
 and the summarization request carries the conversation. So it is **fitted**
 first, deterministically (`context::summarization_request` with
-`summarization_budget`: three quarters of the window less the system
-prompt, the last quarter left for the summary itself):
+`summarization_budget`: three quarters of the window in the provider's
+tokens — turned into the estimate's through the session's calibration,
+since the request is measured by the estimate — less the system prompt, the
+last quarter left for the summary itself):
 
 1. the largest tool results are cut in the middle to a common cap no lower
    than 200 tokens — a water level, so the small ones are untouched;
@@ -595,10 +604,11 @@ compaction*.)
 
 - **Subagents never compact** (*Subagents*): a subagent that outgrows its
   window fails on the provider's refusal, as before.
-- The agent measures what it appended since the last usage frame with the
-  raw estimate, not the gauge's calibrated one — a bounded error (the
-  tokenizer ratio, on the newest messages only) that the hard limit's
-  twentieth absorbs.
+- The calibration corrects by at most a factor of two (`docs/token-estimate.md`),
+  and learns only from the session's own usage reports: before the second
+  one, or on a tokenizer counting more than twice the estimate, a round that
+  appends more than the window's last twentieth can still carry a request
+  past the window.
 - The summarizer runs on the session's model beside the agent's own
   requests: on a provider with tight rate limits, a background summary can
   cost the agent a retry.
