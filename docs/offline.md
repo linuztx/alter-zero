@@ -234,12 +234,18 @@ first byte arrives.
   - `App::withdraw_attempt` (the main turn): the streamed reply text (the
     stream itself stays open), a thinking phase the attempt opened —
     dropped, never settled into a `Thought for …` cell — a call it was
-    generating (the `write` preview), the `/compact` summary so far, and
-    the history items the attempt recorded: a run of its text finalised when
-    a phase or a preview opened, and a thought it settled. An attempt records
-    nothing else, and the withdrawal never pops an item of any other kind, so
-    a wrong mark could only ever take back too little. `history_generation`
-    moves with it (the Ctrl+O cache, the rollout's truncation rewrite).
+    generating (the `write` preview), what it added to the `/compact`
+    summary, and the history items the attempt recorded: a run of its text
+    finalised when a phase or a preview opened, and a thought it settled. An
+    attempt records nothing else, and the withdrawal never pops an item of
+    any other kind, so a wrong mark could only ever take back too little.
+    `history_generation` moves with it (the Ctrl+O cache, the rollout's
+    truncation rewrite). The summary is cut back to its length where the
+    attempt began (the mark records it), never emptied, because it runs on
+    across rounds: a summary the output cap cut off goes on in another round
+    (`docs/unfinished-replies.md`), and a retry there keeps what the round
+    before it wrote. Emptying it left the compaction with only the summary's
+    tail.
   - `AgentRun::apply` (a subagent): the same, off the agent's own transcript
     and strip.
   - `agents::RunRecorder` (the subagent's forwarder): the text it was
@@ -252,7 +258,12 @@ first byte arrives.
   (`StreamEvent::is_attempt_output`: a chunk, a thinking event, a call
   fragment). Every round boundary is such an event — a usage frame, the
   round's calls, a tool resolution, a steered message — so a mark can never
-  reach back into an earlier round's cells.
+  reach back into an earlier round's cells. The main session's mark also
+  records the `/compact` summary's length, and a turn start drops any mark
+  left open (`begin_stream`, `begin_compact`). An Esc swaps the channel
+  before the boundary that would close it arrives, and a summary length
+  kept from the compaction it cut short would mark the wrong place in the
+  next one.
 - **The backend leaves an open phase alone.** `stream_round` closed a
   thinking phase after every attempt, failed ones included; it now closes
   one only after a stream that completed. A failed attempt's phase is the
@@ -325,7 +336,9 @@ first byte arrives.
 - `app::tests::turn`: `withdraw_attempt` takes back the streamed reply
   (keeping the stream open), the finalised text and the settled thought the
   attempt recorded (a non-append generation bump), an open thought and a
-  `write` preview, a `/compact` summary, and nothing before any content; it
+  `write` preview, what the attempt added to a `/compact` summary (the
+  summary's earlier rounds kept, whether the later one failed after content
+  or before it), and nothing before any content; it
   never reaches back past a round boundary — even one that recorded nothing
   — and never pops an item an attempt cannot record; a withdrawn thought is
   no snap target for the round's usage frame. `app::tests::agent`:

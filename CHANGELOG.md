@@ -35,6 +35,14 @@ release heading when a version is cut.
     `set -as terminal-features ',<TERM>:clipboard'` to your `~/.tmux.conf`
     (`docs/copy.md`).
 
+- **A compaction keeps its whole summary when the connection drops.** A
+  summary that ran past the model's output limit goes on in a second
+  request. A connection lost during that request used to throw away what
+  the first had written. The compaction (`/compact`, or the automatic one
+  once the context window fills, `-p` runs included) then put only the
+  summary's ending in place of the conversation. A retry now takes back
+  only what the failed request streamed (`docs/offline.md`).
+
 ## [0.20.0] - 2026-11-23
 
 ### Added

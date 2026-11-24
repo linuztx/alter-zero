@@ -482,13 +482,13 @@ fn serve(mut stream: TcpStream, log: &Mutex<Vec<String>>) {
             r#"{"object":"list","data":[{"id":"stub-model"}]}"#.to_string(),
         )
     } else {
-        let attempt = {
+        let dropped = {
             let mut log = log.lock().expect("the log");
             log.push(body.clone());
-            log.iter().filter(|chat| chat.contains(DROP)).count()
+            dropped_deltas(&body, &log)
         };
-        if body.contains(DROP) && attempt == 1 {
-            drop_mid_reply(&mut stream);
+        if let Some(deltas) = dropped {
+            drop_mid_reply(&mut stream, deltas);
             return;
         }
         ("text/event-stream", chat_reply(&body))
@@ -501,33 +501,73 @@ fn serve(mut stream: TcpStream, log: &Mutex<Vec<String>>) {
     let _ = stream.flush();
 }
 
-/// The stand-in's first answer to [`DROP`]: a chunked stream carrying a
-/// thought, two finished lines of a draft and the start of a third — then
+/// What the stand-in streams of a request's reply before it drops it
+/// ([`drop_mid_reply`]), or `None` to answer it whole. It drops the first
+/// sending of two requests and answers each when it is sent again: a
+/// [`DROP`] prompt's (a thought and the start of a draft) and the
+/// continuation of a [`CUT_SUMMARY`] summary ([`SUMMARY_DRAFT`]). `log` holds
+/// every chat request so far, this one included.
+fn dropped_deltas(body: &str, log: &[String]) -> Option<Vec<serde_json::Value>> {
+    let first = |is: fn(&str) -> bool| is(body) && log.iter().filter(|chat| is(chat)).count() == 1;
+    if first(|chat| chat.contains(DROP)) {
+        let thought =
+            serde_json::json!({"role": "assistant", "reasoning_content": DROPPED_THOUGHT});
+        let draft = [
+            "the parser reads tokens.\n",
+            "then it builds a tree.\n",
+            "and then",
+        ]
+        .map(|line| serde_json::json!({"content": format!("{DROPPED_DRAFT}: {line}")}));
+        Some(std::iter::once(thought).chain(draft).collect())
+    } else if first(continues_a_cut_summary) {
+        Some(vec![serde_json::json!({"content": SUMMARY_DRAFT})])
+    } else {
+        None
+    }
+}
+
+/// A reply the stand-in drops: a chunked stream carrying `deltas` — then
 /// the connection closes with no terminating chunk, so the body read fails
 /// the way a reset or timed-out connection's does.
-fn drop_mid_reply(stream: &mut TcpStream) {
-    let frame = |delta: serde_json::Value| {
-        format!(
-            "data: {}\n\n",
-            serde_json::json!({"choices": [{"index": 0, "delta": delta}]})
-        )
-    };
+fn drop_mid_reply(stream: &mut TcpStream, deltas: Vec<serde_json::Value>) {
     let mut response = String::from(
         "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n",
     );
-    let thought = serde_json::json!({"role": "assistant", "reasoning_content": DROPPED_THOUGHT});
-    let draft = [
-        "the parser reads tokens.\n",
-        "then it builds a tree.\n",
-        "and then",
-    ]
-    .map(|line| serde_json::json!({"content": format!("{DROPPED_DRAFT}: {line}")}));
-    for delta in std::iter::once(thought).chain(draft) {
-        let data = frame(delta);
+    for delta in deltas {
+        let data = format!(
+            "data: {}\n\n",
+            serde_json::json!({"choices": [{"index": 0, "delta": delta}]})
+        );
         response.push_str(&format!("{:x}\r\n{data}\r\n", data.len()));
     }
     let _ = stream.write_all(response.as_bytes());
     let _ = stream.flush();
+}
+
+/// Whether a chat request is the continuation of a [`CUT_SUMMARY`]
+/// summary: a summarization (it offers no tools) whose last message is the
+/// note asking for the rest of a reply the output cap cut off.
+fn continues_a_cut_summary(body: &str) -> bool {
+    if !body.contains(CUT_SUMMARY) {
+        return false;
+    }
+    let request: serde_json::Value = serde_json::from_str(body).expect("a JSON request");
+    let offers_tools = request["tools"]
+        .as_array()
+        .is_some_and(|tools| !tools.is_empty());
+    let last = request["messages"]
+        .as_array()
+        .and_then(|messages| messages.last())
+        .map(|message| match &message["content"] {
+            serde_json::Value::String(text) => text.clone(),
+            serde_json::Value::Array(parts) => parts
+                .iter()
+                .filter_map(|part| part["text"].as_str())
+                .collect(),
+            _ => String::new(),
+        })
+        .unwrap_or_default();
+    !offers_tools && last == alter_zero::llm::agent::CUT_OFF_NOTE
 }
 
 /// What a prompt says to make the stand-in delegate, or start a command
@@ -554,6 +594,18 @@ const DROPPED_DRAFT: &str = "Draft one";
 const DROPPED_THOUGHT: &str = "Pondering draft one.";
 /// The whole reply the retried request streams.
 const RETRIED_REPLY: &str = "Second attempt: the whole reply streams once.";
+/// What a conversation says to make its summary stop at the output cap:
+/// the summarization answers [`SUMMARY_HEAD`] with a `length` finish, and
+/// the continuation request that follows (docs/unfinished-replies.md) is
+/// dropped once, after [`SUMMARY_DRAFT`], then answered with
+/// [`SUMMARY_TAIL`].
+const CUT_SUMMARY: &str = "HEADLESS_CUT_SUMMARY";
+/// The summary's first round, cut off at the output cap.
+const SUMMARY_HEAD: &str = "The user ran a command that failed. ";
+/// What the continuation's dropped attempt streamed.
+const SUMMARY_DRAFT: &str = "It exited wi";
+/// The continuation that got through.
+const SUMMARY_TAIL: &str = "It exited with code 3.";
 
 /// The stand-in model's turn. After a tool result it answers `Done.`; to a
 /// user message it makes one call, chosen by what the message says:
@@ -585,7 +637,18 @@ fn chat_reply(body: &str) -> String {
     let offers_tools = request["tools"]
         .as_array()
         .is_some_and(|tools| !tools.is_empty());
-    let frames = if !offers_tools {
+    let frames = if continues_a_cut_summary(body) {
+        vec![
+            serde_json::json!({"choices": [{"delta": {"content": SUMMARY_TAIL}}]}),
+            serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        ]
+    } else if !offers_tools && body.contains(CUT_SUMMARY) {
+        // The summary's first round stops at the output cap.
+        vec![
+            serde_json::json!({"choices": [{"delta": {"content": SUMMARY_HEAD}}]}),
+            serde_json::json!({"choices": [{"delta": {}, "finish_reason": "length"}]}),
+        ]
+    } else if !offers_tools {
         vec![
             serde_json::json!({"choices": [{"delta": {"content": "The user ran a command."}}]}),
             serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
@@ -895,6 +958,59 @@ fn a_reply_whose_connection_drops_reports_only_what_the_retry_streamed() {
             );
         }
     }
+}
+
+/// A summary the output cap cut off goes on in another round
+/// (docs/unfinished-replies.md). A connection lost in that round takes back
+/// what its own attempt streamed and nothing the round before it wrote, so
+/// the compaction a `-c` run makes before its prompt keeps the whole summary
+/// (docs/compact.md).
+#[test]
+fn a_retry_in_a_summarys_second_round_keeps_its_first() {
+    let world = World::new("cut-summary");
+    let stand_in = StandIn::start();
+    let run = |args: &[&str]| {
+        let mut command = world.command(args);
+        stand_in.configure(&world, &mut command);
+        command
+            .env("ALTER_ZERO_CONTEXT_WINDOW", "2000")
+            .stdin(Stdio::null())
+            .output()
+            .expect("the binary runs")
+    };
+    let first = run(&[
+        "-p",
+        "--permission-mode",
+        "master",
+        &format!("{RECORD} {CUT_SUMMARY} run it"),
+    ]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    let second = run(&[
+        "-p",
+        "-c",
+        "--permission-mode",
+        "master",
+        &format!("{RECORD} again"),
+    ]);
+    assert!(second.status.success(), "{}", stderr(&second));
+    let continuations = stand_in
+        .chat_requests()
+        .iter()
+        .filter(|chat| continues_a_cut_summary(chat))
+        .count();
+    assert_eq!(
+        continuations, 2,
+        "the continuation was dropped, then sent again"
+    );
+    let lines = rollout(&world);
+    let summary = lines
+        .iter()
+        .find(|line| line["type"] == "compaction")
+        .unwrap_or_else(|| panic!("the conversation compacted: {lines:#?}"))["payload"]["summary"]
+        .as_str()
+        .expect("a summary")
+        .to_string();
+    assert_eq!(summary, format!("{SUMMARY_HEAD}{SUMMARY_TAIL}"));
 }
 
 // ===== the system prompt flags (docs/system-prompt.md) =====

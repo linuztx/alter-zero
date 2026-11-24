@@ -1873,6 +1873,9 @@ fn stream_event(app: &mut App, event: StreamEvent) {
         StreamEvent::ToolEnd { output, ok, .. } => {
             app.end_tool(&output, ok);
         }
+        // A compact turn's notes never reach its record (`tui::stream`): the
+        // continuation of a cut-off summary only closes its round.
+        StreamEvent::HookNote { .. } if app.is_compacting() => {}
         other => panic!("these tests do not stream {other:?}"),
     }
 }
@@ -2159,6 +2162,92 @@ fn a_retry_restarts_a_compaction_summary() {
     stream_event(&mut app, StreamEvent::Chunk("The whole summary.".into()));
     let compaction = app.finish_compact(3).expect("the summary lands");
     assert_eq!(compaction.summary, "The whole summary.");
+}
+
+/// The note the agent loop sends when a round stopped at the output cap and
+/// the turn goes on in another (docs/unfinished-replies.md).
+fn cut_off_note() -> StreamEvent {
+    StreamEvent::HookNote {
+        label: crate::llm::agent::CUT_OFF_LABEL.to_string(),
+        text: crate::llm::agent::CUT_OFF_NOTE.to_string(),
+        report: None,
+    }
+}
+
+#[test]
+fn a_retry_in_a_later_round_keeps_what_the_summary_already_said() {
+    // A summary the output cap cut off goes on in another round
+    // (docs/unfinished-replies.md), the continuation's note closing the
+    // first. A connection lost in that round takes back only what its own
+    // attempt streamed — never the summary's beginning.
+    let mut app = App::new();
+    app.record_user_message("hello");
+    app.begin_compact(false);
+    stream_event(
+        &mut app,
+        StreamEvent::Chunk("The user ran a command. ".into()),
+    );
+    stream_event(&mut app, cut_off_note());
+    stream_event(&mut app, StreamEvent::Chunk("It exited wi".into()));
+    assert!(
+        !app.withdraw_attempt().anything(),
+        "nothing the user could see went"
+    );
+    stream_event(
+        &mut app,
+        StreamEvent::Chunk("It exited with code 3.".into()),
+    );
+    let compaction = app.finish_compact(3).expect("the summary lands");
+    assert_eq!(
+        compaction.summary,
+        "The user ran a command. It exited with code 3."
+    );
+}
+
+#[test]
+fn a_retry_before_a_later_rounds_first_byte_leaves_the_summary_alone() {
+    // The next round's request was refused before it streamed anything (a
+    // `503`): that attempt has nothing to take back, and the summary the
+    // round before it wrote stands.
+    let mut app = App::new();
+    app.record_user_message("hello");
+    app.begin_compact(false);
+    stream_event(
+        &mut app,
+        StreamEvent::Chunk("The user ran a command. ".into()),
+    );
+    stream_event(&mut app, cut_off_note());
+    assert_eq!(app.withdraw_attempt(), Withdrawn::default());
+    stream_event(
+        &mut app,
+        StreamEvent::Chunk("It exited with code 3.".into()),
+    );
+    let compaction = app.finish_compact(3).expect("the summary lands");
+    assert_eq!(
+        compaction.summary,
+        "The user ran a command. It exited with code 3."
+    );
+}
+
+#[test]
+fn a_mark_an_interrupted_turn_left_open_never_reaches_into_the_next() {
+    // An Esc swaps the channel, so the round boundary that would close the
+    // attempt's mark never arrives: the next turn starts a mark of its own.
+    // A summary floor kept from the compaction the Esc cut short would
+    // take back too little of the next one's attempt.
+    let mut app = App::new();
+    app.record_user_message("hello");
+    app.begin_compact(false);
+    stream_event(&mut app, StreamEvent::Chunk("Part one. ".into()));
+    stream_event(&mut app, cut_off_note());
+    stream_event(&mut app, StreamEvent::Chunk("Part two dr".into()));
+    let _ = app.interrupt_turn(0).expect("an interrupt outcome");
+    app.begin_compact(false);
+    stream_event(&mut app, StreamEvent::Chunk("Fresh.".into()));
+    let _ = app.withdraw_attempt();
+    stream_event(&mut app, StreamEvent::Chunk("A fresh summary.".into()));
+    let compaction = app.finish_compact(2).expect("the summary lands");
+    assert_eq!(compaction.summary, "A fresh summary.");
 }
 
 #[test]

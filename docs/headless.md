@@ -510,7 +510,9 @@ installed before bootstrap starts any server, and the shutdown is bounded
   again and reported as the retry streamed it, in `text`, `json` and
   `stream-json`, quiet and with `--verbose`, and in the rollout. None of
   them shows the dropped attempt's thought or draft (`docs/offline.md` *A
-  connection lost mid-reply*).
+  connection lost mid-reply*). A summary the output cap cut off, whose
+  continuation drops the same way, keeps its first round in the compaction
+  a `-c` run makes before its prompt.
 - `scripts/smoke.sh` Phase 153: `alter-zero -p --verbose` from a tmux pane —
   the log and the answer on the terminal, its modes unchanged (`stty -g`), and none
   of the TUI's escapes in the raw byte stream (no DSR, no alternate screen,
