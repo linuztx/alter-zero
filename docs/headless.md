@@ -427,7 +427,9 @@ codex's item stream, closed by the result:
 - **Nothing is ever printed that the session later takes back**: a reply
   attempt a lost connection voids is withdrawn from the history
   (`docs/offline.md`), so items past `App::settled_history_len` — what such a
-  retry could still withdraw — wait until the attempt ends.
+  retry could still withdraw — wait until the attempt ends. Since nothing of
+  an attempt is printed before it ends, a client never has anything to
+  discard when a request is retried: nothing it has read is ever withdrawn.
 - A turn ends in `turn.completed` (its summary's duration and tokens) or
   `turn.failed`; an interrupted run still ends in a `result` — codex's
   missing terminal event.

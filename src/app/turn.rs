@@ -576,9 +576,10 @@ impl App {
     /// Note where the reply attempt now streaming began — the boundary calls
     /// this with **every** reply event, before folding it. The first piece of
     /// [attempt output] since an event of any other kind marks the history's
-    /// length there; any other event closes the mark, because each one is a
-    /// boundary an attempt cannot span — a usage frame, the round's calls, a
-    /// tool resolving, a steered message, the turn's end. A
+    /// length there, and the `/compact` summary's; any other event closes the
+    /// mark, because each one is a boundary an attempt cannot span — a usage
+    /// frame, the round's calls, a tool resolving, a steered message, the
+    /// continuation asked of a cut-off reply, the turn's end. A
     /// [`Retrying`](crate::stream::StreamEvent::Retrying) leaves it for
     /// [`withdraw_attempt`](App::withdraw_attempt) to take
     /// (`docs/offline.md` *A connection lost mid-reply*).
