@@ -208,7 +208,9 @@ byte is still worth reading.
    `--continue`d conversation already past its window compacts first: the
    TUI's idle-boundary auto-compaction (`docs/compact.md`), run once before
    the prompt and afterwards only while the run waits on its subagents —
-   never after the last answer, where it would only cost a request.
+   never after the last answer, where it would only cost a request. A turn
+   that outgrows the window *while it runs* compacts in the background, as
+   in the TUI (`docs/compact.md` *Background compaction*).
 6. **The loop runs until the session is idle**: no turn in flight, nothing
    queued, no subagent running. A background agent's completion starts the
    follow-up turn the TUI would start, so "launch the critic agent, write a
@@ -422,8 +424,11 @@ codex's item stream, closed by the result:
   item's fields, and a second one would be a duplicate key — codex's
   `web_search` items carry exactly that bug.
 - A tool call is **started** when it starts and **completed** when it
-  resolves, under one id; everything else appears once, whole — there are no
-  deltas, codex's rule.
+  resolves, under one id, and so is a **background compaction**: started
+  (`"status":"in_progress"`) at the agent's checkpoint, **updated**
+  (`item.updated`, `"status":"summarized"`) when its summary is handed to the
+  agent, completed where its marker lands (`docs/compact.md` *Headless*);
+  everything else appears once, whole — there are no deltas, codex's rule.
 - **Nothing is ever printed that the session later takes back**: a reply
   attempt a lost connection voids is withdrawn from the history
   (`docs/offline.md`), so items past `App::settled_history_len` — what such a

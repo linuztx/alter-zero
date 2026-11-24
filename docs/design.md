@@ -342,11 +342,17 @@ which Ctrl+V reads the clipboard from.
   `/compact` → `Compact` idle (codex's manual context
   compaction — a summarization turn whose invisible reply becomes the
   append-only `HistoryItem::Compaction` marker the context derivation bridges
-  from; mid-turn a `Toast(COMPACT_BUSY_NOTICE)`, an empty context a
-  `Toast(COMPACT_EMPTY_NOTICE)` — see `docs/compact.md`, `smoke.sh`
-  Phase 50; with the model's context window known the footer carries a
-  `{used}/{window} ({pct}%)` gauge and the loop **auto-compacts** past codex's 90%
-  threshold, the cell tagged `· auto` — Phase 51), and `/context` →
+  from; mid-turn `CompactInBackground`, a checkpoint the running agent takes
+  at its next round top, a `Toast(COMPACT_BUSY_NOTICE)` while one already
+  runs, an empty context a `Toast(COMPACT_EMPTY_NOTICE)` — see
+  `docs/compact.md`, `smoke.sh` Phase 50; with the model's context window
+  known the footer carries a `{used}/{window} ({pct}%)` gauge and the loop
+  **auto-compacts** past codex's 90% threshold, the cell tagged `· auto` —
+  Phase 51 — between turns, and **in the background** during one: the lead
+  agent checkpoints at a round top, keeps working while the summary is
+  written, splices it in at a later round top and never sends past 95% of
+  the window — `docs/compact.md` *Background compaction*, Phase 170), and
+  `/context` →
   `OpenContextUsage` idle or mid-turn (the read-only page that breaks the
   window down by what fills it and reports the provider's tokens in/out and
   cache hit, kept live by the boundary — see `docs/context-usage.md`,

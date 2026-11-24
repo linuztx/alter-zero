@@ -33,7 +33,10 @@ there" and fades it after a few seconds.
 | `/login` write fails | `Couldn't write {path}: {e}` | error |
 | `/resume` run mid-turn | `/resume is disabled while a task is in progress` | info |
 | `/init` run mid-turn | `/init is disabled while a task is in progress` | info |
-| `/compact` run mid-turn | `/compact is disabled while a task is in progress` | info |
+| `/compact` run mid-turn | `Compacting in the background — the agent keeps working` | info |
+| `/compact` while a compaction runs | `A compaction is already running` | info |
+| a background compaction's summary fails | `Compaction failed — the agent keeps working: {reason}` | error |
+| a compaction whose head alone fills the threshold | `Compacting can't get under the {n} threshold: …` | error |
 | `/compact` with an empty context | `Nothing to compact` | info |
 
 The original rows (`/copy`, `/model`, `/login`, `/resume`, and the retired
@@ -93,8 +96,10 @@ pub struct Toast { pub text: String, pub kind: ToastKind }
 nothing lingering.
 
 The slash-command dispatch returns `Action::Toast(String)` for the palette's
-soft rejections — the mid-turn busy notices (`/resume`, `/init`, `/compact`)
-and the commands that find nothing to act on yet: `/compact`'s
+soft rejections — the mid-turn busy notices (`/resume`, `/init`, a second
+`/compact` while one runs; a first one mid-turn is handed to the running
+agent, `docs/compact.md` *Background compaction*) and the commands that find
+nothing to act on yet: `/compact`'s
 `Nothing to compact`, `/export`'s `Nothing to export` and `/copy`'s
 `No agent response to copy`. The boundary shows every `Action::Toast` as an
 info toast, so a pure-core rejection can never come out red. Every other

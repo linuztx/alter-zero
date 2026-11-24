@@ -3171,8 +3171,11 @@ model's handoff summary invisibly into `App::compact_buffer`,
 `finish_compact` appends a `HistoryItem::Compaction` marker — the transcript,
 recorder, checkpoint keys, and backtrack all untouched — and
 `context::context_messages` derives codex's compacted shape from the *last*
-marker: the 20k-approx-token budget of recent user texts + the
-`SUMMARY_PREFIX\n{summary}` bridge in place of everything before it, the
+marker: the recent user texts — a tenth of the window, at most codex's 20k
+approx tokens, the budget **recorded on the marker** (`user_budget`,
+`context::compact_user_budget`) so a later window derives the same head — +
+the `SUMMARY_PREFIX\n{summary}` bridge in place of everything the marker
+covers, the
 `● Context compacted · {before} → {after} tokens` cell the visible record;
 with the model's **context window** known — `/v1/models` `context_length`
 via `ModelEntry::context`, persisted in `config.json`, overridable via
@@ -3186,8 +3189,41 @@ included — `tokens::ContextMeter`,
 `docs/token-estimate.md`; **inside an agent
 session view it is the viewed agent's own** — `AgentRun::context_used` /
 `App::context_gauge`, `docs/agent-context-gauge.md`) and the loop **auto-runs** the
-same turn past codex's 90% threshold (`App::should_auto_compact`, one
-attempt per user turn, the cell tagged `· auto`)) in `docs/compact.md`; and
+same turn past codex's 90% threshold between turns (`App::should_auto_compact`,
+never twice over an unchanged history — `compact_watermark` — the cell tagged
+`· auto`); and **mid-turn it compacts in the background**
+(`docs/compact.md` *Background compaction*): the lead agent decides *when* at
+every round top through the `llm::compaction::RoundTopSeam` that
+`llm::agent::run_agent_with` consults after the pending inputs — its size the
+last usage frame plus the estimate of what it appended since — taking a
+**checkpoint** past 90% (`StreamEvent::CompactionCheckpoint { id }`, in
+channel order, so the boundary appends an invisible
+`HistoryItem::CompactionCut { id }` exactly where the agent's snapshot ends
+and starts the summarizer over the history up to it on a thread and channel of
+its own, `tui::compaction`) and **keeps working**; the summary done, the
+boundary publishes the head — `context::compacted_head`, the derivation's own
+function, so the agent's list and every later derivation agree by
+construction — on the shared `CompactionSlot`, the agent splices `[system] +
+head + messages[n..]` at its next round top (`CompactionApplied`) and the
+marker lands there naming its cut (`Compaction::cut`), the rounds since
+deriving verbatim and the cell committing mid-turn; at **95%** the agent never
+sends — it waits for the summary (`CompactionWait`, polling the cancel token
+every 20 ms) or forces one, and ends the turn on an error only when the
+provider's own count is past the window and nothing can help; the
+summarization request is **fitted** to three quarters of the window
+(`context::summarization_request` — largest tool results cut, oldest rounds
+dropped whole, user texts cut) and a background one the provider refuses as
+too long is resent smaller, twice at most; chained summaries close on
+`prompts/compact_chain_note.md`; never a loop — no checkpoint before a round
+has run, one at a time, none over a snapshot whose summary failed, and none
+once the last head alone (`CompactionPolicy::floor`) fills the threshold;
+`/compact` mid-turn asks for a checkpoint instead of being refused; a turn
+that ends mid-summary lands a finished one at the history's end and adopts an
+unfinished one as the session's own compact turn; Esc and `/clear` stop the
+summarizer, no marker; the summarizer's usage goes to the session ledger and a
+`compact: true` rollout line, never the turn's tally or the gauge; headless
+reports it as a stream-json `compaction` item; subagents run the
+`NoCompaction` seam; `smoke.sh` Phase 170) in `docs/compact.md`; and
 the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
 `ALTER_ZERO_*` environment variables — plus a hard-coded `retry::MAX_RETRIES`,
 a hard-coded `agent::MAX_TOOL_ITERATIONS`, and an always-on auto-compaction —
@@ -3804,8 +3840,9 @@ mode; see `docs/shell-command.md` and `docs/queue.md`); plus a **transient toast
 above the box's top rule* (`App::toast`/`ui::toast_rows`/`toast_line`, threaded
 beside `queued_rows`; dim for info, red for errors). It's raised for
 confirmations and soft rejections the user should see but never keep — `/copy`
-(`Copied last message to clipboard`), a model switch, a mid-turn `/resume`/`/compact`
-rejection — instead of committing a scrollback bullet; it never enters `history`,
+(`Copied last message to clipboard`), a model switch, a mid-turn `/resume`
+rejection, a `/compact` handed to the running agent — instead of committing a
+scrollback bullet; it never enters `history`,
 and its expiry is timed at the boundary (`Session::toast_deadline` +
 `Session::toast`, the timestamp pattern, cleared in the draw tick). See
 `docs/toast.md`; plus a one-row
@@ -4356,7 +4393,7 @@ a minute while it is read says so; `smoke.sh` Phase 155.
 an `AGENTS.md` contributor guide, never overwriting an existing one) submitted as
 a regular user turn — echoed as the `❯` message, recorded, checkpointed — that
 the model's agentic tool loop answers by exploring the repo and writing the file;
-mid-turn it is rejected with a `Toast` like `/compact` (codex's
+mid-turn it is rejected with a `Toast` like `/resume` (codex's
 `available_during_task = false`), it never records into the ↑-recall history,
 and an Esc-undo of the turn restores the literal `/init` (palette reopened),
 not the prompt. **The generated guide feeds back into the model's context**
@@ -4385,8 +4422,10 @@ turn on a one-off tools-free `LlmBackend::configure(cfg, system_prompt,
 false)` (the dummy scripts a text-only summary), the reply diverts into
 `App::compact_buffer` (never rendered), and `StreamDone` appends the
 `HistoryItem::Compaction` marker + commits the cyan `● Context compacted`
-cell; mid-turn it is rejected with a `Toast` like `/resume`, an empty derived
-context with `Nothing to compact` (`smoke.sh` Phase 50)).
+cell; mid-turn it asks the running agent for a checkpoint at its next round
+top instead (`Action::CompactInBackground`, a `Compacting in the background —
+the agent keeps working` toast; `docs/compact.md` *Background compaction*), an
+empty derived context is a `Nothing to compact` toast (`smoke.sh` Phase 50)).
 **`/clear` mid-turn is a kill**, not codex's
 "disabled while a task is in progress" rejection: `App::clear_conversation`
 wipes history, the streaming buffer, the running tool, the status, and the
