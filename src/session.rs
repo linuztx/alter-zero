@@ -109,6 +109,13 @@ enum ItemRecord {
     /// stays compacted. Old builds skip the unknown record type (and see the
     /// full uncompacted context — the graceful degradation).
     Compaction(CompactionRecord),
+    /// Where a background compaction's summary stops covering the
+    /// conversation — the checkpoint the running agent took
+    /// (`docs/compact.md`), named by the marker that lands later. Old builds
+    /// skip the unknown record type; they read the marker after it as
+    /// covering everything before itself, which loses only the verbatim
+    /// rounds between the two from *their* derivation.
+    CompactionCut(CompactionCutRecord),
     /// A resolved subagent group (`docs/agent-tool.md`). Old builds skip the
     /// unknown record type (the forward-compatibility contract).
     AgentGroup(AgentGroupRecord),
@@ -505,6 +512,23 @@ struct CompactionRecord {
     /// `serde(default)`ed like the gauge counts, 0 meaning unknown.
     #[serde(default, skip_serializing_if = "is_zero")]
     secs: u64,
+    /// The id of the cut the summary's coverage ends at — absent for one
+    /// that covers everything before the marker, which is every line a
+    /// build from before background compaction wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cut: Option<u64>,
+    /// The recent-user-message budget the derivation applies — 0, and
+    /// absent, for codex's fixed one.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    user_budget: u64,
+}
+
+/// A [`crate::app::CompactionCut`] on disk: its id and its stamp.
+#[derive(Serialize, Deserialize)]
+struct CompactionCutRecord {
+    id: u64,
+    #[serde(default)]
+    timestamp: String,
 }
 
 /// `skip_serializing_if` helper for the gauge counts' 0-means-unknown default.
@@ -836,6 +860,12 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             after: compaction.after,
             auto: compaction.auto,
             secs: compaction.secs,
+            cut: compaction.cut,
+            user_budget: compaction.user_budget,
+        }),
+        HistoryItem::CompactionCut(cut) => ItemRecord::CompactionCut(CompactionCutRecord {
+            id: cut.id,
+            timestamp: cut.timestamp.clone(),
         }),
         // The recorder mirrors history append-only, so a background entry's
         // later completion update (`App::settle_agent_completion`) never
@@ -1184,6 +1214,14 @@ fn push_history_item(items: &mut Vec<HistoryItem>, record: ItemRecord) {
                 after: compaction.after,
                 auto: compaction.auto,
                 secs: compaction.secs,
+                cut: compaction.cut,
+                user_budget: compaction.user_budget,
+            }));
+        }
+        ItemRecord::CompactionCut(cut) => {
+            items.push(HistoryItem::CompactionCut(crate::app::CompactionCut {
+                id: cut.id,
+                timestamp: cut.timestamp,
             }));
         }
         ItemRecord::Reasoning(reasoning) => {
@@ -1530,6 +1568,7 @@ mod tests {
             after: 2_100,
             auto: true,
             secs: 36,
+            ..crate::app::Compaction::default()
         });
         let line = item_line(&item, "t");
         let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
@@ -1755,6 +1794,53 @@ mod tests {
     }
 
     #[test]
+    fn a_background_compactions_cut_and_marker_round_trip() {
+        // A compaction that ran while the agent worked: its cut is a line of
+        // its own, and the marker names it by id beside the user-message
+        // budget it was derived with (docs/compact.md).
+        let items = vec![
+            HistoryItem::CompactionCut(crate::app::CompactionCut {
+                id: 42,
+                timestamp: "03:20 PM".into(),
+            }),
+            HistoryItem::Compaction(crate::app::Compaction {
+                summary: "we did the thing".into(),
+                timestamp: "03:21 PM".into(),
+                before: 46_000,
+                after: 9_800,
+                auto: true,
+                secs: 12,
+                cut: Some(42),
+                user_budget: 5_000,
+            }),
+        ];
+        let cut_line: serde_json::Value =
+            serde_json::from_str(&item_line(&items[0], "t")).expect("valid JSON");
+        assert_eq!(cut_line["type"], "compaction_cut");
+        assert_eq!(cut_line["payload"]["id"], 42);
+        let marker_line: serde_json::Value =
+            serde_json::from_str(&item_line(&items[1], "t")).expect("valid JSON");
+        assert_eq!(marker_line["payload"]["cut"], 42);
+        assert_eq!(marker_line["payload"]["user_budget"], 5_000);
+        let (_, parsed) = parse_session(&file_of(&items)).expect("parses");
+        assert_eq!(parsed, items);
+    }
+
+    #[test]
+    fn an_idle_compaction_line_keeps_its_old_shape() {
+        // No cut and no budget recorded: the line is byte-for-byte what a
+        // build from before background compaction wrote.
+        let item = HistoryItem::Compaction(crate::app::Compaction {
+            summary: "s".into(),
+            ..crate::app::Compaction::default()
+        });
+        let value: serde_json::Value =
+            serde_json::from_str(&item_line(&item, "t")).expect("valid JSON");
+        assert!(value["payload"].get("cut").is_none(), "{value}");
+        assert!(value["payload"].get("user_budget").is_none(), "{value}");
+    }
+
+    #[test]
     fn a_compaction_line_without_token_info_parses_with_defaults() {
         // Rollouts written before the gauge fields still load (the
         // forward-compatibility contract) — counts default to 0, auto false,
@@ -1770,6 +1856,9 @@ mod tests {
         assert_eq!((compaction.before, compaction.after), (0, 0));
         assert!(!compaction.auto);
         assert_eq!(compaction.secs, 0);
+        // …and covers everything before it under codex's fixed budget.
+        assert_eq!(compaction.cut, None);
+        assert_eq!(compaction.user_budget, 0);
     }
 
     #[test]

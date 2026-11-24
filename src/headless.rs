@@ -198,6 +198,7 @@ fn trails_an_answer(item: &HistoryItem) -> bool {
     match item {
         HistoryItem::Summary(_)
         | HistoryItem::Compaction(_)
+        | HistoryItem::CompactionCut(_)
         | HistoryItem::Background(_)
         | HistoryItem::AgentNotice(_)
         | HistoryItem::Reasoning(_) => true,
@@ -817,6 +818,8 @@ impl Reporter {
             | HistoryItem::AgentNotice(_)
             | HistoryItem::Reasoning(_)
             | HistoryItem::Compaction(_) => trailing_line(item).into_iter().collect(),
+            // A position, not an event: nothing to log (docs/compact.md).
+            HistoryItem::CompactionCut(_) => Vec::new(),
         }
     }
 
@@ -947,7 +950,11 @@ fn item_body(item: &HistoryItem) -> Option<ItemBody<'_>> {
             label: &note.label,
             text: &note.text,
         },
-        HistoryItem::Tool(_) | HistoryItem::Summary(_) => return None,
+        // A compaction's cut is a position in the history, not an event of
+        // the run: the compaction itself is reported when it lands.
+        HistoryItem::Tool(_) | HistoryItem::Summary(_) | HistoryItem::CompactionCut(_) => {
+            return None;
+        }
     })
 }
 
@@ -1676,6 +1683,7 @@ mod tests {
             after: 900,
             auto: true,
             secs: 4,
+            ..crate::app::Compaction::default()
         })
     }
 

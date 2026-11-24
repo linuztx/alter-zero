@@ -87,6 +87,11 @@ pub enum HistoryItem {
     /// the earlier items. Appended (never a rewrite), so the transcript, the
     /// recorder, and the checkpoint keys are untouched.
     Compaction(Compaction),
+    /// Where a background compaction's summary stops covering the
+    /// conversation — the checkpoint the running agent took
+    /// (`docs/compact.md`). Invisible everywhere; the [`Compaction`] marker
+    /// that lands later names it by id.
+    CompactionCut(CompactionCut),
     /// What the **lifecycle hooks** put into the conversation mid-turn, and
     /// what they said (`docs/hooks.md`) — a `Stop` block's continuation
     /// feedback, a `UserPromptSubmit`/`SessionStart` hook's additional

@@ -365,6 +365,16 @@ fn transcript_item_into<R: RowSink>(
             page.push_rows(compaction_full_lines(c, width));
             ItemCells::One { header: 1 }
         }
+        // A compaction's cut is a position, not a cell: it puts down no rows,
+        // not even a spacer (docs/compact.md).
+        HistoryItem::CompactionCut(_) => {
+            return ItemShape {
+                rows: 0,
+                user_rows: None,
+                content: 0,
+                cells: ItemCells::None,
+            };
+        }
         // The transcript is where a thought's whole chain-of-thought lives —
         // inline it is the one collapsed line (docs/thinking-stream.md).
         HistoryItem::Reasoning(r) => {

@@ -106,6 +106,9 @@ impl App {
             after: 0,
             auto: self.compact_auto,
             secs: elapsed_secs,
+            cut: None,
+            user_budget: u64::try_from(crate::context::compact_user_budget(self.context_window))
+                .unwrap_or(u64::MAX),
         };
         self.history
             .push(HistoryItem::Compaction(compaction.clone()));
@@ -337,7 +340,14 @@ pub(crate) fn message_tokens(
 /// context derivation bridges into every later request, codex's local
 /// compaction (`docs/compact.md`). Renders as the `● Context compacted` cell
 /// (the summary body expands in the Ctrl+O transcript only).
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// What the summary covers is everything before its [`cut`](Self::cut) — or,
+/// with no cut, everything before the marker itself: a compaction that ran
+/// while the agent kept working summarized the conversation as it stood at
+/// its checkpoint, and the rounds the agent ran meanwhile stay verbatim
+/// between the cut and the marker (`docs/compact.md` *Background
+/// compaction*).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Compaction {
     /// The compact turn's full streamed reply — the handoff summary (may be
     /// empty when the model streamed nothing; the derivation substitutes
@@ -359,4 +369,34 @@ pub struct Compaction {
     /// ` · {elapsed}` clause ([`format_elapsed`]-humanized). 0 = unknown (an
     /// old rollout), hiding the clause.
     pub secs: u64,
+    /// The id of the [`CompactionCut`] the summary's coverage ends at — the
+    /// checkpoint a running agent took — or `None` when it covers everything
+    /// before the marker (an idle compaction, and every marker recorded
+    /// before background compaction). A cut the history no longer holds
+    /// reads as `None`. See `docs/compact.md` *Where a summary's coverage
+    /// ends*.
+    pub cut: Option<u64>,
+    /// The budget, in approximate tokens, of the recent typed user messages
+    /// the derivation keeps ahead of the summary bridge — scaled to the
+    /// window the compaction ran under ([`crate::context::compact_user_budget`])
+    /// and recorded so the derivation stays a pure function of the history.
+    /// 0 = recorded before the field: codex's fixed 20 000.
+    pub user_budget: u64,
+}
+
+/// Where a background compaction's summary stops covering the conversation
+/// (`docs/compact.md` *Where a summary's coverage ends*): appended to the
+/// history the moment the running agent takes its checkpoint, so everything
+/// before it is exactly the snapshot the summarizer reads, and named by the
+/// [`Compaction`] marker that lands later by its [`id`](Self::id) — a
+/// reference no skipped rollout line or truncation can shift, where an index
+/// could. Invisible: it renders nothing, derives nothing and is recorded as
+/// its own rollout line. One whose compaction never landed (an Esc, a failed
+/// summary) is inert.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CompactionCut {
+    /// The checkpoint's id, the one its marker names.
+    pub id: u64,
+    /// Wall-clock stamp (recorded like every item's; never displayed).
+    pub timestamp: String,
 }

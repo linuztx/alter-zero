@@ -2405,6 +2405,7 @@ fn a_completion_pending_at_turn_end_records_above_the_summary() {
             HistoryItem::AgentGroup(_) => "agent_group",
             HistoryItem::AgentNotice(_) => "agent_notice",
             HistoryItem::Compaction(_) => "compaction",
+            HistoryItem::CompactionCut(_) => "compaction_cut",
             HistoryItem::Reasoning(_) => "reasoning",
             HistoryItem::TaskCall(_) => "task_call",
             HistoryItem::HookNote(_) => "hook_note",

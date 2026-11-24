@@ -87,6 +87,7 @@ fn set_clock_stamps_every_recorded_message_and_tool() {
             HistoryItem::AgentGroup(g) => &g.timestamp,
             HistoryItem::AgentNotice(n) => &n.timestamp,
             HistoryItem::Compaction(c) => &c.timestamp,
+            HistoryItem::CompactionCut(c) => &c.timestamp,
             HistoryItem::Reasoning(r) => &r.timestamp,
             HistoryItem::TaskCall(t) => &t.timestamp,
             HistoryItem::HookNote(n) => &n.timestamp,

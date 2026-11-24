@@ -279,16 +279,13 @@ impl Session<'_> {
         // tools-free backend, so naming a `skill` tool it was never given is
         // the very inconsistency the listing's gate exists to prevent — and
         // the handoff summary has no use for the roster either
-        // (`docs/skills.md`).
-        let mut compact_context = context::context_messages_full(
+        // (`docs/skills.md`). Fitted to the window, so the summarization
+        // request itself can never overflow it (docs/compact.md).
+        let compact_context = context::summarization_request(
             self.app.user_instructions.as_deref(),
-            None,
             &self.app.history,
+            self.summarization_budget(),
         );
-        compact_context.push(context::ContextMessage::new(
-            context::ContextRole::User,
-            context::SUMMARIZATION_PROMPT,
-        ));
         let spawn_on: &dyn ReplySource = match compact_backend.as_ref() {
             Some(one_off) => one_off,
             None => self.models.backend(),
@@ -301,6 +298,19 @@ impl Session<'_> {
             cancel.clone(),
         );
         self.inflight = Some((cancel, handle));
+    }
+
+    /// The estimated tokens a summarization request may cost under the
+    /// session's window, less the system prompt the summarizer is sent beside
+    /// it (`context::summarization_budget`, docs/compact.md) — `None` with no
+    /// window known.
+    pub(crate) fn summarization_budget(&self) -> Option<usize> {
+        let system = self
+            .models
+            .backend()
+            .system_prompt()
+            .map_or(0, |prompt| alter_zero::tokens::estimate(&prompt));
+        context::summarization_budget(self.app.context_window(), system)
     }
 
     /// Spawn the session backend on `prompt` and hold the turn's cancel token +

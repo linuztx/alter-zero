@@ -75,8 +75,9 @@ pub fn conversation_lines(
         match item {
             // A task tool call renders NOTHING inline — no cell, no spacer:
             // the live checklist is its display, and the record expands only
-            // in the Ctrl+O transcript (docs/task-tools.md).
-            HistoryItem::TaskCall(_) => continue,
+            // in the Ctrl+O transcript (docs/task-tools.md). A compaction's
+            // cut is a position, never shown anywhere (docs/compact.md).
+            HistoryItem::TaskCall(_) | HistoryItem::CompactionCut(_) => continue,
             // What the hooks said is their `● Ran 1 Stop hook` cell; a
             // note no hook said anything about — a continuation prompt, a
             // note recorded before reports — is cell-less inline, the Ctrl+O

@@ -30,9 +30,39 @@ pub const SUMMARIZATION_PROMPT: &str = include_str!("../prompts/compact_prompt.m
 /// followed by a newline and the marker's summary. See `docs/compact.md`.
 pub const SUMMARY_PREFIX: &str = include_str!("../prompts/compact_summary_prefix.md");
 
+/// The note a **chained** compaction's summarization prompt closes on
+/// (`prompts/compact_chain_note.md`): the snapshot already holds an earlier
+/// summary's bridge, and the new summary replaces it — so the summarizer is
+/// told to carry over what still matters rather than summarize only what
+/// came after. See `docs/compact.md` *Chained compactions*.
+pub const COMPACT_CHAIN_NOTE: &str = include_str!("../prompts/compact_chain_note.md");
+
 /// Codex's `COMPACT_USER_MESSAGE_MAX_TOKENS`: the approx-token budget for the
-/// recent user messages replayed before the bridge after a `/compact`.
+/// recent user messages replayed before the bridge after a `/compact` — the
+/// budget a marker recorded before [`compact_user_budget`] existed derives
+/// with, and the cap that scaled budget never exceeds.
 const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
+
+/// The share of the context window the recent user messages may take after a
+/// compaction, as its denominator: a tenth. Codex's fixed 20 000 is a tenth
+/// of a 200k window; on a 50k one it would be 40% of the window before the
+/// summary or a single round, and the compacted context would land right
+/// back over the threshold.
+const COMPACT_USER_WINDOW_SHARE: usize = 10;
+
+/// The budget, in approximate tokens, for the recent typed user messages a
+/// compaction keeps ahead of its summary bridge — a tenth of the window, never
+/// more than codex's 20 000, and codex's 20 000 when the window is unknown.
+/// Recorded on the marker ([`crate::app::Compaction::user_budget`]) so the
+/// derivation stays a pure function of the history whatever the window does
+/// later. See `docs/compact.md` *Small windows*.
+#[must_use]
+pub fn compact_user_budget(window: Option<u64>) -> usize {
+    window.map_or(COMPACT_USER_MESSAGE_MAX_TOKENS, |window| {
+        (usize::try_from(window).unwrap_or(usize::MAX) / COMPACT_USER_WINDOW_SHARE)
+            .min(COMPACT_USER_MESSAGE_MAX_TOKENS)
+    })
+}
 
 /// Codex's `APPROX_BYTES_PER_TOKEN` — the byte↔token heuristic the budget
 /// uses (not the app's token estimate: the walk runs at every turn start and must
@@ -497,8 +527,11 @@ pub fn derives_conversation(history: &[HistoryItem]) -> bool {
         HistoryItem::HookNote(note) => !note.text.is_empty(),
         // One `agent` call per entry — an entryless group derives nothing.
         HistoryItem::AgentGroup(group) => !group.agents.is_empty(),
-        // TUI chrome / private chain-of-thought — never conversation.
-        HistoryItem::Summary(_) | HistoryItem::Reasoning(_) => false,
+        // TUI chrome / private chain-of-thought / a position — never
+        // conversation.
+        HistoryItem::Summary(_) | HistoryItem::Reasoning(_) | HistoryItem::CompactionCut(_) => {
+            false
+        }
     })
 }
 
@@ -606,32 +639,271 @@ pub fn context_messages_with(
 /// holds — the compaction split, then the per-item mapping.
 fn derive_history_into(out: &mut Derived, history: &[HistoryItem]) {
     // A `/compact` marker (docs/compact.md): the *last* one wins, and
-    // everything before it derives as codex's compacted shape — the budgeted
-    // recent user texts, then the summary bridge — with the items after it
-    // deriving normally. Earlier markers sit before the last one, so a prior
-    // compaction's summary is structurally excluded (only real user texts
-    // collect); codex needs an `is_summary_message` prefix check for the same
-    // exclusion because its summaries are plain user messages.
-    if let Some(cut) = history
+    // everything before its **cut** derives as codex's compacted shape — the
+    // budgeted recent user texts, then the summary bridge — with everything
+    // from the cut on deriving normally: the rounds a running agent took
+    // while the summary was written (between the cut and the marker), then
+    // whatever came after the marker. A marker with no cut covers everything
+    // before itself. Earlier markers sit before the last one's cut, so a
+    // prior compaction's summary is structurally excluded (only real user
+    // texts collect; the new summary was written from a snapshot holding the
+    // old bridge, so it carries what still mattered); codex needs an
+    // `is_summary_message` prefix check for the same exclusion because its
+    // summaries are plain user messages.
+    if let Some(at) = history
         .iter()
         .rposition(|item| matches!(item, HistoryItem::Compaction(_)))
     {
-        let HistoryItem::Compaction(compaction) = &history[cut] else {
+        let HistoryItem::Compaction(compaction) = &history[at] else {
             unreachable!("rposition matched a Compaction");
         };
-        for text in budgeted_user_texts(&history[..cut], COMPACT_USER_MESSAGE_MAX_TOKENS) {
-            push_user_text(out, text, vec![], TextOrigin::Typed);
-        }
-        push_user_text(
+        let cut = cut_position(history, at, compaction.cut);
+        push_compacted_head(
             out,
-            summary_bridge(&compaction.summary),
-            vec![],
-            TextOrigin::Summary,
+            &history[..cut],
+            &compaction.summary,
+            marker_user_budget(compaction),
         );
-        derive_into(out, &history[cut + 1..]);
+        // One walk over the verbatim tail and what follows the marker, so the
+        // call ids it hands out stay unique across both — the marker between
+        // them derives nothing.
+        derive_into(out, &history[cut..]);
     } else {
         derive_into(out, history);
     }
+}
+
+/// Where the summary of the marker at `at` stops covering `history`: the
+/// position of the nearest [`HistoryItem::CompactionCut`] before it carrying
+/// the id it names — the checkpoint the running agent took — else the
+/// marker's own position (no cut recorded, or one the history no longer
+/// holds), which covers everything before it (`docs/compact.md` *Where a
+/// summary's coverage ends*). Nearest, because only one compaction runs at a
+/// time: no cut of another compaction can sit between a marker and its own.
+fn cut_position(history: &[HistoryItem], at: usize, cut: Option<u64>) -> usize {
+    cut.and_then(|id| {
+        history[..at]
+            .iter()
+            .rposition(|item| matches!(item, HistoryItem::CompactionCut(c) if c.id == id))
+    })
+    .unwrap_or(at)
+}
+
+/// The recent-user-message budget `compaction` derives with: the one it
+/// recorded, or codex's fixed one for a marker from before the field.
+fn marker_user_budget(compaction: &crate::app::Compaction) -> usize {
+    match compaction.user_budget {
+        0 => COMPACT_USER_MESSAGE_MAX_TOKENS,
+        budget => usize::try_from(budget).unwrap_or(usize::MAX),
+    }
+}
+
+/// Codex's compacted shape for a summary covering `covered`: the recent typed
+/// user texts within `budget`, then the summary bridge.
+fn push_compacted_head(out: &mut Derived, covered: &[HistoryItem], summary: &str, budget: usize) {
+    for text in budgeted_user_texts(covered, budget) {
+        push_user_text(out, text, vec![], TextOrigin::Typed);
+    }
+    push_user_text(out, summary_bridge(summary), vec![], TextOrigin::Summary);
+}
+
+/// The head of the compacted context — the session's `<system-reminder>`,
+/// the recent typed user texts of `covered` within `budget`, and the bridge
+/// carrying `summary` — exactly as [`context_messages_full`] opens a history
+/// whose last marker covers `covered` (`docs/compact.md` *Background
+/// compaction*). What a running agent splices in place of the snapshot it
+/// checkpointed, so its live message list and every later derivation of the
+/// history agree by construction: there is one rule, not two.
+#[must_use]
+pub fn compacted_head(
+    user_instructions: Option<&str>,
+    listings: Option<&str>,
+    covered: &[HistoryItem],
+    summary: &str,
+    budget: usize,
+) -> Vec<ContextMessage> {
+    let reminder = crate::reminder::reminder_message(&[
+        user_instructions.unwrap_or_default(),
+        listings.unwrap_or_default(),
+    ]);
+    let mut out = Derived {
+        messages: Vec::new(),
+        origins: None,
+    };
+    if !reminder.trim().is_empty() {
+        push_user_text(&mut out, reminder, vec![], TextOrigin::Reminder);
+    }
+    push_compacted_head(&mut out, covered, summary, budget);
+    out.messages
+}
+
+/// The request a summarizer is sent for `snapshot` — the conversation as it
+/// stood at the checkpoint (`docs/compact.md`): the derived context behind
+/// the AGENTS.md instructions alone (the summarizer is tools-free, so it is
+/// never told about a `skill` or `agent` tool it was not given), then codex's
+/// [`SUMMARIZATION_PROMPT`] as the final user entry — closed by
+/// [`COMPACT_CHAIN_NOTE`] when the snapshot already holds an earlier
+/// summary, so the new one carries over what still matters.
+///
+/// With a `budget` (estimated tokens for the whole list, prompt included) the
+/// conversation is **fitted** to it first, deterministically — the largest
+/// tool results cut down in the middle, then the oldest rounds dropped whole,
+/// then the user-role texts cut, every user message and the earlier summary
+/// kept as long as anything else can go (`fit_to_budget`) — so one huge
+/// tool output can never make the summarization request itself overflow the
+/// window it is meant to relieve.
+#[must_use]
+pub fn summarization_request(
+    user_instructions: Option<&str>,
+    snapshot: &[HistoryItem],
+    budget: Option<usize>,
+) -> Vec<ContextMessage> {
+    let mut messages = context_messages_with(user_instructions, snapshot);
+    let chained = snapshot
+        .iter()
+        .any(|item| matches!(item, HistoryItem::Compaction(_)));
+    let prompt = if chained {
+        format!("{SUMMARIZATION_PROMPT}\n{}", COMPACT_CHAIN_NOTE.trim_end())
+    } else {
+        SUMMARIZATION_PROMPT.to_string()
+    };
+    let prompt = ContextMessage::new(ContextRole::User, prompt);
+    if let Some(budget) = budget {
+        let room = budget.saturating_sub(message_cost(&prompt));
+        fit_to_budget(&mut messages, room);
+    }
+    messages.push(prompt);
+    messages
+}
+
+/// The estimated tokens a summarization request may cost for a `window`-token
+/// context window: three quarters of it, less the `system` prompt the
+/// summarizer is sent beside the request — the last quarter is the summary's
+/// own room and the slack for a provider that counts more tokens than the
+/// estimate does. `None` (no cap) when the window is unknown. See
+/// `docs/compact.md` *The summarization request must fit*.
+#[must_use]
+pub fn summarization_budget(window: Option<u64>, system: usize) -> Option<usize> {
+    let window = usize::try_from(window?).unwrap_or(usize::MAX);
+    Some((window / 4).saturating_mul(3).saturating_sub(system))
+}
+
+/// How far down [`fit_to_budget`] cuts a single text before it starts
+/// dropping whole rounds instead: enough of a tool result's head and tail to
+/// say what it was.
+const FIT_TEXT_FLOOR: usize = 200;
+
+/// The estimated cost of one context message — the gauge's own rule
+/// (`crate::app::message_tokens`).
+fn message_cost(message: &ContextMessage) -> usize {
+    crate::app::message_tokens(message, &mut |text| crate::tokens::estimate(text))
+}
+
+/// Fit `messages` into `budget` estimated tokens, in three deterministic
+/// steps, each only when the one before left it over (`docs/compact.md`
+/// *The summarization request must fit*):
+///
+/// 1. **Cut the largest tool results** in the middle, down to a common cap
+///    no lower than [`FIT_TEXT_FLOOR`] — a water level, so the small ones are
+///    untouched and the big ones are cut evenly.
+/// 2. **Drop the oldest rounds whole** — an assistant message with every
+///    tool result answering it, oldest first — keeping every user-role
+///    message: the user's own words and an earlier summary's bridge are what
+///    a handoff can least afford to lose, and a call never loses its result.
+/// 3. **Cut the user-role texts** the same way as the tool results, the last
+///    resort.
+fn fit_to_budget(messages: &mut Vec<ContextMessage>, budget: usize) {
+    let total = |messages: &[ContextMessage]| messages.iter().map(message_cost).sum::<usize>();
+    if total(messages) <= budget {
+        return;
+    }
+    cap_texts(messages, budget, ContextRole::Tool);
+    if total(messages) <= budget {
+        return;
+    }
+    let mut at = 0;
+    while at < messages.len() && total(messages) > budget {
+        if messages[at].role != ContextRole::Assistant {
+            at += 1;
+            continue;
+        }
+        let mut end = at + 1;
+        while messages
+            .get(end)
+            .is_some_and(|next| next.role == ContextRole::Tool)
+        {
+            end += 1;
+        }
+        messages.drain(at..end);
+    }
+    if total(messages) > budget {
+        cap_texts(messages, budget, ContextRole::User);
+    }
+}
+
+/// Cut every `role` message's text above a common cap down to it, the cap the
+/// highest that brings the whole list within `budget` (never below
+/// [`FIT_TEXT_FLOOR`]): a water-filling of the largest texts, middle-truncated
+/// codex's way so each keeps its head and its tail.
+fn cap_texts(messages: &mut [ContextMessage], budget: usize, role: ContextRole) {
+    let costs: Vec<usize> = messages.iter().map(message_cost).collect();
+    let others: usize = messages
+        .iter()
+        .zip(&costs)
+        .filter(|(message, _)| message.role != role)
+        .map(|(_, cost)| cost)
+        .sum();
+    let room = budget.saturating_sub(others);
+    let sizes: Vec<usize> = messages
+        .iter()
+        .zip(&costs)
+        .filter(|(message, _)| message.role == role)
+        .map(|(_, cost)| *cost)
+        .collect();
+    let fits = |cap: usize| sizes.iter().map(|size| (*size).min(cap)).sum::<usize>() <= room;
+    let largest = sizes.iter().copied().max().unwrap_or(0);
+    if fits(largest) {
+        return;
+    }
+    // The highest cap that fits, by bisection over [floor, largest].
+    let (mut low, mut high) = (FIT_TEXT_FLOOR, largest);
+    while low < high {
+        let mid = low + (high - low).div_ceil(2);
+        if fits(mid) {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    let cap = low;
+    for message in messages.iter_mut().filter(|message| message.role == role) {
+        if crate::tokens::estimate(&message.text) > cap {
+            message.text = truncate_to_estimate(&message.text, cap);
+        }
+    }
+}
+
+/// `text` middle-truncated until the estimate counts it at no more than
+/// `cap` tokens. The cut itself is in codex's approximate tokens (four bytes
+/// each) and its marker costs a few of its own, so the target is rescaled
+/// from what the estimate makes of each try — a handful of tries at most.
+fn truncate_to_estimate(text: &str, cap: usize) -> String {
+    let mut target = approx_token_count(text);
+    let mut size = crate::tokens::estimate(text);
+    let mut cut = text.to_string();
+    for _ in 0..8 {
+        if size <= cap {
+            break;
+        }
+        let next = target.saturating_mul(cap) / size.max(1);
+        target = next.min(target.saturating_sub(1)).max(1);
+        cut = truncate_middle_to_tokens(text, target);
+        size = crate::tokens::estimate(&cut);
+        if target == 1 {
+            break;
+        }
+    }
+    cut
 }
 
 /// Derive `history` (a compaction-free run of items) into `out` — the
@@ -971,10 +1243,11 @@ fn derive_item(out: &mut Derived, history: &[HistoryItem], position: usize) {
             unreachable!("call-bearing items are derived a round at a time")
         }
         HistoryItem::Summary(_) => {} // TUI chrome, not conversation
-        // Unreachable through `context_messages` (it splits at the last
-        // marker), but the mapping stays total: a marker inside a plain
-        // run contributes nothing itself.
-        HistoryItem::Compaction(_) => {}
+        // A marker inside the derived run — the last one sits between the
+        // verbatim tail it kept and what came after it — contributes nothing
+        // itself, and neither does a cut: both are positions, not
+        // conversation (docs/compact.md).
+        HistoryItem::Compaction(_) | HistoryItem::CompactionCut(_) => {}
         // A background shell's completion: a bracketed user-role note
         // carrying the outcome AND the output tail — the model reads the
         // result here (the rendered cell shows only the one-line headline).
@@ -2268,6 +2541,7 @@ mod tests {
             after: 0,
             auto: false,
             secs: 0,
+            ..crate::app::Compaction::default()
         })
     }
 
@@ -2536,6 +2810,419 @@ mod tests {
                 .iter()
                 .any(|(_, text, origin)| text == "next" && *origin == TextOrigin::Typed),
             "{origins:?}"
+        );
+    }
+
+    // --- background compaction: the cut, chains, budgets (docs/compact.md) ---
+
+    /// The checkpoint a running agent took (`HistoryItem::CompactionCut`).
+    fn cut(id: u64) -> HistoryItem {
+        HistoryItem::CompactionCut(crate::app::CompactionCut {
+            id,
+            timestamp: String::new(),
+        })
+    }
+
+    /// A marker whose summary covers what came before cut `id`.
+    fn marker(summary: &str, cut: Option<u64>, user_budget: u64) -> HistoryItem {
+        HistoryItem::Compaction(crate::app::Compaction {
+            summary: summary.to_string(),
+            cut,
+            user_budget,
+            ..crate::app::Compaction::default()
+        })
+    }
+
+    /// One tool round as a running agent records it: the call under its
+    /// provider id in batch `batch`, its result after.
+    fn round(batch: u64, command: &str, output: &str) -> HistoryItem {
+        batched("Bash", command, output, batch, &format!("toolu_{batch}"))
+    }
+
+    #[test]
+    fn a_cut_item_derives_nothing_and_is_no_conversation() {
+        assert!(context_messages(&[cut(1)]).is_empty());
+        assert!(!derives_conversation(&[cut(1)]));
+        let history = vec![message(Role::User, "hi"), cut(1)];
+        assert_eq!(
+            context_messages(&history),
+            context_messages(&history[..1]),
+            "a cut changes nothing until a marker names it"
+        );
+    }
+
+    #[test]
+    fn a_marker_with_a_cut_keeps_the_rounds_after_its_cut_verbatim() {
+        // The agent took its checkpoint at the top of round 2 and kept
+        // working while the summary was written: round 1 is summarized away,
+        // round 2 — recorded between the cut and the marker — stays as it
+        // ran, after the bridge.
+        let history = vec![
+            message(Role::User, "fix the bug"),
+            round(1, "cat main.rs", "fn main() {}"),
+            cut(7),
+            round(2, "cargo test", "ok"),
+            marker("we read main.rs", Some(7), 0),
+        ];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx.len(), 3, "{ctx:?}");
+        assert_eq!(
+            ctx[0].text,
+            format!("fix the bug\n\n{SUMMARY_PREFIX}\nwe read main.rs")
+        );
+        assert_eq!(
+            ctx[1].tool_calls,
+            vec![ContextToolCall::new(
+                "toolu_2",
+                "bash",
+                r#"{"command":"cargo test"}"#
+            )]
+        );
+        assert_eq!(ctx[2], ContextMessage::tool_result("toolu_2", "ok"));
+        assert!(
+            !ctx.iter().any(|m| m.text.contains("fn main()")),
+            "the summarized round is gone: {ctx:?}"
+        );
+    }
+
+    #[test]
+    fn items_after_a_cut_marker_derive_after_the_verbatim_tail() {
+        let history = vec![
+            message(Role::User, "fix the bug"),
+            round(1, "cat main.rs", "fn main() {}"),
+            cut(7),
+            round(2, "cargo test", "ok"),
+            marker("we read main.rs", Some(7), 0),
+            round(3, "git diff", "+fix"),
+            message(Role::Assistant, "fixed"),
+        ];
+        let ctx = context_messages(&history);
+        let calls: Vec<&str> = ctx
+            .iter()
+            .flat_map(|m| m.tool_calls.iter().map(|c| c.id.as_str()))
+            .collect();
+        assert_eq!(calls, vec!["toolu_2", "toolu_3"], "{ctx:?}");
+        assert_eq!(ctx.last().expect("a reply").text, "fixed");
+    }
+
+    #[test]
+    fn a_marker_whose_cut_is_gone_covers_everything_before_it() {
+        // A cut a rollout lost (or never had) degrades to the marker's own
+        // position — the summary then stands for everything before it.
+        let history = vec![
+            message(Role::User, "fix the bug"),
+            round(1, "cat main.rs", "fn main() {}"),
+            round(2, "cargo test", "ok"),
+            marker("we did it all", Some(99), 0),
+        ];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx.len(), 1, "{ctx:?}");
+        assert!(ctx[0].text.ends_with("\nwe did it all"), "{ctx:?}");
+    }
+
+    #[test]
+    fn the_cut_is_the_nearest_one_its_marker_names() {
+        // An orphaned cut — a compaction that never landed — may share an id
+        // with a later one after a restart; the marker's own is the nearest.
+        let history = vec![
+            message(Role::User, "fix the bug"),
+            cut(1),
+            round(1, "cat main.rs", "fn main() {}"),
+            cut(1),
+            round(2, "cargo test", "ok"),
+            marker("we read main.rs", Some(1), 0),
+        ];
+        let calls: Vec<String> = context_messages(&history)
+            .iter()
+            .flat_map(|m| m.tool_calls.iter().map(|c| c.id.clone()))
+            .collect();
+        assert_eq!(calls, vec!["toolu_2".to_string()]);
+    }
+
+    #[test]
+    fn chained_markers_each_summarize_up_to_their_own_cut() {
+        // Two compactions in one turn: the second summary was written from a
+        // snapshot holding the first bridge, so the first summary never
+        // reaches the derivation again — only the second bridge, then the
+        // rounds after the second cut.
+        let history = vec![
+            message(Role::User, "build it"),
+            round(1, "ls", "a b"),
+            cut(1),
+            round(2, "cat a", "A"),
+            marker("first summary", Some(1), 0),
+            round(3, "cat b", "B"),
+            cut(2),
+            round(4, "make", "built"),
+            marker("second summary", Some(2), 0),
+            round(5, "make test", "passed"),
+        ];
+        let ctx = context_messages(&history);
+        assert!(
+            ctx[0]
+                .text
+                .ends_with(&format!("{SUMMARY_PREFIX}\nsecond summary")),
+            "{ctx:?}"
+        );
+        assert!(!ctx.iter().any(|m| m.text.contains("first summary")));
+        let calls: Vec<String> = ctx
+            .iter()
+            .flat_map(|m| m.tool_calls.iter().map(|c| c.id.clone()))
+            .collect();
+        assert_eq!(calls, vec!["toolu_4".to_string(), "toolu_5".to_string()]);
+        assert!(ctx[0].text.starts_with("build it\n\n"), "{ctx:?}");
+    }
+
+    #[test]
+    fn a_marker_keeps_the_user_messages_its_recorded_budget_allows() {
+        let history = vec![
+            message(Role::User, "an older question that no longer fits"),
+            message(Role::User, "abcd"),
+            marker("gist", None, 1),
+        ];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx[0].text, format!("abcd\n\n{SUMMARY_PREFIX}\ngist"));
+    }
+
+    #[test]
+    fn a_marker_recorded_before_the_budget_keeps_codexs_twenty_thousand() {
+        let big = "word ".repeat(16_000); // 80 KB: ~20k approx tokens of 4 bytes
+        let history = vec![
+            message(Role::User, &big),
+            message(Role::User, "abcd"),
+            marker("gist", None, 0),
+        ];
+        let ctx = context_messages(&history);
+        assert!(
+            ctx[0].text.contains("tokens truncated…"),
+            "the old cap still bites"
+        );
+        assert!(
+            ctx[0].text.len() > 70_000,
+            "and it is codex's 20k, not a smaller one"
+        );
+    }
+
+    #[test]
+    fn the_user_budget_scales_with_the_window_under_codexs_cap() {
+        assert_eq!(compact_user_budget(None), 20_000, "no window: codex's");
+        assert_eq!(compact_user_budget(Some(1_000_000)), 20_000, "capped");
+        assert_eq!(compact_user_budget(Some(200_000)), 20_000);
+        assert_eq!(
+            compact_user_budget(Some(50_000)),
+            5_000,
+            "a tenth of a small window"
+        );
+        assert_eq!(compact_user_budget(Some(100)), 10);
+    }
+
+    #[test]
+    fn the_compacted_head_is_exactly_what_the_derivation_opens_with() {
+        // One source of truth: the prefix a running agent splices in is the
+        // head the next turn's derivation produces for the same history, so
+        // the two can never disagree about what the model holds.
+        let before_cut = vec![
+            message(Role::User, "fix the bug"),
+            round(1, "cat main.rs", "fn main() {}"),
+        ];
+        let mut history = before_cut.clone();
+        history.extend([
+            cut(3),
+            round(2, "cargo test", "ok"),
+            marker("we read main.rs", Some(3), 50),
+        ]);
+        let head = compacted_head(
+            Some("be careful"),
+            Some("- skill: does things"),
+            &before_cut,
+            "we read main.rs",
+            50,
+        );
+        let full =
+            context_messages_full(Some("be careful"), Some("- skill: does things"), &history);
+        assert!(full.len() > head.len(), "{full:?}");
+        assert_eq!(full[..head.len()], head[..], "the head is the derivation's");
+        assert_eq!(
+            full[head.len()..],
+            context_messages(&history[2..4])[..],
+            "and the rest is the tail as it ran"
+        );
+    }
+
+    #[test]
+    fn a_summarization_request_may_fill_three_quarters_of_the_window() {
+        // The rest is the summary's own room, and slack for a provider that
+        // counts more tokens than the estimate does — less the system prompt
+        // the summarizer is sent beside the request.
+        assert_eq!(summarization_budget(None, 0), None, "no window, no cap");
+        assert_eq!(summarization_budget(Some(50_000), 4_000), Some(33_500));
+        assert_eq!(summarization_budget(Some(1_000), 5_000), Some(0));
+    }
+
+    #[test]
+    fn a_summarization_request_ends_on_the_prompt_and_carries_no_listings() {
+        let snapshot = vec![
+            message(Role::User, "fix the bug"),
+            round(1, "cat main.rs", "fn main() {}"),
+        ];
+        let request = summarization_request(Some("be careful"), &snapshot, None);
+        let last = request.last().expect("a prompt");
+        assert_eq!(last.role, ContextRole::User);
+        assert_eq!(last.text, SUMMARIZATION_PROMPT);
+        assert!(request[0].text.contains("be careful"), "{request:?}");
+        assert_eq!(
+            request[..request.len() - 1],
+            context_messages_with(Some("be careful"), &snapshot)[..]
+        );
+    }
+
+    #[test]
+    fn a_chained_summarization_asks_to_fold_the_earlier_summary_in() {
+        let snapshot = vec![
+            message(Role::User, "build it"),
+            marker("first summary", None, 0),
+            round(2, "make", "built"),
+        ];
+        let request = summarization_request(None, &snapshot, None);
+        let prompt = &request.last().expect("a prompt").text;
+        assert!(prompt.starts_with(SUMMARIZATION_PROMPT), "{prompt}");
+        assert!(prompt.ends_with(COMPACT_CHAIN_NOTE.trim_end()), "{prompt}");
+        assert!(
+            request.iter().any(|m| m.text.contains("first summary")),
+            "the earlier bridge is part of what is summarized"
+        );
+        let fresh = summarization_request(None, &snapshot[2..], None);
+        assert_eq!(fresh.last().expect("a prompt").text, SUMMARIZATION_PROMPT);
+    }
+
+    /// The estimate the fitting counts in — every message's text and calls.
+    fn cost(messages: &[ContextMessage]) -> usize {
+        crate::app::estimate_messages_tokens(messages)
+    }
+
+    #[test]
+    fn a_summarization_request_within_budget_is_left_alone() {
+        let snapshot = vec![
+            message(Role::User, "fix the bug"),
+            round(1, "cat main.rs", "fn main() {}"),
+        ];
+        assert_eq!(
+            summarization_request(None, &snapshot, Some(100_000)),
+            summarization_request(None, &snapshot, None)
+        );
+    }
+
+    #[test]
+    fn fitting_cuts_the_largest_tool_results_first() {
+        let huge = "line of build output\n".repeat(4_000);
+        let snapshot = vec![
+            message(Role::User, "fix the bug"),
+            round(1, "cargo build", &huge),
+            round(2, "cat main.rs", "fn main() {}"),
+        ];
+        let request = summarization_request(None, &snapshot, Some(2_000));
+        assert!(cost(&request) <= 2_000, "{}", cost(&request));
+        let results: Vec<&ContextMessage> = request
+            .iter()
+            .filter(|m| m.role == ContextRole::Tool)
+            .collect();
+        assert_eq!(results.len(), 2, "every round stays: {request:?}");
+        assert!(
+            results[0].text.contains("tokens truncated…"),
+            "{:?}",
+            results[0]
+        );
+        assert_eq!(
+            results[1].text, "fn main() {}",
+            "the small one is untouched"
+        );
+        assert_eq!(
+            request[0].text, "fix the bug",
+            "the user's words stay whole"
+        );
+    }
+
+    #[test]
+    fn fitting_drops_the_oldest_rounds_whole_when_cutting_is_not_enough() {
+        let mut snapshot = vec![message(Role::User, "fix the bug")];
+        for batch in 1..=40 {
+            snapshot.push(round(
+                batch,
+                &format!("step {batch} with a long command line to make the call cost"),
+                &"x".repeat(900),
+            ));
+        }
+        snapshot.push(message(Role::User, "and keep going"));
+        let request = summarization_request(None, &snapshot, Some(3_000));
+        assert!(cost(&request) <= 3_000, "{}", cost(&request));
+        // Every call that stayed kept its result, right after it.
+        for (at, message) in request.iter().enumerate() {
+            for call in &message.tool_calls {
+                assert!(
+                    request[at + 1..]
+                        .iter()
+                        .take_while(|next| next.role == ContextRole::Tool)
+                        .any(|next| next.tool_call_id.as_deref() == Some(call.id.as_str())),
+                    "{} lost its result",
+                    call.id
+                );
+            }
+        }
+        let kept: Vec<String> = request
+            .iter()
+            .flat_map(|m| m.tool_calls.iter().map(|c| c.id.clone()))
+            .collect();
+        assert!(!kept.is_empty(), "the newest rounds stay");
+        assert!(
+            !kept.contains(&"toolu_1".to_string()),
+            "the oldest went: {kept:?}"
+        );
+        assert!(kept.contains(&"toolu_40".to_string()), "{kept:?}");
+        assert!(
+            request[0].text.contains("fix the bug"),
+            "the user's words stay"
+        );
+        assert!(
+            request.iter().any(|m| m.text.contains("and keep going")),
+            "every user message stays"
+        );
+        assert_eq!(
+            request.last().expect("the prompt").text,
+            SUMMARIZATION_PROMPT
+        );
+    }
+
+    #[test]
+    fn fitting_keeps_the_earlier_summary() {
+        let mut snapshot = vec![
+            message(Role::User, "build it"),
+            marker("the first summary says what was done", None, 0),
+        ];
+        for batch in 1..=30 {
+            snapshot.push(round(batch, "make", &"y".repeat(1_200)));
+        }
+        let request = summarization_request(None, &snapshot, Some(2_500));
+        assert!(
+            request
+                .iter()
+                .any(|m| m.text.contains("the first summary says what was done")),
+            "{request:?}"
+        );
+    }
+
+    #[test]
+    fn fitting_is_deterministic() {
+        let mut snapshot = vec![message(Role::User, "fix the bug")];
+        for batch in 1..=12 {
+            snapshot.push(round(
+                batch,
+                "cargo build",
+                &"z".repeat(2_000 + 37 * batch as usize),
+            ));
+        }
+        assert_eq!(
+            summarization_request(None, &snapshot, Some(1_500)),
+            summarization_request(None, &snapshot, Some(1_500))
         );
     }
 

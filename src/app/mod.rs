@@ -84,7 +84,7 @@ pub use self::commands::{
     CommandEffect, CommandMenu, INIT_BUSY_NOTICE, INIT_PROMPT, RESUME_BUSY_NOTICE, SlashCommand,
     command_query, matching_commands,
 };
-pub use self::compact::{COMPACT_VERB, Compaction};
+pub use self::compact::{COMPACT_VERB, Compaction, CompactionCut};
 pub(crate) use self::compact::{estimate_messages_tokens, message_tokens};
 pub use self::composer::{SHELL_EMPTY_NOTICE, shell_query};
 pub use self::context_usage::{ContextUsagePage, ContextUsageRow};
