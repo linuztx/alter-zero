@@ -113,6 +113,7 @@ pub use self::model_picker::{ModelLoad, ModelPicker, ProviderList, ProviderLoad}
 pub use self::permission::PermissionPrompt;
 pub use self::queue::QueuedTurn;
 pub use self::reasoning::{LiveThought, Reasoning};
+pub(crate) use self::types::IMAGE_INPUT_TOKENS;
 // Crate-internal: `agents::AgentRun` runs the same reasoning-token snap over
 // its own transcript (`docs/agent-view-streaming.md`).
 pub use self::config_review::{

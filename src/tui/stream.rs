@@ -482,6 +482,11 @@ impl Session<'_> {
                 false
             }
             StreamEvent::StreamDone => self.on_stream_done(committing, width),
+            // Background compaction (docs/compact.md): no backend attaches the
+            // round-top seam yet, so none of these is sent.
+            StreamEvent::CompactionCheckpoint { .. }
+            | StreamEvent::CompactionWait { .. }
+            | StreamEvent::CompactionApplied { .. } => false,
             StreamEvent::Retrying { attempt, max } => {
                 // A failed request is being retried — before any content
                 // streamed, or after its connection was lost under the reply.

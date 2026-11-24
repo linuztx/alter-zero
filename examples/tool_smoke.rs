@@ -102,6 +102,11 @@ fn main() {
             // The round's wire identity (docs/prompt-caching.md): the TUI
             // stamps its records with it; the harness has none.
             StreamEvent::RoundCalls(_) => {}
+            // This harness attaches no compaction slot, so the lead never
+            // compacts mid-turn here (docs/compact.md).
+            StreamEvent::CompactionCheckpoint { .. }
+            | StreamEvent::CompactionWait { .. }
+            | StreamEvent::CompactionApplied { .. } => {}
             // A task tool call: cell-less in the TUI; the harness just logs it.
             StreamEvent::TaskCall {
                 name, args, output, ..

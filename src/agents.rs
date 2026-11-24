@@ -626,6 +626,12 @@ impl AgentRun {
             // reports to it through its own queue, as a `Steered` message
             // (docs/background.md).
             StreamEvent::NoticeDelivered { .. } => {}
+            // Never sent on an agent's channel: a subagent runs without the
+            // round-top compaction seam, which is the lead's alone
+            // (docs/compact.md *Subagents*).
+            StreamEvent::CompactionCheckpoint { .. }
+            | StreamEvent::CompactionWait { .. }
+            | StreamEvent::CompactionApplied { .. } => {}
             // A reasoning delta: counted so the footer tally ticks while the
             // agent thinks (the status-line pattern) and — **while a phase is
             // open** — accumulated for the live `● Thinking…` block the

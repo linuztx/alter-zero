@@ -149,7 +149,7 @@ pub(crate) fn count_tokens(text: &str) -> usize {
 /// ([`App::count_input_images`]). The protocol carries no real usage and an
 /// image has no text to size, so this is a demo stand-in for a vision model's
 /// per-image cost. See `docs/image-paste.md`.
-pub(super) const IMAGE_INPUT_TOKENS: usize = 256;
+pub(crate) const IMAGE_INPUT_TOKENS: usize = 256;
 
 /// Which screen is showing. The conversation is the inline TUI; the tool-output
 /// view is a separate full-screen overlay listing every tool call's full output

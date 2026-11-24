@@ -596,6 +596,23 @@ pub enum StreamEvent {
     /// tool's execution. A backend with no ask gate attached never offers the
     /// tool, so it never sends this.
     AskUser(AskRequest),
+    /// The running agent took a **compaction checkpoint** at this round top
+    /// (`docs/compact.md` *Background compaction*): everything it holds now —
+    /// and so everything the history holds as this event lands, in channel
+    /// order — is the snapshot a background summary will cover. The loop
+    /// records the cut there and starts the summarizer; the agent keeps
+    /// working. `id` names the checkpoint on the shared slot.
+    CompactionCheckpoint { id: u64 },
+    /// The running agent reached the **hard limit** with the summary of
+    /// checkpoint `id` not in yet, and waits at the round boundary for it —
+    /// the one pause background compaction ever costs (`docs/compact.md`
+    /// *The hard limit*). The loop says so under the status line.
+    CompactionWait { id: u64 },
+    /// The running agent **spliced in** the summary of checkpoint `id` at
+    /// this round top: from here on it holds the compacted head and the
+    /// rounds since the checkpoint. The loop appends the marker here, where
+    /// the history's derivation becomes what the agent holds.
+    CompactionApplied { id: u64 },
     /// The backend failed; carries a human-readable message to show the user.
     Error(String),
     /// The reply is complete.
@@ -645,6 +662,9 @@ impl StreamEvent {
             | Self::Usage(_)
             | Self::Permission(_)
             | Self::AskUser(_)
+            | Self::CompactionCheckpoint { .. }
+            | Self::CompactionWait { .. }
+            | Self::CompactionApplied { .. }
             | Self::Error(_)
             | Self::StreamDone => false,
         }

@@ -14,6 +14,7 @@
 
 use tokio::sync::mpsc::UnboundedSender;
 
+use super::compaction::{NoCompaction, RoundTop, RoundTopSeam};
 use super::exec::ToolProgress;
 use super::hooks::{HookSink, allowed_note, block_texts as hook_block_texts};
 use super::tools::{
@@ -408,6 +409,46 @@ pub fn run_agent(
     cancel: &CancelToken,
     max_tool_calls: usize,
     messages: &mut Vec<ChatMessage>,
+    round: impl FnMut(&[ChatMessage]) -> RoundOutcome,
+    execute: impl FnMut(&ToolCallRequest, &mut dyn FnMut(ToolProgress<'_>)) -> ToolOutcome,
+    pending_inputs: impl FnMut() -> Vec<PendingInput>,
+    run_agents: impl FnMut(&[ToolCallRequest]) -> Vec<(String, String)>,
+    approve: impl FnMut(&ToolCallRequest, bool) -> Approval,
+    hooks: &dyn HookSink,
+    session_command: &dyn Fn(&str) -> Option<String>,
+) {
+    run_agent_with(
+        tx,
+        cancel,
+        max_tool_calls,
+        messages,
+        round,
+        execute,
+        pending_inputs,
+        run_agents,
+        approve,
+        hooks,
+        session_command,
+        &mut NoCompaction,
+    );
+}
+
+/// [`run_agent`] with the **round-top compaction seam** (`docs/compact.md`
+/// *Background compaction*): `compaction` is consulted at the top of every
+/// round — after the pending inputs, so it sees everything the request will
+/// carry, and before the request goes out, so what it leaves is what is sent.
+/// It may take a checkpoint, splice a finished summary in, or hold the round
+/// at the hard limit until one lands; a [`RoundTop::Fail`] ends the turn on
+/// its error the way a failed request does (through `StopFailure`), a
+/// [`RoundTop::Stop`] silently, the way a cancel does. The session's lead
+/// runs on this; every other caller has nothing to compact
+/// ([`NoCompaction`], which [`run_agent`] passes).
+#[allow(clippy::too_many_arguments)] // the loop's full seam set (docs/agent-tool.md)
+pub fn run_agent_with(
+    tx: &UnboundedSender<StreamEvent>,
+    cancel: &CancelToken,
+    max_tool_calls: usize,
+    messages: &mut Vec<ChatMessage>,
     mut round: impl FnMut(&[ChatMessage]) -> RoundOutcome,
     mut execute: impl FnMut(&ToolCallRequest, &mut dyn FnMut(ToolProgress<'_>)) -> ToolOutcome,
     mut pending_inputs: impl FnMut() -> Vec<PendingInput>,
@@ -415,6 +456,7 @@ pub fn run_agent(
     mut approve: impl FnMut(&ToolCallRequest, bool) -> Approval,
     hooks: &dyn HookSink,
     session_command: &dyn Fn(&str) -> Option<String>,
+    compaction: &mut dyn RoundTopSeam,
 ) {
     let mut used_calls = 0usize;
     // True from the first Stop/SubagentStop-forced continuation on — the
@@ -449,6 +491,21 @@ pub fn run_agent(
                     let _ = tx.send(StreamEvent::Steered { text: text.clone() });
                     messages.push(ChatMessage::user(&text));
                 }
+            }
+        }
+        // Background compaction (docs/compact.md): a checkpoint, a summary
+        // spliced in, or a wait at the hard limit — here, where the round's
+        // whole request is in hand and nothing of it has gone out.
+        match compaction.before_round(messages, tx, cancel) {
+            RoundTop::Go => {}
+            RoundTop::Stop => return,
+            // The request cannot fit and nothing could make room: the turn
+            // ends the way a refused request ends it — `StopFailure` first,
+            // the provider's `invalid_request` kind.
+            RoundTop::Fail(message) => {
+                send_hook_report(tx, hooks.stop_failure("invalid_request", &message, cancel));
+                let _ = tx.send(StreamEvent::Error(message));
+                return;
             }
         }
         match round(messages) {
@@ -4205,6 +4262,232 @@ mod tests {
                 text: "also check the tests".to_string(),
             }),
             "the loop hears that the message was taken into the turn"
+        );
+    }
+
+    // --- the round-top compaction seam (docs/compact.md) ---
+
+    /// What a [`ScriptedSeam`] does with the messages it is handed.
+    type SeamAnswer = Box<dyn FnMut(&mut Vec<ChatMessage>) -> RoundTop>;
+
+    /// A seam that records what it saw and does what it is told.
+    struct ScriptedSeam {
+        seen: Vec<Vec<(String, String)>>,
+        answer: SeamAnswer,
+    }
+
+    impl super::super::compaction::RoundTopSeam for ScriptedSeam {
+        fn before_round(
+            &mut self,
+            messages: &mut Vec<ChatMessage>,
+            _tx: &UnboundedSender<StreamEvent>,
+            _cancel: &CancelToken,
+        ) -> RoundTop {
+            self.seen.push(
+                messages
+                    .iter()
+                    .map(|m| (m.role.clone(), text_of(m)))
+                    .collect(),
+            );
+            (self.answer)(messages)
+        }
+    }
+
+    #[test]
+    fn the_round_top_seam_runs_after_the_pending_inputs_and_before_the_request() {
+        // Its place is the contract: what it sees is everything the next
+        // request will carry — a message the user steered into this round
+        // included — and what it leaves is what the request sends.
+        let (tx, _rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let sent = RefCell::new(Vec::new());
+        let mut seam = ScriptedSeam {
+            seen: Vec::new(),
+            answer: Box::new(|messages| {
+                messages.push(ChatMessage::user("spliced in"));
+                RoundTop::Go
+            }),
+        };
+        run_agent_with(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut vec![ChatMessage::user("hi")],
+            |msgs| {
+                *sent.borrow_mut() = msgs.iter().map(text_of).collect::<Vec<_>>();
+                answered()
+            },
+            |_c, _sink| panic!("no tools requested"),
+            || vec![PendingInput::User("and this".to_string())],
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &NoHooks,
+            &no_sessions,
+            &mut seam,
+        );
+        assert_eq!(
+            seam.seen[0].last(),
+            Some(&("user".to_string(), "and this".to_string())),
+            "the pending input is in before the seam looks"
+        );
+        assert_eq!(
+            sent.borrow().last().map(String::as_str),
+            Some("spliced in"),
+            "the request carries what the seam left"
+        );
+    }
+
+    #[test]
+    fn a_seam_that_cannot_make_room_ends_the_turn_on_its_error() {
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let mut seam = ScriptedSeam {
+            seen: Vec::new(),
+            answer: Box::new(|_| RoundTop::Fail("no room".to_string())),
+        };
+        run_agent_with(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut vec![ChatMessage::user("hi")],
+            |_msgs| panic!("a request that cannot fit is never sent"),
+            |_c, _sink| panic!("no tools"),
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &NoHooks,
+            &no_sessions,
+            &mut seam,
+        );
+        assert_eq!(
+            drain(&mut rx),
+            vec![StreamEvent::Error("no room".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_seam_that_was_cancelled_ends_the_turn_silently() {
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let mut seam = ScriptedSeam {
+            seen: Vec::new(),
+            answer: Box::new(|_| RoundTop::Stop),
+        };
+        run_agent_with(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut vec![ChatMessage::user("hi")],
+            |_msgs| panic!("no request after a stop"),
+            |_c, _sink| panic!("no tools"),
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &NoHooks,
+            &no_sessions,
+            &mut seam,
+        );
+        assert!(
+            drain(&mut rx).is_empty(),
+            "the UI owns the interrupt's notice"
+        );
+    }
+
+    #[test]
+    fn a_turn_compacts_in_the_background_and_keeps_every_round_after_the_checkpoint() {
+        // The real compactor in the real loop: a checkpoint at round 2's
+        // top, the summary landing while round 3 ran, spliced at round 4's
+        // top — and a round never split: the snapshot ends where a round
+        // began, and the rounds after it reach round 4 whole.
+        use super::super::compaction::{AgentCompactor, CompactionSlot, Handoff};
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let slot = CompactionSlot::default();
+        let mut compactor = AgentCompactor::new(slot.clone(), 0);
+        let rounds = RefCell::new(0usize);
+        let sent: RefCell<Vec<Vec<ChatMessage>>> = RefCell::new(Vec::new());
+        let checkpoint: RefCell<Option<(u64, usize)>> = RefCell::new(None);
+        let mut messages = vec![ChatMessage::system("sys"), ChatMessage::user("build it")];
+        run_agent_with(
+            &tx,
+            &cancel,
+            0,
+            &mut messages,
+            |msgs| {
+                sent.borrow_mut().push(msgs.to_vec());
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                match *n {
+                    // The boundary asks for a compaction while round 1 runs.
+                    1 => slot.request(),
+                    // …and publishes its summary while round 3 runs.
+                    3 => {
+                        let (id, _) = checkpoint.borrow().expect("a checkpoint was taken");
+                        slot.publish(Handoff {
+                            id,
+                            head: vec![ChatMessage::user("build it\n\nthe summary")],
+                            head_tokens: 40,
+                        });
+                    }
+                    _ => {}
+                }
+                while let Ok(event) = rx.try_recv() {
+                    if let StreamEvent::CompactionCheckpoint { id } = event {
+                        *checkpoint.borrow_mut() = Some((id, msgs.len()));
+                    }
+                }
+                if *n == 5 {
+                    return answered();
+                }
+                let calls = vec![call(&format!("c{n}"), "bash", r#"{"command":"ls"}"#)];
+                RoundOutcome::ToolCalls {
+                    assistant: assistant_with(&calls),
+                    calls,
+                }
+            },
+            |_c, _sink| ToolOutcome::ok("output"),
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &NoHooks,
+            &no_sessions,
+            &mut compactor,
+        );
+        let sent = sent.into_inner();
+        let (_, covered) = checkpoint.into_inner().expect("a checkpoint");
+        // Round 2 went out over everything round 1 produced: that is the
+        // snapshot, a round boundary.
+        assert_eq!(covered, sent[1].len());
+        assert!(
+            sent[1].last().is_some_and(|m| m.role == "tool"),
+            "the snapshot ends on a round's result, never inside a round"
+        );
+        assert_eq!(
+            sent[2].len(),
+            covered + 2,
+            "round 3 still carries the whole"
+        );
+        // Round 4 is the first after the summary landed: [system] + head,
+        // then rounds 2 and 3 whole.
+        let mut expected = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::user("build it\n\nthe summary"),
+        ];
+        expected.extend(sent[2][covered..].iter().cloned());
+        assert_eq!(
+            sent[3][..expected.len()],
+            expected[..],
+            "[system] + head + every round after the checkpoint"
+        );
+        assert_eq!(
+            sent[3].len(),
+            expected.len() + 2,
+            "…round 3's call and result"
+        );
+        assert_eq!(
+            sent[4][..sent[3].len()],
+            sent[3][..],
+            "and the turn goes on from the spliced list"
         );
     }
 
