@@ -12,9 +12,10 @@
 //! network beyond the loopback.
 
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -455,21 +456,26 @@ impl StandIn {
 
     /// Point a world's runs at this provider.
     fn configure(&self, world: &World, command: &mut Command) {
-        let file = world.dir("providers.toml");
-        std::fs::write(
-            &file,
-            format!(
-                "[providers.stub]\nname = \"Stub\"\n\n[providers.stub.kwargs]\napi_base = \"{}\"\n",
-                self.base
-            ),
-        )
-        .expect("the providers file");
-        command
-            .env("ALTER_ZERO_PROVIDERS_FILE", file)
-            .env("ALTER_ZERO_PROVIDER", "stub")
-            .env("ALTER_ZERO_MODEL", "stub-model")
-            .env("STUB_API_KEY", "stand-in");
+        point_at(world, &self.base, command);
     }
+}
+
+/// Point a world's runs at a Chat Completions stand-in serving `base`: the
+/// `stub` provider, its one model and a key.
+fn point_at(world: &World, base: &str, command: &mut Command) {
+    let file = world.dir("providers.toml");
+    std::fs::write(
+        &file,
+        format!(
+            "[providers.stub]\nname = \"Stub\"\n\n[providers.stub.kwargs]\napi_base = \"{base}\"\n"
+        ),
+    )
+    .expect("the providers file");
+    command
+        .env("ALTER_ZERO_PROVIDERS_FILE", file)
+        .env("ALTER_ZERO_PROVIDER", "stub")
+        .env("ALTER_ZERO_MODEL", "stub-model")
+        .env("STUB_API_KEY", "stand-in");
 }
 
 fn serve(mut stream: TcpStream, log: &Mutex<Vec<String>>) {
@@ -1083,6 +1089,219 @@ fn a_signal_stops_the_run_and_still_reports() {
     assert_eq!(result["type"], "result");
     assert_eq!(result["subtype"], "error_interrupted");
     assert_eq!(result["error"], "interrupted by SIGTERM");
+}
+
+// ===== a reply whose connection drops mid-body (docs/offline.md) =====
+
+/// What [`Dropping`]'s first reply streams before its connection dies, one
+/// delta each: a thought, a finished line, a second thought and the start of
+/// another line. With the thinking display on, the second thought finalises
+/// the line before it into the history, so the failed attempt has recorded a
+/// reply and two thoughts by the time it fails, and the retry withdraws all
+/// of them (docs/offline.md *A connection lost mid-reply*). Every piece says
+/// `draft one`, so one search finds any of it.
+fn dropped_attempt() -> Vec<serde_json::Value> {
+    vec![
+        serde_json::json!({"reasoning_content": "Pondering draft one."}),
+        serde_json::json!({"content": "Draft one: the parser reads tokens.\n"}),
+        serde_json::json!({"reasoning_content": "Reconsidering draft one."}),
+        serde_json::json!({"content": "Draft one: and then"}),
+    ]
+}
+
+/// Whether `text` carries anything of [`dropped_attempt`].
+fn has_dropped_text(text: &str) -> bool {
+    text.to_lowercase().contains("draft one")
+}
+
+/// The answer the retried request streams, in these pieces.
+const RETRIED: [&str; 3] = ["Second attempt: ", "the whole reply ", "streams once."];
+const RETRIED_ANSWER: &str = "Second attempt: the whole reply streams once.";
+
+/// A stand-in Chat Completions provider whose first chat reply streams
+/// [`dropped_attempt`] and then loses its connection mid-body (a chunked
+/// body that never gets its terminating chunk, which fails the read the way a
+/// reset or timed-out connection does), and whose every later reply streams
+/// [`RETRIED`] whole. Smoke Phase 145's stub, for a run with no screen.
+struct Dropping {
+    base: String,
+    posts: Arc<AtomicUsize>,
+}
+
+impl Dropping {
+    fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+        let base = format!("http://{}/v1", listener.local_addr().expect("an address"));
+        let posts = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&posts);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { return };
+                let count = Arc::clone(&count);
+                std::thread::spawn(move || serve_dropping(stream, &count));
+            }
+        });
+        Self { base, posts }
+    }
+
+    /// How many chat requests it was sent.
+    fn posts(&self) -> usize {
+        self.posts.load(Ordering::SeqCst)
+    }
+}
+
+fn serve_dropping(mut stream: TcpStream, posts: &AtomicUsize) {
+    let Some((head, _)) = read_request(&mut stream) else {
+        return;
+    };
+    if head.starts_with("GET") {
+        let reply = r#"{"object":"list","data":[{"id":"stub-model"}]}"#;
+        let _ = write!(
+            stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+            reply.len()
+        );
+        return;
+    }
+    let first = posts.fetch_add(1, Ordering::SeqCst) == 0;
+    let _ = stream.write_all(
+        b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n",
+    );
+    let deltas = if first {
+        dropped_attempt()
+    } else {
+        RETRIED
+            .iter()
+            .map(|piece| serde_json::json!({"content": piece}))
+            .collect()
+    };
+    for delta in deltas {
+        write_chunk(&mut stream, &sse_frame(&delta, None));
+    }
+    if first {
+        // The connection dies under the reply: no terminating chunk.
+        let _ = stream.shutdown(Shutdown::Write);
+        return;
+    }
+    write_chunk(
+        &mut stream,
+        &sse_frame(&serde_json::json!({}), Some("stop")),
+    );
+    write_chunk(&mut stream, "data: [DONE]\n\n");
+    let _ = stream.write_all(b"0\r\n\r\n");
+    let _ = stream.flush();
+}
+
+/// One chunk of a chunked body, sent at once.
+fn write_chunk(stream: &mut TcpStream, data: &str) {
+    let _ = write!(stream, "{:x}\r\n{data}\r\n", data.len());
+    let _ = stream.flush();
+}
+
+/// One Chat Completions stream frame carrying `delta`.
+fn sse_frame(delta: &serde_json::Value, finish: Option<&str>) -> String {
+    let frame =
+        serde_json::json!({"choices": [{"index": 0, "delta": delta, "finish_reason": finish}]});
+    format!("data: {frame}\n\n")
+}
+
+/// A headless run against a fresh [`Dropping`] provider, stdin closed and the
+/// thinking display on, so the failed attempt's thoughts settle into the
+/// history before its connection drops. Also returns how many chat requests
+/// the run sent.
+fn dropped_run(world: &World, args: &[&str]) -> (Output, usize) {
+    let provider = Dropping::start();
+    let mut command = world.command(args);
+    point_at(world, &provider.base, &mut command);
+    let out = command
+        .env("ALTER_ZERO_SHOW_THINKING", "1")
+        .stdin(Stdio::null())
+        .output()
+        .expect("the binary runs");
+    (out, provider.posts())
+}
+
+#[test]
+fn a_dropped_reply_prints_the_retried_answer_alone() {
+    // The request is sent again and the answer is the attempt that got
+    // through, never the withdrawn partial glued to it.
+    let world = World::new("dropped-text");
+    let (out, posts) = dropped_run(&world, &["-p", "explain the parser"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(posts, 2, "the dropped request is sent again once");
+    assert_eq!(stdout(&out), format!("{RETRIED_ANSWER}\n"));
+    // A retry that works needs nothing from anyone, so a quiet run says nothing.
+    assert_eq!(stderr(&out), "");
+}
+
+#[test]
+fn a_dropped_reply_is_one_result_carrying_the_retried_answer() {
+    let world = World::new("dropped-json");
+    let (out, posts) = dropped_run(
+        &world,
+        &["-p", "--output-format", "json", "explain the parser"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(posts, 2, "the dropped request is sent again once");
+    let events = events(&out);
+    assert_eq!(events.len(), 1, "{events:?}");
+    let result = &events[0];
+    assert_eq!(result["subtype"], "success");
+    assert_eq!(result["is_error"], false);
+    assert_eq!(result["result"], RETRIED_ANSWER);
+}
+
+#[test]
+fn a_dropped_reply_never_streams_what_the_retry_withdrew() {
+    // stream-json prints items as the history settles, and the failed attempt
+    // recorded a reply and two thoughts before its connection died. Items a
+    // retry could still withdraw wait until their attempt ends
+    // (docs/headless.md *stream-json*), so none of them is printed. None is
+    // logged either, or left in the rollout that --resume reopens.
+    let world = World::new("dropped-stream");
+    let (out, posts) = dropped_run(
+        &world,
+        &[
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "explain the parser",
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(posts, 2, "the dropped request is sent again once");
+    let events = events(&out);
+    for event in &events {
+        assert!(
+            !has_dropped_text(&event.to_string()),
+            "printed what the retry withdrew: {event}"
+        );
+    }
+    let replies: Vec<&str> = events
+        .iter()
+        .filter(|e| e["type"] == "item.completed" && e["item"]["type"] == "agent_message")
+        .filter_map(|e| e["item"]["text"].as_str())
+        .collect();
+    assert_eq!(replies, [RETRIED_ANSWER], "{events:?}");
+    let result = events.last().expect("a result");
+    assert_eq!(result["type"], "result");
+    assert_eq!(result["result"], RETRIED_ANSWER);
+    let log = stderr(&out);
+    assert!(
+        log.contains("retrying (1/"),
+        "the step log names the retry: {log}"
+    );
+    assert!(
+        !has_dropped_text(&log),
+        "the step log kept what the retry withdrew: {log}"
+    );
+    for line in rollout(&world) {
+        assert!(
+            !has_dropped_text(&line.to_string()),
+            "the rollout kept what the retry withdrew: {line}"
+        );
+    }
 }
 
 // ===== what the rollout records (docs/rollout-records.md) =====

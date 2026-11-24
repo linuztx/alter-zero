@@ -352,6 +352,15 @@ first byte arrives.
   wrap under the text column, the host lit, the strip reserving exactly the
   row it paints (and the region settling back on content), the agent view's
   row.
+- `tests/headless.rs`: a connection lost mid-reply in a run with no
+  screen. The real binary runs against a loopback stub whose first answer
+  streams a thought, a finished line, a second thought and the start of
+  another line, then closes the socket mid-body. `text`, `json` and
+  `stream-json` each report the retried reply alone, and nothing the failed
+  attempt streamed reaches stdout, the `--verbose` log or the rollout. That
+  attempt has recorded a reply and two thoughts by the time it fails, so the
+  `stream-json` case also proves that items wait for
+  `App::settled_history_len` (`docs/headless.md`).
 - `scripts/smoke.sh` **Phase 129** drives the real binary against a provider
   file pointing at a loopback port nothing listens on: the turn shows
   `Waiting for internet…`, the `offline for` clause counting and the row
