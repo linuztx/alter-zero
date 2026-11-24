@@ -12,6 +12,29 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/copy` and `/export` reach your clipboard from tmux on a remote
+  server.** Run inside tmux on a VPS over SSH, `/copy` said `Copied last
+  message to clipboard` while nothing reached the clipboard of the machine
+  you were typing on. `/export`'s clipboard row and every page that copies
+  something (`/donate`, `/sponsor`, `/discord`, the `/login` code, `/mcp`,
+  `/secrets`, `/usage`) did the same. With no clipboard on the server, the
+  copy fell back to an OSC 52 escape, and tmux's default
+  `set-clipboard external` drops one sent by an application.
+  - Inside tmux the text now goes into tmux's own buffer, and tmux sends it
+    on to your terminal: `tmux load-buffer -w`, which tmux's defaults let
+    through. A long conversation from `/export` goes through whole.
+  - A tmux older than 3.2 gets the escape wrapped in tmux's passthrough,
+    then once more bare.
+  - Inside tmux or GNU screen, and over SSH, the copy now reaches your
+    terminal even when the machine's own clipboard took it, since that
+    clipboard may be the server's.
+  - Your terminal must accept OSC 52, and tmux must know it can. tmux
+    assumes so for `xterm*` terminal types; for another, add
+    `set -as terminal-features ',<TERM>:clipboard'` to your `~/.tmux.conf`
+    (`docs/copy.md`).
+
 ## [0.20.0] - 2026-11-23
 
 ### Added

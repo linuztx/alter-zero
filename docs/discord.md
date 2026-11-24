@@ -68,8 +68,8 @@ Every key is owned while the page is open:
 | Esc, Ctrl+C     | close; the composer returns              |
 | anything else   | nothing (↑/↓ have no other row to reach) |
 
-A copy goes through `/copy`'s clipboard path (arboard, with the OSC 52
-fallback) and confirms with a toast: `Copied the Discord invite link to
+A copy goes through `/copy`'s clipboard path (arboard, then the user's
+terminal, `docs/copy.md`) and confirms with a toast: `Copied the Discord invite link to
 clipboard` (`app::DISCORD_COPIED_NOTICE`). The app opens no browser itself.
 
 It works mid-turn like every composer-replacing page: the streaming strip

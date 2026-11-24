@@ -10,7 +10,6 @@
 //! [`Action::CopyDiscordInvite`]: alter_zero::app::Action::CopyDiscordInvite
 
 use alter_zero::app::{DISCORD_COPIED_NOTICE, DISCORD_INVITE, ToastKind};
-use alter_zero::clipboard;
 
 use super::Session;
 
@@ -19,11 +18,8 @@ impl Session<'_> {
     /// so. The page stays open either way — the toast lands above it with
     /// the invite still in view.
     pub(crate) fn copy_discord_invite(&mut self) {
-        match clipboard::copy_to_clipboard(DISCORD_INVITE) {
-            Ok(lease) => {
-                self.clipboard_lease = lease;
-                self.toast(DISCORD_COPIED_NOTICE, ToastKind::Info);
-            }
+        match self.copy_text(DISCORD_INVITE) {
+            Ok(()) => self.toast(DISCORD_COPIED_NOTICE, ToastKind::Info),
             Err(reason) => self.toast(format!("Copy failed: {reason}"), ToastKind::Error),
         }
     }

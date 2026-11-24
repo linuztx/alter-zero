@@ -440,9 +440,11 @@ pub(crate) struct Session<'t> {
     reaping: Vec<JoinHandle<()>>,
 
     // ----- odds and ends the boundary has to remember -----
-    /// Keeps the last `/copy`'s native clipboard selection alive (Linux/arboard
-    /// serves it from a thread tied to the `Clipboard`'s lifetime). Held only
-    /// for its `Drop` — never read (`docs/copy.md`).
+    /// Keeps the last native clipboard selection a copy made alive
+    /// (Linux/arboard serves it from a thread tied to the `Clipboard`'s
+    /// lifetime). `Session::copy_text` replaces it only with a new one, so a
+    /// copy only the terminal took leaves it held. Held only for its `Drop` —
+    /// never read (`docs/copy.md`).
     clipboard_lease: Option<ClipboardLease>,
     /// Whether the terminal was resized while an overlay covered the inline
     /// view, which upgrades that return's repaint to a purge rebuild

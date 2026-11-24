@@ -8,16 +8,17 @@ smoke_begin
 # one const invite: a gradient `♥ Join the Alter Zero Discord` title over a
 # dim blurb, the numbered `❯ 1. Discord` label over the invite in a rounded
 # box, and a key hint with no arrows (there is no other row). Enter copies the
-# invite — the toast says so, and headless here the OSC 52 fallback lands it
-# VERBATIM in tmux's paste buffer (Phase 28's trick) while the page stays
-# open; `c` and `1` copy it too, ↓ moves nothing, and Esc brings the composer
-# and its footer back.
+# invite — the toast says so, and tmux, handed it by the app inside its pane
+# (`tmux load-buffer`), keeps it VERBATIM in its paste buffer (Phase 169,
+# docs/copy.md) while the page stays open; `c` and `1` copy it too, ↓ moves
+# nothing, and Esc brings the composer and its footer back.
 S167="${S}_discord"
 DISCORD_URL="https://discord.gg/EDBSpmq2fV"
 # Whether tmux's paste buffer holds exactly the invite.
 buffer_holds_invite() { [ "$(tmux show-buffer 2>/dev/null)" = "$DISCORD_URL" ]; }
 tmux new-session -d -s "$S167" -x 90 -y 40 "$APP"
-# tmux must capture OSC 52 from the app into its own buffer (Phase 28).
+# For a tmux older than 3.2, which has no `load-buffer -w`: the copy falls
+# back to the escape there, and only `on` keeps an application's escape.
 tmux set-option -g set-clipboard on
 sleep 0.5
 tmux send-keys -t "$S167" -l "/discord"

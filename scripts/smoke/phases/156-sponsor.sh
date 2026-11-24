@@ -9,12 +9,13 @@ smoke_begin
 # Zero` title over a dim blurb, each row a numbered `❯ 1. GitHub Sponsors`
 # label over its value in a rounded box, and a key hint; ↓ moves the `❯`
 # and wraps; Enter copies the highlighted value — the toast says which, and
-# headless here the OSC 52 fallback lands it VERBATIM in tmux's paste buffer
-# (Phase 28's trick) while the page stays open; Esc brings the composer and
-# its footer back.
+# tmux, handed it by the app inside its pane (`tmux load-buffer`), keeps it
+# VERBATIM in its paste buffer (Phase 169, docs/copy.md) while the page stays
+# open; Esc brings the composer and its footer back.
 S156="${S}_sponsor"
 tmux new-session -d -s "$S156" -x 90 -y 40 "$APP"
-# tmux must capture OSC 52 from the app into its own buffer (Phase 28).
+# For a tmux older than 3.2, which has no `load-buffer -w`: the copy falls
+# back to the escape there, and only `on` keeps an application's escape.
 tmux set-option -g set-clipboard on
 sleep 0.5
 tmux send-keys -t "$S156" -l "/sponsor"

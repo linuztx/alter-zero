@@ -5,7 +5,6 @@
 //! `docs/llm.md` and `docs/local-models.md`.
 
 use alter_zero::app::{ServerTest, SigninKind, ToastKind};
-use alter_zero::clipboard;
 use alter_zero::llm;
 use alter_zero::stream::CancelToken;
 
@@ -126,11 +125,8 @@ impl Session<'_> {
     /// clipboard I/O is `/copy`'s (`docs/copy.md`); only the confirmation
     /// differs, because "Copied last message" would be a lie here.
     pub(crate) fn copy_device_code(&mut self, code: &str) {
-        match clipboard::copy_to_clipboard(code) {
-            Ok(lease) => {
-                self.clipboard_lease = lease;
-                self.toast(CODE_COPIED_NOTICE, ToastKind::Info);
-            }
+        match self.copy_text(code) {
+            Ok(()) => self.toast(CODE_COPIED_NOTICE, ToastKind::Info),
             Err(reason) => self.toast(format!("Copy failed: {reason}"), ToastKind::Error),
         }
     }

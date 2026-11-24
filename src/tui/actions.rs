@@ -380,15 +380,28 @@ impl Session<'_> {
     /// here. The result surfaces as a transient toast, not a scrollback bullet.
     /// See `docs/copy.md` / `docs/toast.md`.
     fn copy_to_clipboard(&mut self, text: &str) {
-        match clipboard::copy_to_clipboard(text) {
-            Ok(lease) => {
-                // Hold the native selection alive for the app's lifetime
-                // (Linux); None over OSC 52.
-                self.clipboard_lease = lease;
-                self.toast(COPY_OK_NOTICE, ToastKind::Info);
-            }
+        match self.copy_text(text) {
+            Ok(()) => self.toast(COPY_OK_NOTICE, ToastKind::Info),
             Err(reason) => self.toast(format!("Copy failed: {reason}"), ToastKind::Error),
         }
+    }
+
+    /// Put `text` on the user's clipboard by every route this session can
+    /// reach it by (`clipboard::copy_to_clipboard`, `docs/copy.md`). Every
+    /// page that copies something comes through here and says its own
+    /// confirmation.
+    ///
+    /// A copy the native clipboard took hands back what keeps its selection
+    /// alive (Linux), held for the app's lifetime. A copy only the terminal
+    /// took hands back nothing, and the last native selection stays held.
+    /// Dropping the last arboard handle offers its text to a clipboard
+    /// manager, and that could land over the text the terminal was just
+    /// given.
+    pub(crate) fn copy_text(&mut self, text: &str) -> Result<(), String> {
+        if let Some(lease) = clipboard::copy_to_clipboard(text)? {
+            self.clipboard_lease = Some(lease);
+        }
+        Ok(())
     }
 
     /// Esc mid-generation (codex-style): stop the backend but NEVER join it on

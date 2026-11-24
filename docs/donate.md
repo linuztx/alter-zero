@@ -191,9 +191,10 @@ so the cursor's return when the page closes starts somewhere sensible.
 Enter, `c`, or a digit returns `Action::CopyDonationAddress(address)` — the
 pure core decides *what* is copied, the loop does the I/O
 (`tui::donate::Session::copy_donation_address`): the `/copy` clipboard path
-(`clipboard::copy_to_clipboard` — arboard, with the OSC 52 fallback for a
-headless, SSH or tmux session; the native lease held for the app's lifetime,
-`docs/copy.md`), then a transient toast — `Copied the BTC address to
+(`Session::copy_text` over `clipboard::copy_to_clipboard`: arboard, then the
+user's terminal, through tmux's own buffer inside tmux and an OSC 52 escape
+elsewhere; the native lease held for the app's lifetime, `docs/copy.md`),
+then a transient toast — `Copied the BTC address to
 clipboard`, worded for what was actually copied, the `/login` device page's
 `Copied the code to clipboard` sibling — or a red `Copy failed: {reason}`.
 Never a scrollback bullet (`docs/toast.md`).
@@ -237,8 +238,8 @@ Never a scrollback bullet (`docs/toast.md`).
   open from the palette, all three addresses in their boxes with their
   networks captioned under them and every row read whole (no network after
   the coin), ↓ moves the `❯` to ETH, `c`
-  copies the highlighted address (the toast, and the OSC 52 fallback
-  landing in tmux's paste buffer verbatim), ↓ reaches SOL and wraps back
+  copies the highlighted address (the toast, and the address landing in
+  tmux's paste buffer verbatim), ↓ reaches SOL and wraps back
   to BTC, Esc brings the composer back.
 
 ## Shared with `/sponsor` and `/discord`

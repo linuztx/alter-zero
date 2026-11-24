@@ -13,14 +13,14 @@ smoke_begin
 # ETH address — the label agreeing with the count), an amber
 # wrong-network caution pointing at those captions and a key hint; ↓
 # moves the `❯`, on to the third (SOL) row and back; `c` copies the
-# highlighted address — the toast names the coin, and headless here (the
-# suite's own unset of the display variables) arboard has no clipboard server
-# so the OSC 52 fallback lands the address VERBATIM in tmux's paste buffer
-# (Phase 28's trick) while the page stays open; Esc
-# brings the composer and its footer back.
+# highlighted address — the toast names the coin, and the app, inside the
+# phase's tmux, hands it to tmux (`tmux load-buffer`), which keeps it
+# VERBATIM in its paste buffer (Phase 169, docs/copy.md) while the page stays
+# open; Esc brings the composer and its footer back.
 S112="${S}_donate"
 tmux new-session -d -s "$S112" -x 90 -y 40 "$APP"
-# tmux must capture OSC 52 from the app into its own buffer (Phase 28).
+# For a tmux older than 3.2, which has no `load-buffer -w`: the copy falls
+# back to the escape there, and only `on` keeps an application's escape.
 tmux set-option -g set-clipboard on
 sleep 0.5
 tmux send-keys -t "$S112" -l "/donate"
@@ -97,7 +97,7 @@ printf '%s\n' "$donate_eth"
 expect_has "$donate_eth" -F "❯ 2. ETH" "↓ did not move the ❯ to ETH"
 expect_lacks "$donate_eth" -F "❯ 1. BTC" "BTC still wears the ❯ after ↓"
 # `c` copies the highlighted address: the toast names the coin, and the
-# OSC 52 fallback lands the address verbatim in tmux's buffer.
+# address lands verbatim in tmux's buffer.
 while tmux delete-buffer 2>/dev/null; do :; done
 tmux send-keys -t "$S112" -l "c"
 donate_copied="$(wait_pane 3 "$S112" -F "Copied the ETH address to clipboard")" # up to ~3s
@@ -105,7 +105,7 @@ echo "==== Phase 112: after c — the toast ===="
 printf '%s\n' "$donate_copied"
 expect_has "$donate_copied" -F "Copied the ETH address to clipboard" "c did not confirm the copy with a toast naming the coin"
 donate_clip="$(tmux show-buffer 2>/dev/null)"
-echo "==== Phase 112: tmux clipboard buffer (the OSC 52 fallback landed here) ===="
+echo "==== Phase 112: tmux clipboard buffer (tmux took it from the app) ===="
 printf '%s\n' "$donate_clip"
 if [ "$donate_clip" != "0xEAf6fbabB9DBE7a23BfE22A7A6c4aCe02063524b" ]; then
 	fail "the clipboard does not hold the ETH address verbatim"
