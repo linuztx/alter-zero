@@ -5,7 +5,7 @@ Date: 2026-11-05
 The app needs token counts it has not been given yet. The status line's tally
 ticks while a reply streams, the footer's context gauge has to say how full
 the window is before the next request is sent, auto-compact decides whether
-to run at 90% of it, the `/context` page splits the window into its parts,
+it has reached its ceiling, the `/context` page splits the window into its parts,
 Ctrl+D labels every message, and a compaction records how far it shrank the
 context. The provider only reports a request's real size once per round, in
 its usage frame (`StreamEvent::Usage`, `docs/prompt-caching.md`). Everything

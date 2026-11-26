@@ -177,7 +177,7 @@ reads:
 
 | record field | what it gives |
 | --- | --- |
-| `context_length` | the window the footer gauges against, and auto-compaction's 90% |
+| `context_length` | the window the footer gauges against, and auto-compaction's ceiling (the window less 15%) |
 | `architecture.input_modalities` | image input: a picture is attached, or degraded to a note for a model that can't read one |
 | `supported_parameters` naming `reasoning` / `reasoning_effort` | a reasoner: Ctrl+T cycles `off → low → medium → high`, `medium` by default |
 
