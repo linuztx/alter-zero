@@ -11,13 +11,15 @@ use super::*;
 /// `● Context compacted` cell being its record. See `docs/compact.md`.
 pub const COMPACT_VERB: &str = "Compacting";
 
-/// The auto-compact trigger's numerator/denominator: codex's threshold is
-/// **90% of the context window** (`(context_window * 9) / 10`,
-/// `ModelInfo::auto_compact_token_limit`). Past it, the loop starts a compact
-/// turn on its own at the next idle boundary. See `docs/compact.md`.
-const AUTO_COMPACT_NUMERATOR: u64 = 9;
+/// The share of the window, in percent, the ceiling keeps free: room for the
+/// last reply before compaction and for the summary itself — opencode's
+/// reserve, which replaced codex's 90% because 20k of a 200k window could not
+/// hold a long reply (`docs/background-compaction.md` *The numbers*).
+const RESERVE_PERCENT: u64 = 15;
 
-const AUTO_COMPACT_DENOMINATOR: u64 = 10;
+/// The least the ceiling keeps free, on a window with room for it (one at
+/// least twice as large).
+const RESERVE_MIN: u64 = 16_000;
 
 impl App {
     /// Begin a `/compact` turn (`docs/compact.md`), reusing the AI turn
@@ -267,7 +269,7 @@ impl App {
 
     /// Whether the loop should start an **auto-compact** turn at the next idle
     /// boundary: the `/settings` **Auto compact** knob is on, the window is
-    /// known, the gauge is past codex's 90% threshold, no turn is in flight,
+    /// known, the gauge is past the ceiling (`auto_compact_threshold`), no turn is in flight,
     /// the last compact attempt isn't still blocking (one per user turn), and
     /// the conversation derives a non-empty context to summarize. See
     /// `docs/compact.md` / `docs/settings.md`.
@@ -291,14 +293,22 @@ impl App {
     }
 }
 
-/// Where auto-compaction runs for a `window`-token context window: codex's
-/// 90% (`ModelInfo::auto_compact_token_limit`). The trigger
-/// ([`App::should_auto_compact`]) and the `/context` page's headroom
-/// (`docs/context-usage.md`) both read it, so the page can never show a
+/// The **ceiling** a `window`-token context window compacts at: the window
+/// less [`RESERVE_PERCENT`], at least [`RESERVE_MIN`] where the window has
+/// room for it — 170k of 200k, 850k of 1M. The idle trigger
+/// ([`App::should_auto_compact`]), the background summary's splice
+/// (`docs/background-compaction.md`) and the `/context` page's headroom
+/// (`docs/context-usage.md`) all read it, so the page can never show a
 /// threshold the loop does not act on.
 #[must_use]
 pub(crate) const fn auto_compact_threshold(window: u64) -> u64 {
-    window.saturating_mul(AUTO_COMPACT_NUMERATOR) / AUTO_COMPACT_DENOMINATOR
+    let share = window.saturating_mul(RESERVE_PERCENT) / 100;
+    let floor = if window >= 2 * RESERVE_MIN {
+        RESERVE_MIN
+    } else {
+        0
+    };
+    window.saturating_sub(if share > floor { share } else { floor })
 }
 
 /// The estimate of a derived context: every message's text, a flat

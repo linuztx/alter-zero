@@ -184,7 +184,8 @@ fn the_rows_are_the_slices_then_the_room_left() {
     with_room.extend([ContextUsageRow::Free, ContextUsageRow::AutoCompact]);
     assert_eq!(app.context_usage_rows(), with_room);
     assert_eq!(app.context_usage_window(), Some(200_000));
-    assert_eq!(app.context_usage_threshold(), Some(180_000));
+    // The ceiling: the window less 15% (docs/background-compaction.md).
+    assert_eq!(app.context_usage_threshold(), Some(170_000));
     // Auto compact off: no headroom is kept, so there is no row for it.
     app.settings.auto_compact = false;
     let mut free_only = slices;

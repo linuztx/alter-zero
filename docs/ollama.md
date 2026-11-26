@@ -191,7 +191,7 @@ Two consequences worth knowing:
   not, as aider does it, sized to each request — an agentic loop that changed
   it per round would reload per round).
 - **Overflow still truncates.** With the gauge and auto-compaction keeping a
-  turn under 90% of the window this is rare, and Ollama's `truncate: false`
+  request under the ceiling (the window less 15%) this is rare, and Ollama's `truncate: false`
   (which errors instead) is deliberately not sent: a single oversize tool
   output would then fail the round, and the compaction that could fix it
   sends the same context and fails too. Dropping the oldest messages and

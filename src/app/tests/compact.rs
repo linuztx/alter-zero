@@ -314,13 +314,36 @@ fn set_context_window_ignores_a_zero() {
 }
 
 #[test]
-fn auto_compact_triggers_past_ninety_percent_of_the_window() {
-    // Codex's threshold: (window * 9) / 10.
+fn the_ceiling_keeps_fifteen_percent_of_the_window_free() {
+    // opencode's reserve: room for the last reply before compaction and for
+    // the summary itself (docs/background-compaction.md *The numbers*).
+    assert_eq!(
+        crate::app::compact::auto_compact_threshold(200_000),
+        170_000
+    );
+    assert_eq!(
+        crate::app::compact::auto_compact_threshold(1_000_000),
+        850_000
+    );
+}
+
+#[test]
+fn the_ceiling_keeps_at_least_16k_free_where_the_window_has_room_for_it() {
+    assert_eq!(crate::app::compact::auto_compact_threshold(100_000), 84_000);
+    assert_eq!(crate::app::compact::auto_compact_threshold(32_000), 16_000);
+    // Under 32k the floor would take half the window or more: 15% it is.
+    assert_eq!(crate::app::compact::auto_compact_threshold(20_000), 17_000);
+    assert_eq!(crate::app::compact::auto_compact_threshold(1_000), 850);
+}
+
+#[test]
+fn auto_compact_triggers_past_the_ceiling() {
+    // The window less 15%: 850 of 1000 (docs/background-compaction.md).
     let mut app = App::new();
     app.record_user_message("hello");
     app.set_context_window(Some(1_000));
     app.begin_stream();
-    app.apply_usage(&usage_of(950, 0));
+    app.apply_usage(&usage_of(900, 0));
     app.finish_stream();
     app.end_turn(1);
     assert!(app.should_auto_compact());
@@ -332,12 +355,12 @@ fn auto_compact_does_not_trigger_at_or_below_the_threshold() {
     app.record_user_message("hello");
     app.set_context_window(Some(1_000));
     app.begin_stream();
-    app.apply_usage(&usage_of(900, 0));
+    app.apply_usage(&usage_of(850, 0));
     app.finish_stream();
     app.end_turn(1);
     assert!(
         !app.should_auto_compact(),
-        "900 of 1000 is exactly the line"
+        "850 of 1000 is exactly the line"
     );
 }
 
