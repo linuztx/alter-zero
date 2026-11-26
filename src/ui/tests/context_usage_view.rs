@@ -402,8 +402,9 @@ fn the_bar_stands_for_the_whole_window() {
         width as usize - 4,
         "the bar spans the page less its insets"
     );
-    // The last tenth is the hatched headroom auto-compact keeps.
-    assert_eq!(reserved, 10, "10% of 96 cells");
+    // The last 15% is the hatched headroom background compaction keeps
+    // below its ceiling (docs/background-compaction.md).
+    assert_eq!(reserved, 14, "15% of 96 cells");
     let text = plain(&bar);
     assert!(
         text.trim_end().ends_with('╱'),
@@ -456,10 +457,11 @@ fn every_run_on_the_bar_is_its_own_share_of_the_window() {
             plain(&bar)
         );
     }
-    // The hatched headroom is its own share too — the last tenth — and the
-    // free space is whatever the rest leave.
+    // The hatched headroom is its own share too — on a 100k window the 16k
+    // floor below the ceiling, 16% — and the free space is whatever the
+    // rest leave.
     let reserved = run_cells(&bar, context_usage_reserved_color(), '╱');
-    assert_eq!(reserved, 10);
+    assert_eq!(reserved, 15);
     let used: usize = app
         .context_usage
         .as_ref()
@@ -501,14 +503,14 @@ fn the_conversations_run_grows_as_the_conversation_does() {
             run > last,
             "the run grew with the conversation: {last} → {run}"
         );
-        assert_eq!(run_cells(&bar, context_usage_reserved_color(), '╱'), 10);
+        assert_eq!(run_cells(&bar, context_usage_reserved_color(), '╱'), 15);
         last = run;
     }
 }
 
 #[test]
 fn a_window_past_the_threshold_fills_the_hatched_cells() {
-    // The window barely holds the conversation: past 90%, the used cells
+    // The window barely holds the conversation: past the ceiling, the used cells
     // run into the headroom and the subtitle's share turns red.
     let mut app = open_with(Some(1_000));
     let total = app.context_usage.as_ref().unwrap().breakdown.total() as u64;
@@ -702,7 +704,7 @@ fn free_space_and_the_headroom_explain_themselves() {
     let mut app = open_app();
     select(&mut app, ContextUsageRow::Free);
     let texts = page_texts(&app, 100);
-    assert!(has(&texts, "until auto-compact runs at 180k"), "{texts:?}");
+    assert!(has(&texts, "until auto-compact runs at 170k"), "{texts:?}");
     select(&mut app, ContextUsageRow::AutoCompact);
     let texts = page_texts(&app, 100);
     assert!(has(&texts, "stays free"), "{texts:?}");

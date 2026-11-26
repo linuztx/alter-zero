@@ -169,6 +169,7 @@ impl App {
         }
         self.history.truncate(position);
         self.history_generation += 1;
+        self.history_epoch += 1;
         // A rewind lands between turns, where no group is open — but the
         // rebuild that follows renders whatever one held (docs/tool-groups.md).
         self.drop_tool_group();

@@ -16,7 +16,8 @@ use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::context::ContextMessage;
-use crate::stream::{CancelToken, StreamEvent};
+use crate::hooks::HookReport;
+use crate::stream::{CancelToken, StreamEvent, TokenUsage};
 
 /// The share of the window kept free below the ceiling, in percent: room for
 /// the last reply before compaction — a reasoning model's thought included —
@@ -157,6 +158,12 @@ struct SlotState {
     cycle_start: u64,
     next_id: u64,
     answer: Option<(u64, Option<Vec<ContextMessage>>)>,
+    /// A summary was swapped in and no round top has measured the context it
+    /// left yet.
+    landed_unmeasured: bool,
+    /// A summary swapped in this turn left the context at or past the
+    /// ceiling: none is started again until the next turn.
+    futile: bool,
 }
 
 impl CompactionSlot {
@@ -247,6 +254,8 @@ impl CompactionSlot {
             state.job = Job::None;
             state.failures = 0;
             state.cycle_start = after;
+            state.landed_unmeasured = true;
+            state.futile = state.window.is_some_and(|window| after >= ceiling(window));
         }
     }
 
@@ -259,6 +268,35 @@ impl CompactionSlot {
             state.failures = 0;
             state.cycle_start = 0;
             state.answer = None;
+            state.landed_unmeasured = false;
+            state.futile = false;
+        }
+    }
+
+    /// Whether a compaction this turn already left the context at or past
+    /// the ceiling, so no summary is started until the next turn.
+    #[must_use]
+    pub fn futile(&self) -> bool {
+        self.state().is_some_and(|state| state.futile)
+    }
+
+    /// A turn began: whatever the last one found futile, it may compact — a
+    /// swap no round top has measured yet is still measured at its first.
+    pub fn turn_started(&self) {
+        if let Some(mut state) = self.state() {
+            state.futile = false;
+        }
+    }
+
+    /// The first round top after a swap measures the context it left by the
+    /// turn's own count: at or past the ceiling, the compaction could not
+    /// help, and another summary now would only land in the same place.
+    fn measure_landing(&self, used: u64) {
+        if let Some(mut state) = self.state()
+            && std::mem::take(&mut state.landed_unmeasured)
+            && state.window.is_some_and(|window| used >= ceiling(window))
+        {
+            state.futile = true;
         }
     }
 
@@ -300,16 +338,21 @@ pub fn round_top(
     cancel: &CancelToken,
     pause: &mut dyn FnMut(),
 ) -> Option<Vec<ContextMessage>> {
+    slot.measure_landing(used);
     let mut announced = None;
     loop {
         let window = slot.window()?;
-        match decide(
-            used,
-            window,
-            slot.cycle_start(),
-            slot.job(),
-            slot.failures(),
-        ) {
+        // A swap this turn that left the context past its ceiling starts
+        // nothing more until the next turn, as a cycle's failures do
+        // (`docs/background-compaction.md` *Failures and edges*): the
+        // system prompt and tools alone fill a small window, or the tail kept
+        // verbatim is that large, and summarizing again would loop.
+        let failures = if slot.futile() {
+            MAX_FAILURES
+        } else {
+            slot.failures()
+        };
+        match decide(used, window, slot.cycle_start(), slot.job(), failures) {
             Decision::Proceed => return None,
             Decision::Start => {
                 if let Some(id) = slot.begin() {
@@ -359,6 +402,74 @@ fn request_swap(
         pause();
     }
     slot.take_answer(id).flatten()
+}
+
+/// Why a summary that ended with nothing written is no summary.
+pub const EMPTY_SUMMARY: &str = "the summary came back empty";
+
+/// A background summarizer's stream, folded event by event on the worker
+/// that drains it (`docs/background-compaction.md` *The lifecycle*): the
+/// summary's text, the compact hooks' reports for the cells above the
+/// `Context compacted` line, and the provider's usage frames for the
+/// since-launch ledger.
+#[derive(Debug, Default)]
+pub struct SummaryStream {
+    text: String,
+    /// How much of `text` the attempt now streaming found there — what a
+    /// retry takes the summary back to (`App::track_attempt`'s rule).
+    attempt_floor: Option<usize>,
+    hooks: Vec<(String, HookReport)>,
+    usage: Vec<TokenUsage>,
+}
+
+impl SummaryStream {
+    /// Fold one event in; `Some` once the stream has ended — the summary, or
+    /// why there is none.
+    pub fn push(&mut self, event: StreamEvent) -> Option<Result<String, String>> {
+        if event.is_attempt_output() {
+            self.attempt_floor.get_or_insert(self.text.len());
+        } else if !matches!(event, StreamEvent::Retrying { .. }) {
+            self.attempt_floor = None;
+        }
+        match event {
+            StreamEvent::Chunk(text) => self.text.push_str(&text),
+            // A connection lost mid-reply restarts the round: what its own
+            // attempt streamed is void, and what the rounds before it wrote
+            // stays — a summary the output cap cut off goes on in another
+            // round (`docs/offline.md`, `docs/unfinished-replies.md`).
+            StreamEvent::Retrying { .. } => {
+                if let Some(floor) = self.attempt_floor.take() {
+                    self.text.truncate(floor);
+                }
+            }
+            StreamEvent::HookNote {
+                label,
+                report: Some(report),
+                ..
+            } => self.hooks.push((label, report)),
+            StreamEvent::Usage(usage) => self.usage.push(usage),
+            StreamEvent::StreamDone => {
+                let summary = std::mem::take(&mut self.text);
+                return Some(if summary.trim().is_empty() {
+                    Err(EMPTY_SUMMARY.to_string())
+                } else {
+                    Ok(summary)
+                });
+            }
+            StreamEvent::Error(message) => return Some(Err(message)),
+            // Its thought, a wait for the connection, the rest: nothing the
+            // summary keeps.
+            _ => {}
+        }
+        None
+    }
+
+    /// The compact hooks' reports, each under its event's label, and the
+    /// usage frames.
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<(String, HookReport)>, Vec<TokenUsage>) {
+        (self.hooks, self.usage)
+    }
 }
 
 #[cfg(test)]
@@ -706,5 +817,262 @@ mod tests {
         let swapped = round_top(&slot, 175_000, &tx, &CancelToken::new(), &mut || polls += 1);
         assert_eq!(swapped, None);
         assert_eq!(polls, SWAP_ANSWER_POLLS);
+    }
+
+    // ── A compaction that could not help (docs/background-compaction.md
+    //    *Failures and edges*) ──────────────────────────────────────────────
+
+    /// A held summary of job `id` swapped in, leaving the context at `after`
+    /// by the boundary's gauge.
+    fn swapped_in(slot: &CompactionSlot, after: u64) {
+        let id = slot.begin().expect("nothing running");
+        slot.ready(id);
+        slot.landed(id, after);
+    }
+
+    #[test]
+    fn a_landing_past_the_ceiling_starts_nothing_more_this_turn() {
+        // The system prompt and tools alone fill a small window, or the tail
+        // kept verbatim is that large: another summary now would land in the
+        // same place, so the turn goes on uncompacted rather than loop.
+        let slot = configured();
+        swapped_in(&slot, 180_000);
+        let (tx, mut rx) = channel();
+        for used in [180_000, 185_000, 199_000] {
+            let cancel = CancelToken::new();
+            let swapped = round_top(&slot, used, &tx, &cancel, &mut || cancel.cancel());
+            assert_eq!(swapped, None);
+        }
+        assert!(drained(&mut rx).is_empty(), "no summary started");
+        assert!(slot.futile());
+    }
+
+    #[test]
+    fn the_turns_own_measure_after_a_swap_can_find_it_futile_too() {
+        // The gauge's calibrated count put the swap under the ceiling, the
+        // turn's own count of its rebuilt list over it: either says another
+        // summary now would only land there again.
+        let slot = configured();
+        swapped_in(&slot, 120_000);
+        assert!(!slot.futile());
+        let (tx, mut rx) = channel();
+        let cancel = CancelToken::new();
+        let swapped = round_top(&slot, 175_000, &tx, &cancel, &mut || cancel.cancel());
+        assert_eq!(swapped, None);
+        assert!(drained(&mut rx).is_empty(), "no summary started");
+        assert!(slot.futile());
+    }
+
+    #[test]
+    fn only_the_first_round_top_after_a_swap_measures_it() {
+        let slot = configured();
+        swapped_in(&slot, 90_000);
+        let (tx, mut rx) = channel();
+        // Below the start line the cycle began at: nothing, and not futile.
+        round_top(&slot, 95_000, &tx, &CancelToken::new(), &mut || {
+            panic!("nothing to wait for")
+        });
+        assert!(!slot.futile());
+        // Rounds later the context has grown past the ceiling: a summary
+        // is started and waited for as usual — until an Esc ends the wait.
+        let cancel = CancelToken::new();
+        round_top(&slot, 175_000, &tx, &cancel, &mut || cancel.cancel());
+        assert!(
+            matches!(
+                drained(&mut rx).first(),
+                Some(StreamEvent::CompactionStart { .. })
+            ),
+            "a summary started"
+        );
+    }
+
+    #[test]
+    fn a_new_turn_may_compact_again() {
+        let slot = configured();
+        swapped_in(&slot, 180_000);
+        let (tx, mut rx) = channel();
+        let cancel = CancelToken::new();
+        round_top(&slot, 180_000, &tx, &cancel, &mut || cancel.cancel());
+        assert!(slot.futile());
+        assert!(drained(&mut rx).is_empty());
+        slot.turn_started();
+        assert!(!slot.futile());
+        // Still past the ceiling, with the next message on top: the next turn
+        // starts a summary and waits for it — until an Esc ends the wait.
+        let cancel = CancelToken::new();
+        round_top(&slot, 185_000, &tx, &cancel, &mut || cancel.cancel());
+        assert!(
+            matches!(
+                drained(&mut rx).first(),
+                Some(StreamEvent::CompactionStart { .. })
+            ),
+            "the next turn tries again"
+        );
+    }
+
+    #[test]
+    fn a_new_turn_still_measures_a_swap_no_round_top_saw() {
+        // Landed between turns: the turn that follows measures it at its
+        // first round top, whatever the turn's start cleared.
+        let slot = configured();
+        swapped_in(&slot, 120_000);
+        slot.turn_started();
+        let (tx, mut rx) = channel();
+        let cancel = CancelToken::new();
+        round_top(&slot, 176_000, &tx, &cancel, &mut || cancel.cancel());
+        assert!(drained(&mut rx).is_empty());
+        assert!(slot.futile());
+    }
+
+    #[test]
+    fn forgetting_a_conversation_forgets_its_futility() {
+        let slot = configured();
+        swapped_in(&slot, 180_000);
+        assert!(slot.futile());
+        slot.forget();
+        assert!(!slot.futile());
+    }
+
+    // ── The summarizer's stream (docs/background-compaction.md *The lifecycle*)
+
+    fn fold(events: Vec<StreamEvent>) -> (Option<Result<String, String>>, SummaryStream) {
+        let mut stream = SummaryStream::default();
+        let mut end = None;
+        for event in events {
+            if let Some(ended) = stream.push(event) {
+                end = Some(ended);
+                break;
+            }
+        }
+        (end, stream)
+    }
+
+    fn report(event: &str) -> HookReport {
+        HookReport {
+            event: event.to_string(),
+            hooks: Vec::new(),
+            warnings: vec!["a warning".to_string()],
+        }
+    }
+
+    #[test]
+    fn a_summary_is_the_text_streamed_before_the_stream_ends() {
+        let (end, _) = fold(vec![
+            StreamEvent::ThinkingStart,
+            StreamEvent::ThinkingChunk("what to keep".into()),
+            StreamEvent::ThinkingEnd,
+            StreamEvent::Chunk("The user is porting ".into()),
+            StreamEvent::Chunk("the payments module.".into()),
+            StreamEvent::StreamDone,
+            StreamEvent::Chunk("never read".into()),
+        ]);
+        assert_eq!(
+            end,
+            Some(Ok("The user is porting the payments module.".to_string())),
+            "the reply alone — no thought, nothing after the end"
+        );
+    }
+
+    #[test]
+    fn a_stream_still_going_has_not_ended() {
+        let (end, _) = fold(vec![StreamEvent::Chunk("The user is".into())]);
+        assert_eq!(end, None);
+    }
+
+    #[test]
+    fn an_error_ends_it_without_a_summary() {
+        let (end, _) = fold(vec![
+            StreamEvent::Chunk("The user is".into()),
+            StreamEvent::Error("429 Too Many Requests".into()),
+        ]);
+        assert_eq!(end, Some(Err("429 Too Many Requests".to_string())));
+    }
+
+    #[test]
+    fn an_empty_summary_is_no_summary() {
+        let (end, _) = fold(vec![
+            StreamEvent::Chunk("  \n".into()),
+            StreamEvent::StreamDone,
+        ]);
+        assert_eq!(end, Some(Err(EMPTY_SUMMARY.to_string())));
+    }
+
+    #[test]
+    fn a_retried_attempt_voids_what_it_streamed() {
+        // A connection lost mid-reply restarts the round, and the restart
+        // writes the summary from its beginning (docs/offline.md).
+        let (end, _) = fold(vec![
+            StreamEvent::Chunk("The user is por".into()),
+            StreamEvent::Retrying { attempt: 1, max: 3 },
+            StreamEvent::Chunk("The user is porting payments.".into()),
+            StreamEvent::StreamDone,
+        ]);
+        assert_eq!(end, Some(Ok("The user is porting payments.".to_string())));
+    }
+
+    #[test]
+    fn a_retry_takes_back_only_its_own_attempt() {
+        // A summary the output cap cut off goes on in another round
+        // (docs/unfinished-replies.md); a connection lost in that round takes
+        // back what its own attempt streamed and nothing the first round
+        // wrote.
+        let (end, _) = fold(vec![
+            StreamEvent::Chunk("The user is porting ".into()),
+            StreamEvent::HookNote {
+                label: String::new(),
+                text: "Your reply was cut off. Continue it.".into(),
+                report: None,
+            },
+            StreamEvent::Chunk("the paym".into()),
+            StreamEvent::Retrying { attempt: 1, max: 3 },
+            StreamEvent::Chunk("the payments module.".into()),
+            StreamEvent::StreamDone,
+        ]);
+        assert_eq!(
+            end,
+            Some(Ok("The user is porting the payments module.".to_string()))
+        );
+    }
+
+    #[test]
+    fn the_compact_hooks_reports_are_kept_for_their_cells() {
+        // PreCompact and PostCompact said something: their cells go above
+        // the `Context compacted` line when it lands, and nothing of their
+        // text joins the summary.
+        let (_, stream) = fold(vec![
+            StreamEvent::HookNote {
+                label: "PreCompact".into(),
+                text: "keep the API names".into(),
+                report: Some(report("PreCompact")),
+            },
+            StreamEvent::HookNote {
+                label: "PreCompact".into(),
+                text: "silent".into(),
+                report: None,
+            },
+            StreamEvent::Chunk("The user is porting payments.".into()),
+            StreamEvent::StreamDone,
+        ]);
+        let (hooks, _) = stream.into_parts();
+        assert_eq!(
+            hooks,
+            vec![("PreCompact".to_string(), report("PreCompact"))]
+        );
+    }
+
+    #[test]
+    fn its_usage_frames_are_kept_for_the_launch_ledger() {
+        let frame = TokenUsage {
+            input: 120_000,
+            output: 2_000,
+            ..TokenUsage::default()
+        };
+        let (_, stream) = fold(vec![
+            StreamEvent::Chunk("The user is porting payments.".into()),
+            StreamEvent::Usage(frame),
+            StreamEvent::StreamDone,
+        ]);
+        let (_, usage) = stream.into_parts();
+        assert_eq!(usage, vec![frame]);
     }
 }

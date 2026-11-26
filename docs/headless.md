@@ -205,10 +205,13 @@ byte is still worth reading.
    bounded by its own startup timeout) before the first request.
 5. **The prompt is submitted** through the same path as the `[PROMPT]`
    shortcut — redacted against the secrets, then `start_turn`. A
-   `--continue`d conversation already past its window compacts first: the
-   TUI's idle-boundary auto-compaction (`docs/compact.md`), run once before
-   the prompt and afterwards only while the run waits on its subagents —
-   never after the last answer, where it would only cost a request.
+   `--continue`d conversation already past its start line starts a summary
+   in the background first — the TUI's idle-boundary rule
+   (`docs/background-compaction.md` *Between turns*), run once before the
+   prompt and afterwards only while the run waits on its subagents, never
+   after the last answer, where it would only cost a request — and the
+   prompt's turn adopts it, swapping it in at its ceiling. Inside a turn a
+   long `-p` task compacts as the TUI's does.
 6. **The loop runs until the session is idle**: no turn in flight, nothing
    queued, no subagent running. A background agent's completion starts the
    follow-up turn the TUI would start, so "launch the critic agent, write a

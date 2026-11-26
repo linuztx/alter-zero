@@ -853,7 +853,8 @@ conversation a `/clear`, `/resume`, rewind or compaction replaces; the
 its session view): tokens in and out and the cache-hit share as a meter
 (`>99%` and `<1%` short of all or none); a window bar in category
 colours with the free space and the hatched auto-compact reserve allotted
-on cumulative cell boundaries, so the hatch starts at 90% to the cell; a
+on cumulative cell boundaries, so the hatch starts at background
+compaction's ceiling (85% of a 200k window) to the cell; a
 legend whose highlighted row's parts sit beside it from 76 columns, the
 highlight following the largest category until the user moves it; **live**
 — `tui::context_usage` hands over the tool set and re-counts at the loop
@@ -3185,9 +3186,35 @@ rides every request; before any frame the estimate, the tool schemas'
 included — `tokens::ContextMeter`,
 `docs/token-estimate.md`; **inside an agent
 session view it is the viewed agent's own** — `AgentRun::context_used` /
-`App::context_gauge`, `docs/agent-context-gauge.md`) and the loop **auto-runs** the
-same turn past codex's 90% threshold (`App::should_auto_compact`, one
-attempt per user turn, the cell tagged `· auto`)) in `docs/compact.md`; and
+`App::context_gauge`, `docs/agent-context-gauge.md`) and the conversation
+**compacts in the background** — **`docs/background-compaction.md`**: past a
+start line (the ceiling less 60k, or half the room the cycle had) a running
+turn's round top sends `StreamEvent::CompactionStart` and goes on, the
+boundary snapshots `keep_from = history.len()` where the event lands (the
+channel is FIFO) and writes the summary on `compact_backend`'s tools-free
+one-off on a worker of its own (`tui::workers::spawn_background_compaction`,
+the stream folded by the pure `compaction::SummaryStream`), held until the
+**ceiling** (the window less the larger of 15% and 16k —
+`compaction::ceiling`, which `auto_compact_threshold` and the `/context`
+reserve read), where the round top sends `CompactionSwap` and the boundary
+appends the anchored marker (`Compaction::keep_from` — everything before it
+summarized, everything after it verbatim — and `background`, the cell's `·
+background`), commits the cell in place and answers through the shared
+`compaction::CompactionSlot` (the `SteerQueue` shape) with the context
+re-derived from history, which the turn rebuilds its list from
+(`RoundOutcome::Compacted`) — waiting (`CompactionWaiting`, the status verb
+`Compacting…`) only for a summary still unwritten; between turns the loop
+bottom's `Session::tick_background_compaction` starts one past the start
+line and lands one held, so no compaction turn ever blocks a message; a job
+dies with its conversation's **epoch** (`App::history_epoch`, bumped by
+`/clear`, `/resume` and a backtrack — never the render generation) or an
+anchor cut back, two failures a cycle stop starts, a swap that leaves the
+context still past its ceiling stops them for the rest of the turn
+(`CompactionSlot::futile` — the old trigger's one attempt per turn, without
+which a window the system prompt and tools alone fill compacts for ever),
+subagents do not compact yet, and Phases 51 and 171 drive it between and
+inside turns) in
+`docs/compact.md`; and
 the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
 `ALTER_ZERO_*` environment variables — plus a hard-coded `retry::MAX_RETRIES`,
 a hard-coded `agent::MAX_TOOL_ITERATIONS`, and an always-on auto-compaction —
@@ -3323,8 +3350,9 @@ reloads or drops `App::user_instructions` at once, **Telemetry** writes its
 own `telemetry.json` and sends today's ping if none has gone yet
 (`Session::apply_telemetry_setting`, skipping the `settings.json` write), and **Hide thinking** /
 **Auto compact** need nothing — they are read where they are used
-(`tui::stream`'s `ThinkingStart` arm and `App::should_auto_compact`), so
-there is no second copy to drift. It persists to its own
+(`tui::stream`'s `ThinkingStart` arm, and `App::compaction_window`, which the
+loop bottom configures the turn's compaction slot from), so there is no
+second copy to drift. It persists to its own
 `~/.alter-zero/settings.json` — beside `config.json` and `permissions.json`,
 one file per feature that owns it — **per working directory**
 (`settings::SettingsFile`, `docs/per-directory-state.md`: one entry per cwd

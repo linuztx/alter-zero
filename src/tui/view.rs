@@ -91,6 +91,9 @@ impl Session<'_> {
         // masked, the delayed Ctrl+B hint's gate (docs/background.md).
         self.app
             .set_command_elapsed(self.clocks.command_start.map(|start| start.elapsed()));
+        // How long the background summary has been written for — the row
+        // under the status line (docs/background-compaction.md).
+        self.app.set_compaction_elapsed(self.compaction_elapsed());
         // The animation phase for the live region's pulsing bullets — a phase,
         // not a measurement: nothing displays it (docs/tool-pulse.md).
         let now = self.clocks.loop_start.elapsed();

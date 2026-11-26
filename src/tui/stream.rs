@@ -518,12 +518,22 @@ impl Session<'_> {
                 self.app.set_offline(&host, attempts);
                 false
             }
-            // Background compaction's events (docs/background-compaction.md):
-            // only a turn handed a configured `CompactionSlot` sends them, and
-            // no backend is handed one yet.
-            StreamEvent::CompactionStart { .. }
-            | StreamEvent::CompactionWaiting { .. }
-            | StreamEvent::CompactionSwap { .. } => false,
+            // Background compaction (docs/background-compaction.md): the turn
+            // reached its start line, its ceiling with the summary unwritten,
+            // or its ceiling with the summary held. None of them ends the
+            // stream; a swap commits the `Context compacted` cell in place.
+            StreamEvent::CompactionStart { id } => {
+                self.start_background_compaction(id);
+                false
+            }
+            StreamEvent::CompactionWaiting { id } => {
+                self.app.set_compaction_waiting(id);
+                false
+            }
+            StreamEvent::CompactionSwap { id } => {
+                self.on_compaction_swap(id, committing, width);
+                false
+            }
             StreamEvent::Usage(usage) => {
                 // The round's real usage frame: snap the live tally from the
                 // app-side estimate to the provider's own accounting (cache
@@ -746,7 +756,7 @@ impl Session<'_> {
     /// (it records history); only the commit is view-gated. A no-op when the
     /// buffer is already empty — which is the common case for a batched call,
     /// whose batch event flushed first.
-    fn flush_segment(&mut self, committing: bool, width: u16) {
+    pub(crate) fn flush_segment(&mut self, committing: bool, width: u16) {
         // Text is no part of an open read/search group: the group closes
         // before the text is recorded behind it (docs/tool-groups.md).
         if self

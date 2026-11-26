@@ -1,12 +1,13 @@
 //! The async event loop: a `select!` over every source that can wake the app.
 //!
-//! Seventeen sources fan onto one thread — terminal input, coalesced draw
+//! Eighteen sources fan onto one thread — terminal input, coalesced draw
 //! ticks, the streamed reply, `@` file-search results, finished Ctrl+V
 //! clipboard reads, the git review's workers, the `/login` sign-in worker,
 //! `/usage` reads, the `/plugins` page's jobs, `/model` list fetches, the
 //! startup capability probe, background-shell events, subagent events, MCP
-//! server events, the telemetry ping's report, the update check's, and the
-//! rows the transcript worker has rendered.
+//! server events, the background summary's worker, the telemetry ping's
+//! report, the update check's, and the rows the transcript worker has
+//! rendered.
 //!
 //! **Input and a due frame come first, in that order** (`biased`), and every
 //! other source is chosen fairly among the rest ([`next_wake`]'s own
@@ -64,7 +65,7 @@ use super::diff::DiffResult;
 use super::plugins::PluginResult;
 use super::startup::Startup;
 use super::usage::UsageResult;
-use super::workers::{DeviceEvent, FileSearchResult, ModelFetch, ProbeFetch};
+use super::workers::{CompactionDone, DeviceEvent, FileSearchResult, ModelFetch, ProbeFetch};
 
 /// Run the app to completion.
 ///
@@ -122,6 +123,7 @@ pub(crate) async fn run(term: &mut InlineViewport, startup: Startup) -> io::Resu
                 background: &mut session.bg_rx,
                 agent: &mut session.agent_rx,
                 mcp: &mut session.mcp_rx,
+                compaction: &mut session.compaction_rx,
                 telemetry: &mut session.telemetry_rx,
                 update: &mut session.update_rx,
                 transcript: &mut session.transcript_rx,
@@ -166,6 +168,9 @@ enum Wake {
     /// An MCP server's state changed (a connect resolved, an auth flow
     /// progressed) — `docs/mcp.md`.
     Mcp(McpEvent),
+    /// The background summary was written, or failed
+    /// (`docs/background-compaction.md`).
+    Compaction(CompactionDone),
     /// The day's telemetry ping was delivered (`docs/telemetry.md`).
     Telemetry(Delivery),
     /// The update check answered (`docs/update.md`).
@@ -196,6 +201,7 @@ struct Sources<'a> {
     background: &'a mut UnboundedReceiver<BgEvent>,
     agent: &'a mut UnboundedReceiver<AgentEvent>,
     mcp: &'a mut UnboundedReceiver<McpEvent>,
+    compaction: &'a mut UnboundedReceiver<CompactionDone>,
     telemetry: &'a mut UnboundedReceiver<Delivery>,
     update: &'a mut UnboundedReceiver<String>,
     transcript: &'a mut UnboundedReceiver<ui::RenderedTranscriptItem>,
@@ -222,6 +228,7 @@ async fn next_wake(sources: Sources<'_>) -> Wake {
         Some(event) = sources.background.recv() => Wake::Background(event),
         Some(event) = sources.agent.recv() => Wake::Agent(event),
         Some(event) = sources.mcp.recv() => Wake::Mcp(event),
+        Some(done) = sources.compaction.recv() => Wake::Compaction(done),
         Some(delivered) = sources.telemetry.recv() => Wake::Telemetry(delivered),
         Some(latest) = sources.update.recv() => Wake::Update(latest),
         // No `Some(…)` pattern: this channel closing is itself the event.
@@ -250,6 +257,7 @@ impl Session<'_> {
             Wake::Background(event) => self.on_bg_event(event),
             Wake::Agent(event) => self.on_agent_message(event),
             Wake::Mcp(event) => self.on_mcp_event(event),
+            Wake::Compaction(done) => self.on_compaction_done(done),
             Wake::Telemetry(delivered) => self.on_telemetry_result(&delivered),
             Wake::Update(latest) => self.on_update_result(&latest),
             Wake::Transcript(Some(done)) => self.on_transcript_item(done),

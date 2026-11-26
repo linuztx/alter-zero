@@ -969,8 +969,9 @@ fn a_reply_whose_connection_drops_reports_only_what_the_retry_streamed() {
 /// A summary the output cap cut off goes on in another round
 /// (docs/unfinished-replies.md). A connection lost in that round takes back
 /// what its own attempt streamed and nothing the round before it wrote, so
-/// the compaction a `-c` run makes before its prompt keeps the whole summary
-/// (docs/compact.md).
+/// every compaction keeps the whole summary — the one a turn makes as it runs
+/// and the one a `-c` run starts before its prompt
+/// (docs/background-compaction.md).
 #[test]
 fn a_retry_in_a_summarys_second_round_keeps_its_first() {
     let world = World::new("cut-summary");
@@ -999,24 +1000,31 @@ fn a_retry_in_a_summarys_second_round_keeps_its_first() {
         &format!("{RECORD} again"),
     ]);
     assert!(second.status.success(), "{}", stderr(&second));
+    let lines = rollout(&world);
+    let summaries: Vec<&str> = lines
+        .iter()
+        .filter(|line| line["type"] == "compaction")
+        .map(|line| line["payload"]["summary"].as_str().expect("a summary"))
+        .collect();
+    assert!(
+        !summaries.is_empty(),
+        "the conversation compacted: {lines:#?}"
+    );
+    // One continuation per summary, and the first of them dropped and sent
+    // again.
     let continuations = stand_in
         .chat_requests()
         .iter()
         .filter(|chat| continues_a_cut_summary(chat))
         .count();
     assert_eq!(
-        continuations, 2,
+        continuations,
+        summaries.len() + 1,
         "the continuation was dropped, then sent again"
     );
-    let lines = rollout(&world);
-    let summary = lines
-        .iter()
-        .find(|line| line["type"] == "compaction")
-        .unwrap_or_else(|| panic!("the conversation compacted: {lines:#?}"))["payload"]["summary"]
-        .as_str()
-        .expect("a summary")
-        .to_string();
-    assert_eq!(summary, format!("{SUMMARY_HEAD}{SUMMARY_TAIL}"));
+    for summary in summaries {
+        assert_eq!(summary, format!("{SUMMARY_HEAD}{SUMMARY_TAIL}"));
+    }
 }
 
 // ===== the system prompt flags (docs/system-prompt.md) =====
@@ -1505,9 +1513,12 @@ fn a_subagents_requests_are_recorded_under_its_id() {
 
 #[test]
 fn a_compactions_request_is_recorded_as_one() {
-    // A conversation continued past its window compacts before the prompt
-    // goes out; that summarization's usage line says so and sits right
-    // ahead of the compaction it made (docs/rollout-records.md).
+    // A conversation past its window compacts — the turn as it runs, and a
+    // `-c` run's summary started before its prompt. Each summary's request
+    // leaves one usage line that says so, where it finished: ahead of the
+    // compaction it made and after the one before, though not always right
+    // ahead of it, the turn going on while it is written
+    // (docs/rollout-records.md, docs/background-compaction.md).
     let world = World::new("compact-usage");
     let stand_in = StandIn::start();
     let run = |args: &[&str]| {
@@ -1535,18 +1546,38 @@ fn a_compactions_request_is_recorded_as_one() {
     ]);
     assert!(second.status.success(), "{}", stderr(&second));
     let lines = rollout(&world);
-    let compaction = lines
-        .iter()
-        .position(|line| line["type"] == "compaction")
-        .unwrap_or_else(|| panic!("the conversation compacted: {lines:#?}"));
-    assert_eq!(lines[compaction - 1]["type"], "usage", "{lines:#?}");
-    assert_eq!(lines[compaction - 1]["payload"]["compact"], true);
-    // Every other request is the conversation's own, untagged.
-    let tagged = lines
-        .iter()
-        .filter(|line| line["type"] == "usage" && line["payload"].get("compact").is_some())
-        .count();
-    assert_eq!(tagged, 1, "{lines:#?}");
+    let positions = |wanted: fn(&serde_json::Value) -> bool| -> Vec<usize> {
+        lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| wanted(line))
+            .map(|(at, _)| at)
+            .collect()
+    };
+    let compactions = positions(|line| line["type"] == "compaction");
+    assert!(
+        !compactions.is_empty(),
+        "the conversation compacted: {lines:#?}"
+    );
+    let tagged = positions(|line| line["type"] == "usage" && line["payload"]["compact"] == true);
+    // Every other request is the conversation's own, untagged: the tag is
+    // only ever written as `true`, and only on a summary's request.
+    let stray_tags = positions(|line| {
+        line["type"] == "usage"
+            && line["payload"]
+                .get("compact")
+                .is_some_and(|compact| compact != true)
+    });
+    assert!(stray_tags.is_empty(), "{lines:#?}");
+    assert_eq!(tagged.len(), compactions.len(), "{lines:#?}");
+    for (index, &compaction) in compactions.iter().enumerate() {
+        let after = index.checked_sub(1).map_or(0, |before| compactions[before]);
+        let its_request = tagged
+            .iter()
+            .filter(|&&line| line > after && line < compaction)
+            .count();
+        assert_eq!(its_request, 1, "compaction {index}: {lines:#?}");
+    }
 }
 
 #[test]

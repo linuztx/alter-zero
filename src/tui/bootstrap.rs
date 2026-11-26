@@ -503,6 +503,10 @@ impl<'t> Session<'t> {
         // build re-attaches the same handle, so a `/model` switch keeps the
         // queue the running turn's successor will drain.
         let steer = alter_zero::steer::SteerQueue::new();
+        // Background compaction's slot (docs/background-compaction.md): the
+        // running turn asks it at every round top and the loop answers there,
+        // so — like the queue — every backend build attaches this one handle.
+        let compaction = alter_zero::compaction::CompactionSlot::new();
 
         // The reply backend and everything that selects it (docs/llm.md).
         let mut models = ModelSession::resolve(
@@ -512,6 +516,7 @@ impl<'t> Session<'t> {
             &registry,
             &agent_registry,
             &steer,
+            &compaction,
             permissions.gate(),
             // AskUserQuestion only where somebody can answer it
             // (docs/headless.md).
@@ -565,6 +570,9 @@ impl<'t> Session<'t> {
         // (docs/usage.md).
         let (usage_tx, usage_rx) = tokio::sync::mpsc::unbounded_channel();
         let (plugin_tx, plugin_rx) = tokio::sync::mpsc::unbounded_channel();
+        // The background summary's worker reports its summary here
+        // (docs/background-compaction.md).
+        let (compaction_tx, compaction_rx) = tokio::sync::mpsc::unbounded_channel();
         // The capability probe's own channel, so a concurrently-open `/model`
         // picker can't confuse the results (docs/reasoning.md).
         // Spawned once the startup directive is applied (`spawn_pending_probe`
@@ -702,6 +710,11 @@ impl<'t> Session<'t> {
             registry,
             agent_registry,
             steer,
+            compaction,
+            compaction_tx,
+            compaction_rx,
+            compaction_worker: None,
+            compaction_hooks: Vec::new(),
             permissions,
             ask,
             task_registry,
@@ -1226,6 +1239,9 @@ impl<'t> Session<'t> {
         // reads likewise.
         self.models.cancel_model_fetches();
         self.cancel_usage_fetch();
+        // …and the background summary, which nothing will read
+        // (docs/background-compaction.md).
+        self.let_go_of_compaction();
         // …and a `/plugins` clone or fetch, whose git child is killed
         // (docs/plugins.md).
         self.cancel_plugin_job();
@@ -1278,27 +1294,20 @@ impl<'t> Session<'t> {
         // the footer now, at its calibrated estimate on top of the last usage
         // report, rather than when the next request is counted. Two integer
         // compares when the history did not move (every streamed chunk), and
-        // an estimate of only what joined when it did. Before the auto-compact
-        // check, which reads it. The tool set first: every request carries its
-        // schemas, and a set that changed (an MCP server connecting, the
-        // Tools knob) re-reads the gauge — a pointer compare when it did not.
+        // an estimate of only what joined when it did. Before background
+        // compaction's tick, which reads it. The tool set first: every request
+        // carries its schemas, and a set that changed (an MCP server
+        // connecting, the Tools knob) re-reads the gauge — a pointer compare
+        // when it did not.
         self.app
             .set_tool_definitions(self.models.backend().tool_definitions());
         self.app.sync_context_used();
-        // Auto-compact (docs/compact.md): past codex's 90%-of-window threshold,
-        // start the summarization turn on our own at this idle boundary — the loop
-        // bottom sees every turn end and gauge change. `should_auto_compact`
-        // pre-checks are cheap (the context derivation runs only once every gate
-        // has passed), it can't fire mid-turn, and one attempt per user turn means
-        // an Esc'd or failed compaction never loops. The StallAi test backend opts
-        // out (it ignores the script).
-        if self.inflight.is_none()
-            && !self.models.is_stalled_test_backend()
-            && self.app.should_auto_compact()
-        {
-            self.start_compact_turn(/*auto=*/ true);
-            self.frame.schedule_frame();
-        }
+        // Background compaction (docs/background-compaction.md): the slot
+        // follows the gauge's window, a summary whose history moved is let
+        // go, and between turns a held summary lands here — the next turn
+        // starts compacted — or one starts once the conversation is past the
+        // start line. A running turn compacts at its own round tops.
+        self.tick_background_compaction(/*idle_start=*/ true);
         // A newer release the check found mid-turn is announced here, at the
         // first idle loop bottom, never inside a streaming reply (docs/update.md).
         self.flush_pending_update_notice();
