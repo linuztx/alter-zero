@@ -1019,6 +1019,71 @@ fn a_retry_in_a_summarys_second_round_keeps_its_first() {
     assert_eq!(summary, format!("{SUMMARY_HEAD}{SUMMARY_TAIL}"));
 }
 
+/// Whether a logged chat request offers the model any tools — a summary
+/// request never does.
+fn offers_tools(body: &str) -> bool {
+    let request: serde_json::Value = serde_json::from_str(body).expect("a JSON request");
+    request["tools"]
+        .as_array()
+        .is_some_and(|tools| !tools.is_empty())
+}
+
+/// A summary request reads the conversation alone: the summarizer's own
+/// system prompt, and no `<system-reminder>` — the AGENTS.md instructions
+/// ride every turn's request, never the summary's
+/// (docs/background-compaction.md *What the summarizer reads*).
+#[test]
+fn a_summary_request_reads_only_the_conversation() {
+    let world = World::new("summary-input");
+    std::fs::write(world.work().join("AGENTS.md"), "Always run the linter.\n")
+        .expect("an AGENTS.md");
+    let stand_in = StandIn::start();
+    let run = |args: &[&str]| {
+        let mut command = world.command(args);
+        stand_in.configure(&world, &mut command);
+        command
+            .env("ALTER_ZERO_CONTEXT_WINDOW", "2000")
+            .stdin(Stdio::null())
+            .output()
+            .expect("the binary runs")
+    };
+    let first = run(&[
+        "-p",
+        "--permission-mode",
+        "master",
+        &format!("{RECORD} run it"),
+    ]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    let second = run(&[
+        "-p",
+        "-c",
+        "--permission-mode",
+        "master",
+        &format!("{RECORD} again"),
+    ]);
+    assert!(second.status.success(), "{}", stderr(&second));
+    let chats = stand_in.chat_requests();
+    let turn = chats
+        .iter()
+        .find(|chat| offers_tools(chat))
+        .unwrap_or_else(|| panic!("a turn's request among {chats:#?}"));
+    assert!(
+        turn.contains("Always run the linter"),
+        "a turn does read the instructions: {turn}"
+    );
+    let summary = chats
+        .iter()
+        .find(|chat| !offers_tools(chat))
+        .unwrap_or_else(|| panic!("a summary request among {chats:#?}"));
+    assert_eq!(
+        system_text(summary).trim(),
+        alter_zero::context::COMPACT_SYSTEM_PROMPT.trim(),
+        "the summarizer's own system prompt, never the session's"
+    );
+    assert!(!summary.contains("system-reminder"), "{summary}");
+    assert!(!summary.contains("Always run the linter"), "{summary}");
+}
+
 // ===== the system prompt flags (docs/system-prompt.md) =====
 
 /// The system message's text of a logged chat request — its `content` a
