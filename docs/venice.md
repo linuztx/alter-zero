@@ -6,7 +6,7 @@ are reachable two ways, over one wire (Chat Completions, the default
 
 | provider id | chats at | lists from | credential |
 | --- | --- | --- | --- |
-| `a0_venice` (**Agent Zero API**) | `https://api.agent-zero.ai/venice/v1` — Agent Zero's proxy in front of Venice | `https://api.venice.ai/api/v1` — Venice itself, which the `sk-a0-…` key is also valid against | an Agent Zero key (`A0_VENICE_API_KEY`), with a free daily quota for A0T token holders |
+| `a0_venice` (**Agent Zero API**) | `https://llm.agent-zero.ai/v1` — Agent Zero's proxy in front of Venice | `https://api.venice.ai/api/v1` — Venice itself, which the `sk-a0-…` key is also valid against | an Agent Zero key (`A0_VENICE_API_KEY`), with a free daily quota for A0T token holders |
 | `venice` (**Venice**) | `https://api.venice.ai/api/v1` — Venice itself | the same base: it chats where it lists | a key from your own Venice account (`VENICE_API_KEY`, made at [venice.ai/settings/api](https://venice.ai/settings/api)) |
 
 The second provider exists because the two keys are not interchangeable:

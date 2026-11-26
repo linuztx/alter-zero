@@ -14,6 +14,9 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **Agent Zero API** now sends chat completions to `https://llm.agent-zero.ai/v1`.
+  The model list still comes directly from Venice.
+
 - **`/copy` and `/export` reach your clipboard from tmux on a remote
   server.** Run inside tmux on a VPS over SSH, `/copy` said `Copied last
   message to clipboard` while nothing reached the clipboard of the machine

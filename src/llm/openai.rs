@@ -1890,7 +1890,7 @@ mod tests {
         assert_eq!(direct, proxy.build_payload(&[ChatMessage::user("hi")]));
         assert_eq!(
             proxy.endpoint(),
-            "https://api.agent-zero.ai/venice/v1/chat/completions"
+            "https://llm.agent-zero.ai/v1/chat/completions"
         );
     }
 

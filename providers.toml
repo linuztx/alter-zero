@@ -73,7 +73,7 @@ api_key_url = "https://agent-zero.ai/p/community/api-dashboard/"
 api_model_base = "https://api.venice.ai/api/v1"
 
 [providers.a0_venice.kwargs]
-api_base = "https://api.agent-zero.ai/venice/v1"
+api_base = "https://llm.agent-zero.ai/v1"
 
 # No static `disable_thinking` here: the Shift+Tab thinking mode drives it per
 # request (docs/reasoning.md). The table itself must stay — its presence is how

@@ -358,10 +358,10 @@ fn live_the_model_uses_a_real_key_for_a_real_request_without_seeing_it() {
     let secrets = one(
         "A0_API_KEY",
         &key,
-        "Agent Zero API key — an OpenAI-compatible Bearer token for https://api.agent-zero.ai/venice/v1",
+        "Agent Zero API key — an OpenAI-compatible Bearer token for https://llm.agent-zero.ai/v1",
     );
     let prompt = "Use curl and the stored Agent Zero API key to send a chat completion request to \
-                  https://api.agent-zero.ai/venice/v1/chat/completions with model llama-3.2-3b and \
+                  https://llm.agent-zero.ai/v1/chat/completions with model llama-3.2-3b and \
                   the user message 'Reply with just the word PINEAPPLE'. Then tell me exactly what \
                   that model replied.";
     let mut harness = backend(&secrets);

@@ -1107,10 +1107,7 @@ api_base = "https://x/v1"
         let builtin = ProvidersFile::builtin();
         let venice = builtin.get("a0_venice").unwrap();
         assert_eq!(venice.models_base(), "https://api.venice.ai/api/v1");
-        assert_eq!(
-            venice.kwargs.api_base,
-            "https://api.agent-zero.ai/venice/v1"
-        );
+        assert_eq!(venice.kwargs.api_base, "https://llm.agent-zero.ai/v1");
 
         // A provider with no api_model_base falls back to its chat api_base
         // (slash trimmed).
