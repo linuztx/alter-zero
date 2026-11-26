@@ -309,6 +309,8 @@ pub(super) fn bare_compaction(summary: &str) -> crate::app::Compaction {
         after: 0,
         auto: false,
         secs: 0,
+        keep_from: None,
+        background: false,
     }
 }
 

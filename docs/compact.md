@@ -63,7 +63,12 @@ emits, in place of everything before it:
    codex's verbatim `prompts/compact_summary_prefix.md` ("Another language
    model started to solve this problem…");
 
-then derives the items *after* the marker normally. Earlier markers (a second
+then derives the items *after* the marker normally. A **background**
+compaction's marker carries an anchor, `keep_from`: its summary covers only
+`history[..keep_from]`, and the items from the anchor up to the marker —
+recorded while the summary was being written — derive normally too
+(`docs/background-compaction.md` *The marker*). Without one (`/compact`, and
+every rollout from before it) the anchor is the marker itself. Earlier markers (a second
 `/compact`) sit before the last one and are skipped — only real `Role::User`
 texts are collected, so a prior compaction's summary is structurally excluded
 (codex needs an `is_summary_message` prefix check because its summaries are

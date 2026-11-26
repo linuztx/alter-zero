@@ -1676,6 +1676,8 @@ mod tests {
             after: 900,
             auto: true,
             secs: 4,
+            keep_from: None,
+            background: false,
         })
     }
 
