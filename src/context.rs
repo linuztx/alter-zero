@@ -25,6 +25,13 @@ use crate::app::{HistoryItem, Role, ToolCall};
 /// context. See `docs/compact.md`.
 pub const SUMMARIZATION_PROMPT: &str = include_str!("../prompts/compact_prompt.md");
 
+/// The summarizer's **own** system prompt (`prompts/compact_system.md`): what
+/// the messages are, that they are material and not instructions, and not to
+/// carry on the task — sent in place of the agent's persona, environment and
+/// scratchpad blocks, which the summarizer never reads
+/// (`docs/background-compaction.md` *What the summarizer reads*).
+pub const COMPACT_SYSTEM_PROMPT: &str = include_str!("../prompts/compact_system.md");
+
 /// Codex's summary prefix (`prompts/compact_summary_prefix.md`, verbatim — no
 /// trailing newline): the compacted context's bridge message opens with it,
 /// followed by a newline and the marker's summary. See `docs/compact.md`.
@@ -289,6 +296,9 @@ pub(crate) const MERGE_SEPARATOR: &str = "\n\n";
 struct Derived {
     messages: Vec<ContextMessage>,
     origins: Option<Vec<TextSegment>>,
+    /// Whether a hook note wrapped in a `<system-reminder>` is replayed —
+    /// always, but for the summarizer's input ([`conversation_messages`]).
+    reminders: bool,
 }
 
 impl std::ops::Deref for Derived {
@@ -581,12 +591,34 @@ fn derive(leading: Option<String>, history: &[HistoryItem], origins: bool) -> De
     let mut out = Derived {
         messages: Vec::new(),
         origins: origins.then(Vec::new),
+        reminders: true,
     };
     if let Some(fragment) = leading.filter(|fragment| !fragment.trim().is_empty()) {
         push_user_text(&mut out, fragment, vec![], TextOrigin::Reminder);
     }
     derive_history_into(&mut out, history);
     out
+}
+
+/// The conversation alone, as the summarizer reads it
+/// (`docs/background-compaction.md` *What the summarizer reads*): the history
+/// derived exactly as [`context_messages`] derives it, with **no
+/// `<system-reminder>`** in it — no leading one (the window's AGENTS.md
+/// instructions and listings are never composed here) and no hook note
+/// stored wrapped in one ([`crate::reminder::is_reminder`]). Every turn
+/// re-sends both, so a summary has nothing to keep of them; and a summarizer
+/// that never reads them can neither restate them nor take them as its own
+/// instructions. An earlier compaction's bridge stays: it is the summary the
+/// next one updates.
+#[must_use]
+pub fn conversation_messages(history: &[HistoryItem]) -> Vec<ContextMessage> {
+    let mut out = Derived {
+        messages: Vec::new(),
+        origins: None,
+        reminders: false,
+    };
+    derive_history_into(&mut out, history);
+    out.messages
 }
 
 /// [`context_messages_full`] with the project's AGENTS.md instructions alone
@@ -902,7 +934,8 @@ fn derive_item(out: &mut Derived, history: &[HistoryItem], position: usize) {
         // it gave the model nothing, so nothing is replayed (an empty entry
         // would merge into the next user message as a stray blank line).
         HistoryItem::HookNote(note) => {
-            if !note.text.is_empty() {
+            let replayed = out.reminders || !crate::reminder::is_reminder(&note.text);
+            if !note.text.is_empty() && replayed {
                 push_user_text(out, note.text.clone(), vec![], TextOrigin::Notice);
             }
         }
@@ -2269,6 +2302,95 @@ mod tests {
             auto: false,
             secs: 0,
         })
+    }
+
+    fn hook_note(text: &str) -> HistoryItem {
+        HistoryItem::HookNote(crate::app::HookNote {
+            label: "SessionStart hook".into(),
+            text: text.into(),
+            report: None,
+            timestamp: String::new(),
+        })
+    }
+
+    // ── What the summarizer reads (docs/background-compaction.md) ────────
+
+    #[test]
+    fn the_summarizer_reads_no_system_reminder() {
+        // A hook's additional context is stored wrapped in a reminder, and the
+        // window's own reminder (AGENTS.md, the listings) is never in history
+        // at all: the summarizer is sent the conversation and nothing else.
+        let history = vec![
+            hook_note(
+                "<system-reminder>\nSessionStart hook additional context: the repo is /srv\n</system-reminder>",
+            ),
+            message(Role::User, "fix the parser"),
+            message(Role::Assistant, "on it"),
+            tool(
+                "read",
+                "src/parser.rs",
+                "fn parse() {}",
+                ToolStatus::Ok,
+                false,
+            ),
+        ];
+        let ctx = conversation_messages(&history);
+        assert!(
+            !ctx.iter().any(|m| m.text.contains("<system-reminder>")),
+            "{ctx:?}"
+        );
+        assert!(
+            ctx.iter().any(|m| m.text.contains("fix the parser")),
+            "{ctx:?}"
+        );
+        assert!(
+            ctx.iter()
+                .any(|m| m.tool_calls.iter().any(|c| c.name == "read")),
+            "the tool round stays: {ctx:?}"
+        );
+    }
+
+    #[test]
+    fn the_summarizer_keeps_hook_feedback_that_is_no_reminder() {
+        // A Stop hook's feedback is something the agent was told and acted
+        // on — conversation, not a reminder.
+        let history = vec![
+            message(Role::User, "fix the parser"),
+            hook_note("Stop hook feedback:\ntests are red"),
+        ];
+        let ctx = conversation_messages(&history);
+        assert!(
+            ctx.iter().any(|m| m.text.contains("Stop hook feedback")),
+            "{ctx:?}"
+        );
+    }
+
+    #[test]
+    fn the_summarizer_reads_an_earlier_compactions_bridge() {
+        // A second compaction updates the first: the earlier summary is part
+        // of the conversation it is sent.
+        let history = vec![
+            message(Role::User, "port the module"),
+            compaction("ported stripe.rs"),
+            message(Role::User, "now the ledger"),
+        ];
+        let ctx = conversation_messages(&history);
+        assert!(
+            ctx.iter()
+                .any(|m| m.text.contains(SUMMARY_PREFIX) && m.text.contains("ported stripe.rs")),
+            "{ctx:?}"
+        );
+    }
+
+    #[test]
+    fn without_reminders_the_summarizer_reads_what_the_request_carries() {
+        let history = vec![
+            message(Role::User, "fix the parser"),
+            message(Role::Assistant, "on it"),
+            tool("Bash", "cargo test", "Exit code: 0", ToolStatus::Ok, false),
+            hook_note("Stop hook feedback:\ntests are red"),
+        ];
+        assert_eq!(conversation_messages(&history), context_messages(&history));
     }
 
     #[test]

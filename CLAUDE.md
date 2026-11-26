@@ -4381,8 +4381,11 @@ anything) — in front of the post-`/compact` shape too, never entering
 counts it.
 **`/compact`→`Compact`** —
 codex's manual compaction (`docs/compact.md`): the loop runs the summarization
-turn on a one-off tools-free `LlmBackend::configure(cfg, system_prompt,
-false)` (the dummy scripts a text-only summary), the reply diverts into
+turn on a one-off tools-free `LlmBackend::configure(cfg,
+Some(COMPACT_SYSTEM_PROMPT), false)` over `context::conversation_messages` —
+the summarizer's own system prompt and the conversation alone, never the
+agent's persona or a `<system-reminder>` (`docs/background-compaction.md`,
+`smoke.sh` Phase 170; the dummy scripts a text-only summary), the reply diverts into
 `App::compact_buffer` (never rendered), and `StreamDone` appends the
 `HistoryItem::Compaction` marker + commits the cyan `● Context compacted`
 cell; mid-turn it is rejected with a `Toast` like `/resume`, an empty derived

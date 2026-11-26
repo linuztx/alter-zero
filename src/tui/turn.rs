@@ -272,19 +272,13 @@ impl Session<'_> {
         self.render.reset();
         self.clocks.start_turn();
         let cancel = CancelToken::new();
-        // The summarizer reads the same window the model does — the AGENTS.md
-        // instructions in front (codex's compact request keeps its initial
-        // context too). See docs/project-doc.md.
-        // …but **not** the skill listing: the summarizer runs on the
-        // tools-free backend, so naming a `skill` tool it was never given is
-        // the very inconsistency the listing's gate exists to prevent — and
-        // the handoff summary has no use for the roster either
-        // (`docs/skills.md`).
-        let mut compact_context = context::context_messages_full(
-            self.app.user_instructions.as_deref(),
-            None,
-            &self.app.history,
-        );
+        // The summarizer reads the conversation alone: no `<system-reminder>`
+        // — neither the window's (AGENTS.md, the skill and agent listings)
+        // nor a hook's additional context — just as its backend sends its own
+        // system prompt in place of the agent's. Every later request carries
+        // both afresh, so the summary has nothing to keep of them
+        // (docs/background-compaction.md *What the summarizer reads*).
+        let mut compact_context = context::conversation_messages(&self.app.history);
         compact_context.push(context::ContextMessage::new(
             context::ContextRole::User,
             context::SUMMARIZATION_PROMPT,

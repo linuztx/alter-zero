@@ -1575,8 +1575,11 @@ impl ModelSession {
     }
 
     /// The one-off **tools-free** backend a `/compact` turn runs on (codex
-    /// sends the summarize request with no tools): the same persona +
-    /// environment prompt, no background-notice injection. See `docs/compact.md`.
+    /// sends the summarize request with no tools): the summarizer's **own**
+    /// system prompt (`context::COMPACT_SYSTEM_PROMPT`), never the agent's
+    /// persona, environment and scratchpad blocks, and no background-notice
+    /// injection. See `docs/compact.md` and `docs/background-compaction.md`
+    /// *What the summarizer reads*.
     ///
     /// `None` whenever the session itself isn't talking to a real model — the
     /// dummy, `ALTER_ZERO_DUMMY`, or the stalled test backend — and the caller
@@ -1610,7 +1613,7 @@ impl ModelSession {
                 let model = cfg.model.clone();
                 let mut backend = LlmBackend::configure(
                     cfg,
-                    self.system_prompt.clone(),
+                    Some(alter_zero::context::COMPACT_SYSTEM_PROMPT.to_string()),
                     /*tools_enabled=*/ false,
                 );
                 // The compact events (docs/hooks.md): PreCompact's context

@@ -54,6 +54,16 @@ pub fn reminder_message(sections: &[&str]) -> String {
     format!("{REMINDER_OPEN}\n{REMINDER_PREAMBLE}\n\n{body}\n{REMINDER_CLOSE}")
 }
 
+/// Whether `text` is one whole `<system-reminder>` block — the window's own,
+/// or a hook's `additionalContext` (`docs/hooks.md`), which is stored wrapped
+/// in one. What the summarizer is never sent
+/// (`docs/background-compaction.md` *What the summarizer reads*).
+#[must_use]
+pub fn is_reminder(text: &str) -> bool {
+    let text = text.trim();
+    text.starts_with(REMINDER_OPEN) && text.ends_with(REMINDER_CLOSE)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
