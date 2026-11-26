@@ -651,7 +651,12 @@ fn derive_history_into(out: &mut Derived, history: &[HistoryItem]) {
         let HistoryItem::Compaction(compaction) = &history[cut] else {
             unreachable!("rposition matched a Compaction");
         };
-        for text in budgeted_user_texts(&history[..cut], COMPACT_USER_MESSAGE_MAX_TOKENS) {
+        // A background compaction covers only what came before its anchor;
+        // the items from there to the marker stay verbatim
+        // (docs/background-compaction.md *The marker*). No anchor, or one
+        // past the marker, is the marker itself: everything before it.
+        let keep_from = compaction.keep_from.map_or(cut, |anchor| anchor.min(cut));
+        for text in budgeted_user_texts(&history[..keep_from], COMPACT_USER_MESSAGE_MAX_TOKENS) {
             push_user_text(out, text, vec![], TextOrigin::Typed);
         }
         push_user_text(
@@ -660,6 +665,7 @@ fn derive_history_into(out: &mut Derived, history: &[HistoryItem]) {
             vec![],
             TextOrigin::Summary,
         );
+        derive_into(out, &history[keep_from..cut]);
         derive_into(out, &history[cut + 1..]);
     } else {
         derive_into(out, history);
@@ -2301,7 +2307,82 @@ mod tests {
             after: 0,
             auto: false,
             secs: 0,
+            keep_from: None,
+            background: false,
         })
+    }
+
+    /// A background compaction's marker: everything before `keep_from` is
+    /// what the summary covers, the items from there on stay verbatim.
+    fn anchored(summary: &str, keep_from: usize) -> HistoryItem {
+        HistoryItem::Compaction(crate::app::Compaction {
+            summary: summary.to_string(),
+            timestamp: String::new(),
+            before: 0,
+            after: 0,
+            auto: true,
+            secs: 0,
+            keep_from: Some(keep_from),
+            background: true,
+        })
+    }
+
+    // ── The anchored marker (docs/background-compaction.md *The marker*) ──
+
+    #[test]
+    fn an_anchored_marker_keeps_the_items_after_its_anchor_verbatim() {
+        // The summary covers history[..2]; the round recorded after the
+        // anchor — and before the marker landed — derives as it was.
+        let history = vec![
+            message(Role::User, "port the module"),
+            tool("read", "a.rs", "fn a() {}", ToolStatus::Ok, false),
+            tool("read", "b.rs", "fn b() {}", ToolStatus::Ok, false),
+            anchored("read a.rs", 2),
+            message(Role::Assistant, "done"),
+        ];
+        let ctx = context_messages(&history);
+        assert!(
+            ctx[0].text.contains("port the module") && ctx[0].text.contains(SUMMARY_PREFIX),
+            "the kept user text and the bridge lead: {ctx:?}"
+        );
+        let results: Vec<&str> = ctx
+            .iter()
+            .filter(|m| m.role == ContextRole::Tool)
+            .map(|m| m.text.as_str())
+            .collect();
+        assert_eq!(
+            results,
+            vec!["fn b() {}"],
+            "the round after the anchor stays, the one before it is summarized: {ctx:?}"
+        );
+        assert_eq!(ctx.last().map(|m| m.text.as_str()), Some("done"));
+    }
+
+    #[test]
+    fn an_anchor_past_its_marker_is_the_marker_itself() {
+        // Clamped: nothing after the marker can be covered by its summary.
+        let mut history = vec![
+            message(Role::User, "port the module"),
+            tool("read", "a.rs", "fn a() {}", ToolStatus::Ok, false),
+            anchored("read a.rs", 99),
+            message(Role::Assistant, "done"),
+        ];
+        let clamped = context_messages(&history);
+        history[2] = compaction("read a.rs");
+        assert_eq!(clamped, context_messages(&history));
+    }
+
+    #[test]
+    fn an_anchor_at_its_marker_derives_as_the_old_rule() {
+        let mut history = vec![
+            message(Role::User, "port the module"),
+            tool("read", "a.rs", "fn a() {}", ToolStatus::Ok, false),
+            anchored("read a.rs", 2),
+            message(Role::Assistant, "done"),
+        ];
+        let anchored_at_marker = context_messages(&history);
+        history[2] = compaction("read a.rs");
+        assert_eq!(anchored_at_marker, context_messages(&history));
     }
 
     fn hook_note(text: &str) -> HistoryItem {

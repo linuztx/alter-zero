@@ -106,6 +106,8 @@ impl App {
             after: 0,
             auto: self.compact_auto,
             secs: elapsed_secs,
+            keep_from: None,
+            background: false,
         };
         self.history
             .push(HistoryItem::Compaction(compaction.clone()));
@@ -359,4 +361,14 @@ pub struct Compaction {
     /// ` · {elapsed}` clause ([`format_elapsed`]-humanized). 0 = unknown (an
     /// old rollout), hiding the clause.
     pub secs: u64,
+    /// Where the summary's coverage ends: the history index the verbatim
+    /// tail starts at. A background compaction is anchored where its summary
+    /// started, and the items recorded from there until the marker landed
+    /// stay verbatim; `None` (a manual or pre-background compaction) covers
+    /// everything before the marker. A value past the marker is the marker
+    /// (`docs/background-compaction.md` *The marker*).
+    pub keep_from: Option<usize>,
+    /// Whether the summary was written in the background while the agent
+    /// kept working — the cell's `· background` in place of `· auto`.
+    pub background: bool,
 }

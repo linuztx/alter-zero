@@ -115,7 +115,12 @@ pub fn compaction_lines(compaction: &crate::app::Compaction, width: u16) -> Vec<
             dim,
         ));
     }
-    if compaction.auto {
+    // A summary written while the agent kept working says so; it is
+    // automatic by nature, so the tag replaces `auto` rather than joining it
+    // (docs/background-compaction.md *What the user sees*).
+    if compaction.background {
+        spans.push(Span::styled(" · background".to_string(), dim));
+    } else if compaction.auto {
         spans.push(Span::styled(" · auto".to_string(), dim));
     }
     vec![Line::from(spans)]
