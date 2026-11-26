@@ -149,11 +149,11 @@ pub use self::turn::{
     CONNECTION_LOST_NOTICE, INTERRUPT_NOTICE, InterruptedTurn, SHELL_VERB, STATUS_VERBS,
     StatusVerb, StreamError, VERB_ROTATION, Withdrawn, format_elapsed, format_timeout,
 };
-pub(crate) use self::types::count_tokens;
 pub use self::types::{
     DebugPage, EntryJump, HistoryItem, HookNote, Message, PagerMove, Role, SessionInfo, Toast,
     ToastKind, View,
 };
+pub(crate) use self::types::{IMAGE_INPUT_TOKENS, count_tokens};
 pub use self::usage::{
     USAGE_EMPTY_NOTICE, USAGE_REFRESH_SECS, UsagePage, UsageSection, UsageTarget,
 };

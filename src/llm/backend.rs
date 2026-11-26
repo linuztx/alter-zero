@@ -23,6 +23,7 @@ use super::tools::{self, AgentArgs, ToolCallRequest};
 use super::{ChatMessage, ContentPart, LlmError, ToolCallSpec};
 use crate::agents::{AgentEvent, AgentRegistry};
 use crate::ask::AskGate;
+use crate::compaction::CompactionSlot;
 use crate::context::ContextMessage;
 use crate::context_usage::ToolDefinition;
 use crate::images::AttachmentUrl;
@@ -174,6 +175,13 @@ pub struct LlmBackend {
     /// (same type, one level down), and the one-off `/compact` backend keeps
     /// this empty — its turn has a single round and nothing to steer.
     steer: SteerQueue,
+    /// Background compaction's slot (`docs/background-compaction.md`): at the
+    /// top of every round the turn checks its context against the start line
+    /// and the ceiling, starting a summary, swapping a held one in, or waiting
+    /// for one. `None` — a subagent, the one-off `/compact` backend, a
+    /// backend nobody configured — never compacts mid-turn. The boundary
+    /// attaches its own on every rebuild, like the steer queue.
+    compaction: Option<CompactionSlot>,
     /// The user's lifecycle hooks (`docs/hooks.md`): consulted before and
     /// after every tool call, and in the user's stead at the permission gate.
     /// [`NoHooks`] until the boundary attaches a loaded `hooks.json`, so a
@@ -263,6 +271,7 @@ impl LlmBackend {
             max_tool_calls: agent::MAX_TOOL_ITERATIONS,
             round_budget: None,
             steer: SteerQueue::new(),
+            compaction: None,
             hooks: Arc::new(NoHooks),
             secrets: None,
         }
@@ -382,6 +391,16 @@ impl LlmBackend {
     #[must_use]
     pub fn with_steer(mut self, queue: SteerQueue) -> Self {
         self.steer = queue;
+        self
+    }
+
+    /// Compact this backend's turns in the background
+    /// (`docs/background-compaction.md`): the boundary's shared slot, through
+    /// which a turn starts a summary, waits for one, and receives the
+    /// re-derived context at a swap. Re-attached on every rebuild.
+    #[must_use]
+    pub fn with_compaction(mut self, slot: CompactionSlot) -> Self {
+        self.compaction = Some(slot);
         self
     }
 
@@ -869,6 +888,8 @@ impl ReplySource for LlmBackend {
         let round_budget = self.round_budget.clone();
         let hooks = Arc::clone(&self.hooks);
         let secrets = self.secrets.clone();
+        // Background compaction's slot (docs/background-compaction.md).
+        let compaction = self.compaction.clone();
         // The mid-turn queue this turn answers to (docs/queue.md): the loop
         // pushes onto it while the turn runs and the agent loop drains it at
         // every round boundary.
@@ -931,12 +952,23 @@ impl ReplySource for LlmBackend {
             if let Ok(mut previous) = wire_history.lock() {
                 previous.restore(&mut messages);
             }
-            let mut loaded_skills = skills
-                .as_ref()
-                .map(|registry| {
-                    super::skill::LoadedSkills::from_messages(registry, &messages, secrets.as_ref())
-                })
-                .unwrap_or_default();
+            // A cell rather than a plain local: the round closure re-seeds it
+            // after a compaction swap, when the skills whose bodies left the
+            // context must be loadable again (docs/skills.md).
+            let loaded_skills = std::cell::RefCell::new(
+                skills
+                    .as_ref()
+                    .map(|registry| {
+                        super::skill::LoadedSkills::from_messages(
+                            registry,
+                            &messages,
+                            secrets.as_ref(),
+                        )
+                    })
+                    .unwrap_or_default(),
+            );
+            // The context's size at each round top, for the compaction step.
+            let mut meter = PromptMeter::default();
             let mut executor = RealToolExecutor::new()
                 .with_vision(vision)
                 .with_imagegen(imagegen);
@@ -978,6 +1010,37 @@ impl ReplySource for LlmBackend {
                 max_tool_calls,
                 &mut messages,
                 |msgs| {
+                    // Background compaction (docs/background-compaction.md),
+                    // before anything is spent on the request: past the start
+                    // line a summary starts and the request goes out; past
+                    // the ceiling the held summary is swapped in — the list
+                    // replaced by the one the boundary re-derived — and the
+                    // round is asked again, on it.
+                    if let Some(slot) = &compaction {
+                        let used = meter.used(msgs);
+                        let mut pause = || thread::sleep(crate::compaction::POLL_INTERVAL);
+                        if let Some(context) =
+                            crate::compaction::round_top(slot, used, &tx, &cancel, &mut pause)
+                        {
+                            let rebuilt = build_messages_for(
+                                vision,
+                                system.as_deref(),
+                                &prompt,
+                                &context,
+                                crate::images::attachment_data_url,
+                            );
+                            if let Some(registry) = &skills {
+                                *loaded_skills.borrow_mut() =
+                                    super::skill::LoadedSkills::from_messages(
+                                        registry,
+                                        &rebuilt,
+                                        secrets.as_ref(),
+                                    );
+                            }
+                            meter.reset();
+                            return agent::RoundOutcome::Compacted(rebuilt);
+                        }
+                    }
                     // `--max-turns` (docs/headless.md): a reply the run's
                     // budget cannot pay for is never asked for.
                     if let Some(budget) = &round_budget
@@ -988,7 +1051,13 @@ impl ReplySource for LlmBackend {
                     if let Ok(mut previous) = wire_history.lock() {
                         previous.remember(msgs);
                     }
-                    stream_round(&client, msgs, &tx, &cancel, max_retries)
+                    let sent = msgs.len();
+                    let (outcome, usage) =
+                        stream_round_measured(&client, msgs, &tx, &cancel, max_retries);
+                    if let Some(usage) = usage {
+                        meter.measured(usage.input, sent);
+                    }
+                    outcome
                 },
                 // An `askuserquestion` call takes the ask path — raise the
                 // modal and block this thread on the user's answers
@@ -1028,7 +1097,7 @@ impl ReplySource for LlmBackend {
                             {
                                 return super::skill::run_skill_tool(
                                     registry,
-                                    &mut loaded_skills,
+                                    &mut loaded_skills.borrow_mut(),
                                     call,
                                 );
                             }
@@ -2168,6 +2237,19 @@ fn stream_round(
     cancel: &CancelToken,
     max_retries: u32,
 ) -> RoundOutcome {
+    stream_round_measured(client, messages, tx, cancel, max_retries).0
+}
+
+/// [`stream_round`], handing back the round's usage frame beside its outcome
+/// — what the compaction step measures the next round top's context from
+/// (`docs/background-compaction.md` *The lines on the gauge*).
+fn stream_round_measured(
+    client: &OpenAiClient,
+    messages: &[ChatMessage],
+    tx: &UnboundedSender<StreamEvent>,
+    cancel: &CancelToken,
+    max_retries: u32,
+) -> (RoundOutcome, Option<crate::stream::TokenUsage>) {
     // The successful attempt's outcome (text + tool calls) is stashed here so
     // it survives the retry driver, which only reports the disposition.
     let mut captured = None;
@@ -2245,14 +2327,79 @@ fn stream_round(
             // forward it so the app snaps its tally to the provider's own
             // accounting — one report per round, so an agentic turn
             // accumulates them (docs/prompt-caching.md).
-            if let Some(usage) = outcome.usage {
+            let usage = outcome.usage;
+            if let Some(usage) = usage {
                 let _ = tx.send(StreamEvent::Usage(usage));
             }
-            round_outcome(outcome)
+            (round_outcome(outcome), usage)
         }
-        AttemptResult::Cancelled => RoundOutcome::Cancelled,
-        AttemptResult::Failed(e) => RoundOutcome::Failed(e),
+        AttemptResult::Cancelled => (RoundOutcome::Cancelled, None),
+        AttemptResult::Failed(e) => (RoundOutcome::Failed(e), None),
     }
+}
+
+/// The context's size at a round top, as background compaction decides on it
+/// (`docs/background-compaction.md` *The lines on the gauge*): the provider's
+/// prompt count for the turn's latest request plus the estimate of every
+/// message appended since — the footer gauge's rule — or, before the turn has
+/// a count of its own (its first round, or the first after a swap), the
+/// estimate of the whole list.
+#[derive(Debug, Default, Clone, Copy)]
+struct PromptMeter {
+    /// The latest request's prompt tokens, and how many messages it carried.
+    measured: Option<(u64, usize)>,
+}
+
+impl PromptMeter {
+    /// The provider counted `input` prompt tokens for a request of `sent`
+    /// messages.
+    const fn measured(&mut self, input: u64, sent: usize) {
+        self.measured = Some((input, sent));
+    }
+
+    /// The list was replaced: the last count describes one that is gone.
+    const fn reset(&mut self) {
+        self.measured = None;
+    }
+
+    /// The context `messages` stands at.
+    fn used(&self, messages: &[ChatMessage]) -> u64 {
+        match self.measured {
+            Some((input, sent)) => {
+                input.saturating_add(estimate_wire(messages.get(sent..).unwrap_or_default()))
+            }
+            None => estimate_wire(messages),
+        }
+    }
+}
+
+/// The token estimate of wire messages: each text, a flat
+/// [`crate::app::IMAGE_INPUT_TOKENS`] per picture, and each tool call's name
+/// and arguments — the gauge's rule for a message (`docs/token-estimate.md`).
+fn estimate_wire(messages: &[ChatMessage]) -> u64 {
+    let count = |text: &str| crate::tokens::estimate(text);
+    let total: usize = messages
+        .iter()
+        .map(|message| {
+            let content = match &message.content {
+                super::MessageContent::Text(text) => count(text),
+                super::MessageContent::Parts(parts) => parts
+                    .iter()
+                    .map(|part| match part {
+                        ContentPart::Text { text, .. } => count(text),
+                        ContentPart::ImageUrl { .. } => crate::app::IMAGE_INPUT_TOKENS,
+                    })
+                    .sum(),
+            };
+            let calls: usize = message
+                .tool_calls
+                .iter()
+                .map(|call| count(&call.function.name) + count(call.function.arguments.as_str()))
+                .sum();
+            content + calls
+        })
+        .sum();
+    u64::try_from(total).unwrap_or(u64::MAX)
 }
 
 /// What ends a turn whose reply a content filter stopped — the provider
@@ -2345,6 +2492,63 @@ mod tests {
     /// An encoder whose files are all unreadable.
     fn failing_encode(_path: &Path) -> Option<String> {
         None
+    }
+
+    // ── The context's size at a round top (docs/background-compaction.md) ─
+
+    fn wire_estimate(messages: &[ChatMessage]) -> u64 {
+        messages
+            .iter()
+            .map(|message| match &message.content {
+                MessageContent::Text(text) => crate::tokens::estimate(text) as u64,
+                MessageContent::Parts(_) => 0,
+            })
+            .sum()
+    }
+
+    #[test]
+    fn before_any_usage_the_whole_list_is_estimated() {
+        let msgs = vec![
+            ChatMessage::new("system", "be terse"),
+            ChatMessage::user("port the payments module to the ledger api"),
+        ];
+        assert_eq!(PromptMeter::default().used(&msgs), wire_estimate(&msgs));
+    }
+
+    #[test]
+    fn after_a_usage_frame_only_what_joined_since_is_estimated() {
+        // The provider counted the request's 2 messages as 40k; the reply and
+        // a tool's output joined after it.
+        let msgs = vec![
+            ChatMessage::new("system", "be terse"),
+            ChatMessage::user("port the payments module"),
+            ChatMessage::new("assistant", "reading the module"),
+            ChatMessage::user("fn charge() {}\nfn refund() {}"),
+        ];
+        let mut meter = PromptMeter::default();
+        meter.measured(40_000, 2);
+        assert_eq!(meter.used(&msgs), 40_000 + wire_estimate(&msgs[2..]));
+    }
+
+    #[test]
+    fn a_tool_calls_arguments_count() {
+        let mut call = ChatMessage::new("assistant", "");
+        call.tool_calls = vec![crate::llm::ToolCallSpec::function(
+            "call_1",
+            "write",
+            r#"{"path":"src/ledger.rs","content":"pub struct Ledger { entries: Vec<Entry> }"}"#,
+        )];
+        assert!(PromptMeter::default().used(&[call]) > 10);
+    }
+
+    #[test]
+    fn a_compacted_list_is_estimated_whole_again() {
+        // After a swap the old frame describes a list that is gone.
+        let mut meter = PromptMeter::default();
+        meter.measured(160_000, 40);
+        meter.reset();
+        let msgs = vec![ChatMessage::user("the compacted window")];
+        assert_eq!(meter.used(&msgs), wire_estimate(&msgs));
     }
 
     #[test]
