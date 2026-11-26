@@ -63,7 +63,11 @@ emits, in place of everything before it:
    codex's verbatim `prompts/compact_summary_prefix.md` ("Another language
    model started to solve this problem…");
 
-then derives the items *after* the marker normally. Earlier markers (a second
+then derives the items *after* the marker normally. A background marker
+records **`kept`**, how many items just before it ran while its summary was
+being written, so the replacement stops that many items short of the marker
+and those derive normally (`docs/background-compaction.md` *The marker records
+`kept`*). Earlier markers (a second
 `/compact`) sit before the last one and are skipped — only real `Role::User`
 texts are collected, so a prior compaction's summary is structurally excluded
 (codex needs an `is_summary_message` prefix check because its summaries are
@@ -99,19 +103,28 @@ no new user bubble:
   (`COMPACT_VERB` "Compacting", which never rotates; the verb cursor does not
   move, so the walk through the status verbs is unaffected) plus an empty streaming buffer and an empty
   **`compact_buffer`** — the flag *and* the accumulator;
-- the context is derived as usual and codex's verbatim summarization prompt
+- the summarizer reads **only the conversation**
+  (`context::summarizer_context`): the history derived with no
+  `<system-reminder>` in front — no AGENTS.md instructions, no skill or agent
+  listing — and codex's verbatim summarization prompt
   (`prompts/compact_prompt.md`, "You are performing a CONTEXT CHECKPOINT
-  COMPACTION…") is pushed onto it as a final user entry — necessary because
-  the real backend ignores the bare `prompt` argument whenever the context is
+  COMPACTION…") pushed onto it as a final user entry — necessary because the
+  real backend ignores the bare `prompt` argument whenever the context is
   non-empty. The prompt is never recorded into history (codex-parity: it
   lives only in the request);
 - the request runs on a **one-off tools-free backend** —
-  `LlmBackend::configure(cfg, system_prompt, /*tools=*/false)` with the same
-  persona+environment prompt and no background-notice injection — so the
-  model can only answer with text (codex sends the summarize request with no
-  tools). When no real backend is configured the session backend (the dummy)
-  is used instead; `stream::turn_events` scripts a text-only summary for the
-  compact prompt so the flow is drivable offline (and by `smoke.sh`).
+  `LlmBackend::configure(cfg, Some(COMPACT_SYSTEM_PROMPT), /*tools=*/false)`:
+  the summarizer's own short system prompt (`prompts/compact_system.md`), not
+  the session's persona, environment and scratchpad, and no background-notice
+  injection — so the model can only answer with text (codex sends the
+  summarize request with no tools). The session's system prompt and reminder
+  are constants the next request carries fresh, so a summary of them would
+  only carry stale copies forward, and a request without tools could not
+  share the turn's prompt cache to make sending them worthwhile
+  (`docs/background-compaction.md` *What the summarizer reads*). When no real
+  backend is configured the session backend (the dummy) is used instead;
+  `stream::turn_events` scripts a text-only summary for the compact prompt so
+  the flow is drivable offline (and by `smoke.sh`).
 
   **"No real backend" means the session isn't talking to one** — the tracked
   `ModelSession::real_backend`, not "does a config resolve". Gating on a usable
@@ -135,9 +148,14 @@ no new user bubble:
 
 ## Auto-compact + the context gauge
 
-Codex also compacts **automatically** near the context limit; so do we, with
-the same threshold — **90% of the model's context window**
-(`ModelInfo::auto_compact_token_limit`, `(context_window * 9) / 10`).
+Codex also compacts **automatically** near the context limit; so do we — and,
+since background compaction, **inside the turn**: a summary written while the
+agent works and spliced in at a round boundary
+(`docs/background-compaction.md`). This section is the idle half, which the
+background path falls back to. Both act at one **ceiling**: the window less
+15%, at least 16k (`auto_compact_threshold` — 170k of 200k; opencode's
+reserve, which replaced codex's 90% because 20k of a 200k window could not
+hold a long reply).
 
 - **The window** comes from the provider's `/v1/models` record —
   `context_length` (OpenRouter and most aggregators) or
@@ -181,8 +199,11 @@ the same threshold — **90% of the model's context window**
   (`139/1M` under a blank screen) read as conversation that hadn't really
   gone. `/clear` now lands exactly where a fresh session starts.
 - **The trigger** lives at the loop bottom, where every turn end and gauge
-  change lands: idle, past the threshold, and with a non-empty derivable
-  context, the loop starts the same summarization turn the command runs —
+  change lands. A background summary that is ready lands first (the turn
+  ended before its ceiling), and one still being written blocks the trigger —
+  it lands when it finishes. Otherwise idle, past the ceiling, and with a
+  non-empty derivable context, the loop starts the same summarization turn the
+  command runs —
   marked `auto`, so the cell reads `● Context compacted · 88k → 2.1k tokens
   · auto`. **One attempt per user turn** (codex's per-turn semantics): a
   compact turn ending *any* way — landed, Esc'd, or failed — blocks the

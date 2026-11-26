@@ -5,15 +5,17 @@
 //! factored into the pure [`build_messages`] so it's unit-tested. See
 //! `docs/llm.md`.
 
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::agent::{self, RoundOutcome};
+use super::agent::{self, RoundOutcome, Unfinished};
 use super::approval;
 use super::classifier::{ClassifierContext, SafetyClassifier};
+use super::compaction::{BackgroundCheckpoint, CompactionSlot, Measured, Summarize, Written};
 use super::config::ModelConfig;
 use super::exec::{RealToolExecutor, ToolExecutor};
 use super::hooks::{HookSink, NoHooks};
@@ -29,7 +31,7 @@ use crate::images::AttachmentUrl;
 use crate::permission::PermissionGate;
 use crate::steer::SteerQueue;
 use crate::stream::{
-    AgentCallDone, AgentChatDelivery, AgentSpec, CancelToken, ReplySource, StreamEvent,
+    AgentCallDone, AgentChatDelivery, AgentSpec, CancelToken, ReplySource, StreamEvent, TokenUsage,
 };
 
 /// The default system prompt for the real backend — the "Alter Zero" agent
@@ -174,6 +176,11 @@ pub struct LlmBackend {
     /// (same type, one level down), and the one-off `/compact` backend keeps
     /// this empty — its turn has a single round and nothing to steer.
     steer: SteerQueue,
+    /// Background compaction (`docs/background-compaction.md`): the session's
+    /// summary slot and the summarizer the main turn's round checkpoint
+    /// writes with. `None` — no checkpoint at all — for a subagent, the
+    /// one-off `/compact` backend, and a session with Auto compact off.
+    compaction: Option<(CompactionSlot, Compactor)>,
     /// The user's lifecycle hooks (`docs/hooks.md`): consulted before and
     /// after every tool call, and in the user's stead at the permission gate.
     /// [`NoHooks`] until the boundary attaches a loaded `hooks.json`, so a
@@ -263,6 +270,7 @@ impl LlmBackend {
             max_tool_calls: agent::MAX_TOOL_ITERATIONS,
             round_budget: None,
             steer: SteerQueue::new(),
+            compaction: None,
             hooks: Arc::new(NoHooks),
             secrets: None,
         }
@@ -383,6 +391,29 @@ impl LlmBackend {
     pub fn with_steer(mut self, queue: SteerQueue) -> Self {
         self.steer = queue;
         self
+    }
+
+    /// Compact in the background (`docs/background-compaction.md`): the main
+    /// turn's round checkpoint writes its summaries with `compactor` and
+    /// holds them in the session's `slot` — every rebuild attaches the same
+    /// slot, so a summary being written survives a `/settings` change.
+    #[must_use]
+    pub fn with_compaction(mut self, slot: CompactionSlot, compactor: Compactor) -> Self {
+        self.compaction = Some((slot, compactor));
+        self
+    }
+
+    /// This backend as a compaction summarizer: a `/compact` backend's
+    /// tools-free client and `PreCompact`/`PostCompact` sink, with its retry
+    /// budget — what the session attaches to its main backend with
+    /// [`with_compaction`](Self::with_compaction).
+    #[must_use]
+    pub fn compactor(&self) -> Compactor {
+        Compactor {
+            client: self.client.clone(),
+            hooks: Arc::clone(&self.hooks),
+            max_retries: self.max_retries,
+        }
     }
 
     /// Attach the discovered skills, **enabling the `skill` tool**
@@ -873,6 +904,7 @@ impl ReplySource for LlmBackend {
         // pushes onto it while the turn runs and the agent loop drains it at
         // every round boundary.
         let steer = self.steer.clone();
+        let compaction = self.compaction.clone();
         thread::spawn(move || {
             // Encoding the attachments reads files — done here on the backend
             // thread so a large image never stalls the event loop. A known
@@ -959,6 +991,30 @@ impl ReplySource for LlmBackend {
             if let Ok(mut log) = turn_context.lock() {
                 log.push_request(&prompt);
             }
+            // Background compaction (docs/background-compaction.md): the
+            // newest measure — the round closure sets it after every request
+            // — and the messages steered in, the typed texts a splice keeps;
+            // the checkpoint reads both at every round top. No window, no
+            // slot: no checkpoint.
+            let measured = Cell::new(None);
+            let steered_log = RefCell::new(Vec::new());
+            let mut compacting = compaction.as_ref().and_then(|(slot, compactor)| {
+                let (turn, baseline) = slot.open_turn();
+                let summarizer: Arc<dyn Summarize> = Arc::new(compactor.clone());
+                BackgroundCheckpoint::new(
+                    slot.clone(),
+                    summarizer,
+                    turn,
+                    baseline,
+                    &measured,
+                    &steered_log,
+                )
+            });
+            let mut no_checkpoint = agent::NoCheckpoint;
+            let checkpoint: &mut dyn agent::RoundCheckpoint = match compacting.as_mut() {
+                Some(compacting) => compacting,
+                None => &mut no_checkpoint,
+            };
             // The agentic loop: `run_agent` streams one round, runs any tool
             // calls the model requested (via `executor`, emitting the
             // ToolStart/ToolEnd pair the TUI renders), appends the results, and
@@ -972,7 +1028,7 @@ impl ReplySource for LlmBackend {
             // request is known to the model within this same turn
             // (docs/background.md). The round's `agent` calls go to the
             // subagent launcher instead (docs/agent-tool.md).
-            agent::run_agent(
+            agent::run_agent_with(
                 &tx,
                 &cancel,
                 max_tool_calls,
@@ -988,7 +1044,20 @@ impl ReplySource for LlmBackend {
                     if let Ok(mut previous) = wire_history.lock() {
                         previous.remember(msgs);
                     }
-                    stream_round(&client, msgs, &tx, &cancel, max_retries)
+                    let (outcome, usage) =
+                        stream_round_measured(&client, msgs, &tx, &cancel, max_retries);
+                    // The checkpoint's measure: what this request carried
+                    // plus the reply the next one sends back — its thinking
+                    // left out, since thinking is never sent back.
+                    if let Some(usage) = usage {
+                        measured.set(Some(Measured {
+                            tokens: usage
+                                .input
+                                .saturating_add(usage.output.saturating_sub(usage.reasoning)),
+                            len: msgs.len() + 1,
+                        }));
+                    }
+                    outcome
                 },
                 // An `askuserquestion` call takes the ask path — raise the
                 // modal and block this thread on the user's answers
@@ -1093,7 +1162,11 @@ impl ReplySource for LlmBackend {
                             text: note.context,
                         })
                         .collect();
-                    pending.extend(steer.take().into_iter().map(agent::PendingInput::User));
+                    let steered = steer.take();
+                    // The user's own words, which a splice keeps
+                    // (docs/background-compaction.md *What the splice builds*).
+                    steered_log.borrow_mut().extend(steered.iter().cloned());
+                    pending.extend(steered.into_iter().map(agent::PendingInput::User));
                     pending
                 },
                 |calls| {
@@ -1185,6 +1258,7 @@ impl ReplySource for LlmBackend {
                                 .and_then(|registry| registry.description(id))
                         })
                 },
+                checkpoint,
             );
         })
     }
@@ -2168,6 +2242,19 @@ fn stream_round(
     cancel: &CancelToken,
     max_retries: u32,
 ) -> RoundOutcome {
+    stream_round_measured(client, messages, tx, cancel, max_retries).0
+}
+
+/// [`stream_round`] with the successful attempt's usage frame beside the
+/// outcome — what the main turn's round checkpoint measures the next request
+/// by (`docs/background-compaction.md` *The numbers*).
+fn stream_round_measured(
+    client: &OpenAiClient,
+    messages: &[ChatMessage],
+    tx: &UnboundedSender<StreamEvent>,
+    cancel: &CancelToken,
+    max_retries: u32,
+) -> (RoundOutcome, Option<TokenUsage>) {
     // The successful attempt's outcome (text + tool calls) is stashed here so
     // it survives the retry driver, which only reports the disposition.
     let mut captured = None;
@@ -2245,13 +2332,127 @@ fn stream_round(
             // forward it so the app snaps its tally to the provider's own
             // accounting — one report per round, so an agentic turn
             // accumulates them (docs/prompt-caching.md).
-            if let Some(usage) = outcome.usage {
+            let usage = outcome.usage;
+            if let Some(usage) = usage {
                 let _ = tx.send(StreamEvent::Usage(usage));
             }
-            round_outcome(outcome)
+            (round_outcome(outcome), usage)
         }
-        AttemptResult::Cancelled => RoundOutcome::Cancelled,
-        AttemptResult::Failed(e) => RoundOutcome::Failed(e),
+        AttemptResult::Cancelled => (RoundOutcome::Cancelled, None),
+        AttemptResult::Failed(e) => (RoundOutcome::Failed(e), None),
+    }
+}
+
+/// The summarizer a background compaction writes with
+/// (`docs/background-compaction.md`): a `/compact` backend's tools-free
+/// client and its `PreCompact`/`PostCompact` sink, asked directly — the
+/// rounds' text never streams to anyone, a summary cut off at the output cap
+/// is continued the way the agent loop continues any unfinished reply, and
+/// what comes back is the successful attempts' text, so a retry never leaves
+/// a failed attempt's words in it.
+#[derive(Debug, Clone)]
+pub struct Compactor {
+    client: OpenAiClient,
+    hooks: Arc<dyn HookSink>,
+    max_retries: u32,
+}
+
+impl Summarize for Compactor {
+    fn summarize(
+        &self,
+        mut messages: Vec<ChatMessage>,
+        cancel: &CancelToken,
+    ) -> Result<Written, String> {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        // PreCompact (docs/hooks.md): its context extends the request, as
+        // the `/compact` turn's does; its cell lands with the summary.
+        let opening = super::hooks::turn_start(
+            self.hooks.as_ref(),
+            crate::context::SUMMARIZATION_PROMPT,
+            cancel,
+        );
+        for note in opening.notes {
+            if !note.text.is_empty() {
+                messages.push(ChatMessage::user(&note.text));
+            }
+            let _ = tx.send(StreamEvent::HookNote {
+                label: note.label,
+                text: note.text,
+                report: note.report,
+            });
+        }
+        let mut summary = String::new();
+        let mut continuations = 0;
+        loop {
+            let (kind, said) =
+                match stream_round(&self.client, &messages, &tx, cancel, self.max_retries) {
+                    RoundOutcome::Complete { text } if text.trim().is_empty() => {
+                        (Unfinished::Empty, text)
+                    }
+                    RoundOutcome::Complete { text } => {
+                        summary.push_str(&text);
+                        break;
+                    }
+                    RoundOutcome::CutOff { text } => (Unfinished::CutOff, text),
+                    RoundOutcome::Cancelled => return Err("cancelled".to_string()),
+                    RoundOutcome::Failed(err) => return Err(err.to_string()),
+                    RoundOutcome::Limit(message) => return Err(message),
+                    RoundOutcome::ToolCalls { .. } => {
+                        return Err(
+                            "the summarizer asked for a tool it was never offered".to_string()
+                        );
+                    }
+                };
+            summary.push_str(&said);
+            if continuations >= agent::MAX_CONTINUATIONS {
+                break;
+            }
+            continuations += 1;
+            if !said.trim().is_empty() {
+                messages.push(ChatMessage::new("assistant", &said));
+            }
+            messages.push(ChatMessage::user(kind.continuation().1));
+        }
+        let summary = summary.trim().to_string();
+        if summary.is_empty() {
+            return Err("the summary came back empty".to_string());
+        }
+        // PostCompact hears what was written.
+        agent::send_hook_report(&tx, self.hooks.stop(false, &summary, cancel).report);
+        drop(tx);
+        let mut usage = Vec::new();
+        let mut notes = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                StreamEvent::Usage(frame) => usage.push(frame),
+                event => notes.extend(summary_cell(event)),
+            }
+        }
+        Ok(Written {
+            text: summary,
+            usage,
+            notes,
+        })
+    }
+}
+
+/// The cell a summary's hook note leaves in the conversation: its report
+/// alone, never its text — a `PreCompact` hook's context reached the summary
+/// request and belongs to no other (`docs/background-compaction.md` *Hooks*,
+/// the `/compact` turn's rule). `None` for a note with nothing to show, and
+/// for every other event.
+fn summary_cell(event: StreamEvent) -> Option<StreamEvent> {
+    match event {
+        StreamEvent::HookNote {
+            label,
+            report: Some(report),
+            ..
+        } => Some(StreamEvent::HookNote {
+            label,
+            text: String::new(),
+            report: Some(report),
+        }),
+        _ => None,
     }
 }
 
@@ -2509,6 +2710,38 @@ mod tests {
                 ContentPart::image("data:image/png;base64,OK"),
             ])
         );
+    }
+
+    #[test]
+    fn a_summarys_hook_note_keeps_its_cell_and_not_its_text() {
+        // PreCompact's text reached the summary request; the conversation's
+        // own record gets the cell alone, as the `/compact` turn's does
+        // (docs/background-compaction.md *Hooks*).
+        let report = crate::hooks::HookReport {
+            event: "PreCompact".to_string(),
+            hooks: Vec::new(),
+            warnings: Vec::new(),
+        };
+        let note = StreamEvent::HookNote {
+            label: "PreCompact hook".to_string(),
+            text: "keep the parser's error codes".to_string(),
+            report: Some(report.clone()),
+        };
+        assert_eq!(
+            summary_cell(note),
+            Some(StreamEvent::HookNote {
+                label: "PreCompact hook".to_string(),
+                text: String::new(),
+                report: Some(report),
+            })
+        );
+        let silent = StreamEvent::HookNote {
+            label: "PreCompact hook".to_string(),
+            text: "context only".to_string(),
+            report: None,
+        };
+        assert_eq!(summary_cell(silent), None, "no cell to show");
+        assert_eq!(summary_cell(StreamEvent::Chunk("s".into())), None);
     }
 
     #[test]

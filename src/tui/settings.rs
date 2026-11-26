@@ -351,10 +351,15 @@ impl Session<'_> {
             // `never` stops a running wait at once (docs/ask.md); the mascot
             // row is read by the frame that poses the banner, so off puts it
             // back to rest on the very next draw (docs/mascot-animation.md).
-            SettingKey::HideThinking
-            | SettingKey::AutoCompact
-            | SettingKey::AskTimeout
-            | SettingKey::AnimateMascot => {}
+            SettingKey::HideThinking | SettingKey::AskTimeout | SettingKey::AnimateMascot => {}
+            // The idle half is read where it is used (`App::should_auto_compact`);
+            // the background half rides the backend (docs/background-compaction.md).
+            SettingKey::AutoCompact => {
+                self.models.set_auto_compact(settings.auto_compact);
+                if !settings.auto_compact {
+                    self.app.forget_compaction();
+                }
+            }
             // Shift+Tab's path owns this one; the menu never routes it here.
             SettingKey::PermissionMode => {}
             // The one per-user row: its file is telemetry.json, and turning

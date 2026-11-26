@@ -12,6 +12,32 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Changed
+
+- **Compaction runs in the background while the agent works.** It used to
+  wait until the turn ended, so a long run of tool calls could fill the
+  context window before it got the chance, and the turn stopped with `the
+  reply filled the model's context window`. Now:
+  - A summary starts on its own about 60k tokens before the limit, on a
+    thread of its own, and the agent keeps working while it is written.
+  - It is put in place at a round boundary once the request reaches the
+    limit, and the rounds since the summary started stay exactly as they
+    were. The agent waits only if the limit comes before the summary is
+    done, and the status line then reads `Compacting…`.
+  - A summary still being written when the turn ends is put in place once
+    it is done. The cell reads `● Context compacted · 173k → 78k tokens ·
+    31s · background`.
+  - The limit is now the window less 15% (at least 16k): 170k of a 200k
+    window, where it was 180k. The `/context` page's reserve shows the same
+    number.
+  - The summary reads only the conversation, never the system prompt or
+    the `<system-reminder>` (the `AGENTS.md` instructions, the skill and
+    agent listings): the next request carries the current ones anyway, so a
+    summary of them only carried stale copies forward. The summarizer has a
+    short system prompt of its own.
+  - The `/settings` **Auto compact** row turns both halves off; `/compact`
+    by hand still works (`docs/background-compaction.md`).
+
 ### Fixed
 
 - **`/copy` and `/export` reach your clipboard from tmux on a remote

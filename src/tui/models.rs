@@ -45,6 +45,7 @@ use alter_zero::app::{
     UsageTarget,
 };
 use alter_zero::background::BackgroundRegistry;
+use alter_zero::llm::compaction::CompactionSlot;
 use alter_zero::llm::model_cache::{CachedListing, FetchLedger, FetchPlan, Freshness};
 use alter_zero::llm::{
     self, AuthScheme, EnvFile, LlmBackend, ModelConfig, ModelEntry, ModelSelection, ProvidersFile,
@@ -181,6 +182,14 @@ pub(crate) struct ModelSession {
     /// `/settings` change never leaves the loop pushing into a queue no
     /// backend is draining.
     steer: alter_zero::steer::SteerQueue,
+    /// The session's summary slot (`docs/background-compaction.md`): one per
+    /// session, attached to every real backend build while Auto compact is
+    /// on, so a summary being written outlives a `/settings` change or a
+    /// `/model` switch and lands at idle.
+    compaction: CompactionSlot,
+    /// The `/settings` **Auto compact** row: whether the main backend
+    /// compacts in the background at all.
+    auto_compact: bool,
     permissions: Option<PermissionGate>,
     /// The `AskUserQuestion` gate — `None` in a headless run, where nobody
     /// could answer, so the tool is never offered (`docs/headless.md`).
@@ -346,6 +355,8 @@ impl ModelSession {
         // (`config::apply_setting_overrides`, docs/settings.md).
         let temperature = settings.temperature;
         let tools = settings.tools;
+        let auto_compact = settings.auto_compact;
+        let compaction = CompactionSlot::default();
         let max_retries = settings.error_retry;
         let max_tool_calls = settings.max_tool_calls;
         // The **Skills** knob and the discovered set are separate: an empty
@@ -511,6 +522,7 @@ impl ModelSession {
                 hooks.as_ref(),
                 round_budget,
                 imagegen.as_ref().filter(|_| imagegen_offered),
+                auto_compact.then_some(&compaction),
             )),
             (None, None) => {
                 // The subagent registry rides the dummy too: the "subagent"
@@ -606,6 +618,8 @@ impl ModelSession {
             registry: registry.clone(),
             agents: agents.clone(),
             steer: steer.clone(),
+            compaction,
+            auto_compact,
             permissions: permissions.cloned(),
             ask: ask.cloned(),
             round_budget: round_budget.cloned(),
@@ -953,6 +967,7 @@ impl ModelSession {
             self.hooks.as_ref(),
             self.round_budget.as_ref(),
             self.imagegen.as_ref().filter(|_| self.imagegen_attached),
+            self.auto_compact.then_some(&self.compaction),
         ));
     }
 
@@ -985,6 +1000,23 @@ impl ModelSession {
     pub(crate) fn set_tools(&mut self, tools: bool) {
         self.tools = tools;
         self.rebuild_current();
+    }
+
+    /// The `/settings` **Auto compact** row (`docs/background-compaction.md`):
+    /// off detaches the background summary, and discards one being written.
+    pub(crate) fn set_auto_compact(&mut self, on: bool) {
+        self.auto_compact = on;
+        if !on {
+            self.compaction.discard();
+        }
+        self.rebuild_current();
+    }
+
+    /// The session's summary slot: the boundary hands each turn its baseline
+    /// through it, lands a summary that outlived its turn, and discards one
+    /// whose history is gone (`docs/background-compaction.md`).
+    pub(crate) const fn compaction(&self) -> &CompactionSlot {
+        &self.compaction
     }
 
     /// Whether the session runs its hooks at all — the `/settings` **Hooks**
@@ -1963,10 +1995,29 @@ fn session_backend(
     hooks: Option<&HookSetup>,
     round_budget: Option<&alter_zero::llm::agent::RoundBudget>,
     imagegen: Option<&alter_zero::llm::imagegen::ImagegenSetup>,
+    compaction: Option<&CompactionSlot>,
 ) -> LlmBackend {
     // Captured before `configure` consumes the config: the hooks payload
     // names the model that is about to answer (docs/hooks.md).
     let model = cfg.model.clone();
+    // The summarizer background compaction writes with
+    // (docs/background-compaction.md): the same model as a `/compact`
+    // backend sees it — no tools, the summarizer's own system prompt, and
+    // the compact hook events, `auto`.
+    let compactor = compaction.map(|slot| {
+        let mut summarizer = LlmBackend::configure(
+            cfg.clone(),
+            Some(alter_zero::context::COMPACT_SYSTEM_PROMPT.to_string()),
+            /*tools_enabled=*/ false,
+        )
+        .with_max_retries(max_retries);
+        if let Some(inner) = hooks.and_then(|setup| setup.command_hooks(&model)) {
+            summarizer = summarizer.with_hooks(std::sync::Arc::new(
+                alter_zero::llm::hooks::CompactHooks::new(inner, /*auto=*/ true),
+            ));
+        }
+        (slot.clone(), summarizer.compactor())
+    });
     // `configure` rather than `with_system_prompt`: the tool toggle is the
     // `/settings` **Tools** knob now (seeded from `ALTER_ZERO_TOOLS`), so it
     // is passed in rather than re-read from the environment per build
@@ -2038,6 +2089,9 @@ fn session_backend(
     // a `/secrets` save reaches the next tool call without a rebuild.
     if let Some(secrets) = registry.secrets() {
         backend = backend.with_secrets(secrets.clone());
+    }
+    if let Some((slot, compactor)) = compactor {
+        backend = backend.with_compaction(slot, compactor);
     }
     backend
 }

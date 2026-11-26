@@ -248,6 +248,17 @@ fn main() {
             StreamEvent::NoticeDelivered { seq } => {
                 println!("\x1b[36m[notice {seq} delivered]\x1b[0m");
             }
+            // Background compaction (docs/background-compaction.md) — this
+            // probe attaches no summary slot, but print it if one ever
+            // arrives rather than swallowing it.
+            StreamEvent::CompactionStarted => println!("\x1b[90m[compaction started]\x1b[0m"),
+            StreamEvent::CompactionWaiting => println!("\x1b[90m[compacting…]\x1b[0m"),
+            StreamEvent::Compacted {
+                secs, background, ..
+            } => println!("\x1b[90m[compacted in {secs}s, background: {background}]\x1b[0m"),
+            StreamEvent::CompactionFailed { reason } => {
+                println!("\x1b[33m[compaction failed] {reason}\x1b[0m");
+            }
             StreamEvent::Error(msg) => {
                 println!("\n\x1b[31m[error] {msg}\x1b[0m");
                 break;

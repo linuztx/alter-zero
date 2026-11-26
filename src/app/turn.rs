@@ -309,8 +309,11 @@ impl App {
         // (docs/offline.md *A connection lost mid-reply*).
         self.attempt_floor = None;
         // A new real turn re-arms the auto-compact trigger (one attempt per
-        // user turn — docs/compact.md).
+        // user turn — docs/compact.md) — and waits on no summary yet: a wait
+        // an Esc cut short ended with its turn, the summary going on alone
+        // (docs/background-compaction.md).
         self.auto_compact_blocked = false;
+        self.compaction_waiting = false;
         // A fresh turn starts with the single-row preview; the boundary
         // re-injects the real count each frame (a forming table grows it).
         self.stream_preview_rows = 1;

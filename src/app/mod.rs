@@ -85,7 +85,9 @@ pub use self::commands::{
     command_query, matching_commands,
 };
 pub use self::compact::{COMPACT_VERB, Compaction};
-pub(crate) use self::compact::{estimate_messages_tokens, message_tokens};
+pub(crate) use self::compact::{
+    auto_compact_threshold, compaction_start, estimate_messages_tokens, message_tokens,
+};
 pub use self::composer::{SHELL_EMPTY_NOTICE, shell_query};
 pub use self::context_usage::{ContextUsagePage, ContextUsageRow};
 pub use self::diff::{DiffFilter, DiffFocus, DiffReview};
@@ -113,6 +115,7 @@ pub use self::model_picker::{ModelLoad, ModelPicker, ProviderList, ProviderLoad}
 pub use self::permission::PermissionPrompt;
 pub use self::queue::QueuedTurn;
 pub use self::reasoning::{LiveThought, Reasoning};
+pub(crate) use self::types::IMAGE_INPUT_TOKENS;
 // Crate-internal: `agents::AgentRun` runs the same reasoning-token snap over
 // its own transcript (`docs/agent-view-streaming.md`).
 pub use self::config_review::{
@@ -330,6 +333,14 @@ pub struct App {
     /// tight loop, and an Esc'd one isn't immediately restarted against the
     /// user's wishes. See `docs/compact.md`.
     auto_compact_blocked: bool,
+    /// Where a summary of the conversation cut the history: the history's
+    /// generation and length when its `CompactionStarted` arrived. A landing
+    /// keeps what joined since (`docs/background-compaction.md` *The marker
+    /// records `kept`*).
+    compaction_start: Option<(u64, usize)>,
+    /// The request reached the ceiling and waits for a summary to be
+    /// written: the status verb reads `Compacting…`.
+    compaction_waiting: bool,
     /// The streaming strip preview's row count, injected by the boundary before
     /// each draw ([`set_stream_preview_rows`], the [`set_status_times`]
     /// pattern): 1 for a normal reply's single-row preview, the forming block's

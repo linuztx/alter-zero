@@ -120,6 +120,12 @@ fn dummy_ai_emits_all_chunks_and_tool_calls_then_done() {
             StreamEvent::AgentBatch { .. } | StreamEvent::AgentGroupDone { .. } => {}
             StreamEvent::RoundCalls(_) => {}
             StreamEvent::HookNote { .. } | StreamEvent::PromptBlocked { .. } => {}
+            StreamEvent::CompactionStarted
+            | StreamEvent::CompactionWaiting
+            | StreamEvent::Compacted { .. }
+            | StreamEvent::CompactionFailed { .. } => {
+                panic!("the dummy never compacts in the background")
+            }
             StreamEvent::ThinkingStart => think_starts += 1,
             StreamEvent::ThinkingChunk(_) => think_chunks += 1,
             StreamEvent::ThinkingEnd => think_ends += 1,

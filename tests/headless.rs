@@ -482,16 +482,19 @@ fn serve(mut stream: TcpStream, log: &Mutex<Vec<String>>) {
             r#"{"object":"list","data":[{"id":"stub-model"}]}"#.to_string(),
         )
     } else {
-        let dropped = {
+        let (dropped, grown) = {
             let mut log = log.lock().expect("the log");
             log.push(body.clone());
-            dropped_deltas(&body, &log)
+            (dropped_deltas(&body, &log), grow_reply(&body, &log))
         };
         if let Some(deltas) = dropped {
             drop_mid_reply(&mut stream, deltas);
             return;
         }
-        ("text/event-stream", chat_reply(&body))
+        (
+            "text/event-stream",
+            grown.unwrap_or_else(|| chat_reply(&body)),
+        )
     };
     let response = format!(
         "HTTP/1.1 200 OK\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
@@ -503,15 +506,16 @@ fn serve(mut stream: TcpStream, log: &Mutex<Vec<String>>) {
 
 /// What the stand-in streams of a request's reply before it drops it
 /// ([`drop_mid_reply`]), or `None` to answer it whole. It drops the first
-/// sending of two requests and answers each when it is sent again: a
-/// [`DROP`] prompt's ([`dropped_attempt`]) and the continuation of a
-/// [`CUT_SUMMARY`] summary ([`SUMMARY_DRAFT`]). `log` holds every chat
-/// request so far, this one included.
+/// sending of a [`DROP`] prompt ([`dropped_attempt`]) and answers it when it
+/// is sent again — and every [`CUT_SUMMARY`] summary's continuation the
+/// same way ([`SUMMARY_DRAFT`]), each summary's first attempt dropped and its
+/// second answered, so every way a conversation compacts meets the retry.
+/// `log` holds every chat request so far, this one included.
 fn dropped_deltas(body: &str, log: &[String]) -> Option<Vec<serde_json::Value>> {
-    let first = |is: fn(&str) -> bool| is(body) && log.iter().filter(|chat| is(chat)).count() == 1;
-    if first(|chat| chat.contains(DROP)) {
+    let sent = |is: fn(&str) -> bool| log.iter().filter(|chat| is(chat)).count();
+    if body.contains(DROP) && sent(|chat| chat.contains(DROP)) == 1 {
         Some(dropped_attempt())
-    } else if first(continues_a_cut_summary) {
+    } else if continues_a_cut_summary(body) && sent(continues_a_cut_summary) % 2 == 1 {
         Some(vec![serde_json::json!({"content": SUMMARY_DRAFT})])
     } else {
         None
@@ -562,6 +566,54 @@ fn continues_a_cut_summary(body: &str) -> bool {
     !offers_tools && last == alter_zero::llm::agent::CUT_OFF_NOTE
 }
 
+/// What a prompt says to make the stand-in's model keep reading: each round
+/// of the turn calls `bash` for [`GROW_WORDS`] words of output, until its
+/// request carries the summary ([`STAND_IN_SUMMARY`]) — or [`GROW_ROUNDS`]
+/// rounds have run, the bound on a conversation never compacted — and then
+/// answers `Done.` (docs/background-compaction.md).
+const GROW: &str = "HEADLESS_GROW";
+const GROW_ROUNDS: usize = 30;
+const GROW_WORDS: usize = 5_000;
+/// What the stand-in answers every summary request with.
+const STAND_IN_SUMMARY: &str = "The user ran a command.";
+
+/// The stand-in model's round in a [`GROW`] conversation, or `None` for any
+/// other request. The rounds are counted over every request the stand-in
+/// saw, since a compaction takes the earlier ones out of the request.
+fn grow_reply(body: &str, log: &[String]) -> Option<String> {
+    if !body.contains(GROW) || !offers_tools(body) {
+        return None;
+    }
+    let round = log
+        .iter()
+        .filter(|chat| chat.contains(GROW) && offers_tools(chat))
+        .count();
+    let frames = if round <= GROW_ROUNDS && !body.contains(STAND_IN_SUMMARY) {
+        let command = format!("echo round {round}; printf 'grow %.0s' $(seq 1 {GROW_WORDS})");
+        vec![
+            serde_json::json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 0, "id": format!("call_{round}"), "type": "function",
+                "function": {
+                    "name": "bash",
+                    "arguments": serde_json::json!({"command": command}).to_string(),
+                },
+            }]}}]}),
+            serde_json::json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+        ]
+    } else {
+        vec![
+            serde_json::json!({"choices": [{"delta": {"content": "Done."}}]}),
+            serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        ]
+    };
+    let mut sse: String = frames
+        .iter()
+        .map(|frame| format!("data: {frame}\n\n"))
+        .collect();
+    sse.push_str("data: [DONE]\n\n");
+    Some(sse)
+}
+
 /// What a prompt says to make the stand-in delegate, or start a command
 /// that outlives the run — words no notice the app writes can contain.
 /// Beside `DELEGATE`, `STALL` gives the subagent a task the stand-in never
@@ -602,8 +654,8 @@ fn has_dropped_text(text: &str) -> bool {
 
 /// The whole reply the retried request streams.
 const RETRIED_REPLY: &str = "Second attempt: the whole reply streams once.";
-/// What a conversation says to make its summary stop at the output cap:
-/// the summarization answers [`SUMMARY_HEAD`] with a `length` finish, and
+/// What a conversation says to make its summaries stop at the output cap:
+/// each summarization answers [`SUMMARY_HEAD`] with a `length` finish, and
 /// the continuation request that follows (docs/unfinished-replies.md) is
 /// dropped once, after [`SUMMARY_DRAFT`], then answered with
 /// [`SUMMARY_TAIL`].
@@ -658,7 +710,7 @@ fn chat_reply(body: &str) -> String {
         ]
     } else if !offers_tools {
         vec![
-            serde_json::json!({"choices": [{"delta": {"content": "The user ran a command."}}]}),
+            serde_json::json!({"choices": [{"delta": {"content": STAND_IN_SUMMARY}}]}),
             serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
         ]
     } else if last["role"] == "tool" || said.contains(GENERATED_NOTE) {
@@ -969,8 +1021,10 @@ fn a_reply_whose_connection_drops_reports_only_what_the_retry_streamed() {
 /// A summary the output cap cut off goes on in another round
 /// (docs/unfinished-replies.md). A connection lost in that round takes back
 /// what its own attempt streamed and nothing the round before it wrote, so
-/// the compaction a `-c` run makes before its prompt keeps the whole summary
-/// (docs/compact.md).
+/// every compaction keeps its whole summary: the one a turn makes as it runs
+/// (docs/background-compaction.md) and the one a `-c` run makes before its
+/// prompt (docs/compact.md). A 2000-token window makes both — what rides
+/// every request alone passes its ceiling.
 #[test]
 fn a_retry_in_a_summarys_second_round_keeps_its_first() {
     let world = World::new("cut-summary");
@@ -1004,19 +1058,23 @@ fn a_retry_in_a_summarys_second_round_keeps_its_first() {
         .iter()
         .filter(|chat| continues_a_cut_summary(chat))
         .count();
-    assert_eq!(
-        continuations, 2,
-        "the continuation was dropped, then sent again"
-    );
     let lines = rollout(&world);
-    let summary = lines
+    let summaries: Vec<&str> = lines
         .iter()
-        .find(|line| line["type"] == "compaction")
-        .unwrap_or_else(|| panic!("the conversation compacted: {lines:#?}"))["payload"]["summary"]
-        .as_str()
-        .expect("a summary")
-        .to_string();
-    assert_eq!(summary, format!("{SUMMARY_HEAD}{SUMMARY_TAIL}"));
+        .filter(|line| line["type"] == "compaction")
+        .filter_map(|line| line["payload"]["summary"].as_str())
+        .collect();
+    // The first run's turn compacts at its first round top and is spent;
+    // the second compacts before its prompt, then its turn once more.
+    assert_eq!(summaries.len(), 3, "{lines:#?}");
+    assert_eq!(
+        continuations,
+        2 * summaries.len(),
+        "each continuation was dropped, then sent again"
+    );
+    for summary in summaries {
+        assert_eq!(summary, format!("{SUMMARY_HEAD}{SUMMARY_TAIL}"));
+    }
 }
 
 /// Whether a logged chat request offers the model any tools — a summary
@@ -1082,6 +1140,133 @@ fn a_summary_request_reads_only_the_conversation() {
     );
     assert!(!summary.contains("system-reminder"), "{summary}");
     assert!(!summary.contains("Always run the linter"), "{summary}");
+}
+
+/// A chat request's messages as the wire carried them, minus the cache
+/// breakpoints a request marks on whichever messages are newest.
+fn wire_messages(body: &str) -> Vec<serde_json::Value> {
+    fn strip(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                map.remove("cache_control");
+                map.values_mut().for_each(strip);
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    let mut request: serde_json::Value = serde_json::from_str(body).expect("a JSON request");
+    strip(&mut request);
+    request["messages"].as_array().cloned().unwrap_or_default()
+}
+
+/// A turn that reads its way past the start of its window gets a summary
+/// written beside it and spliced in at a round top, the rounds since the cut
+/// kept as they were, with no round waiting on it — and the next turn opens
+/// on the very request the splice built, the marker's derivation rebuilding
+/// it message for message (docs/background-compaction.md).
+#[test]
+fn a_long_turn_is_compacted_in_the_background_as_it_runs() {
+    let world = World::new("background-compaction");
+    let stand_in = StandIn::start();
+    let run = |args: &[&str]| {
+        let mut command = world.command(args);
+        stand_in.configure(&world, &mut command);
+        command
+            .env("ALTER_ZERO_CONTEXT_WINDOW", "60000")
+            .stdin(Stdio::null())
+            .output()
+            .expect("the binary runs")
+    };
+    let first = run(&[
+        "-p",
+        "--permission-mode",
+        "master",
+        &format!("{GROW} read the logs"),
+    ]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    assert!(stdout(&first).contains("Done."), "{}", stdout(&first));
+    let chats = stand_in.chat_requests();
+    let shape: Vec<&str> = chats
+        .iter()
+        .map(
+            |chat| match (offers_tools(chat), chat.contains(STAND_IN_SUMMARY)) {
+                (false, _) => "summary",
+                (true, false) => "round",
+                (true, true) => "spliced",
+            },
+        )
+        .collect();
+    // One summary, written while the rounds went on: rounds ran after it was
+    // asked for and before it was spliced in, and the first request that
+    // carries it is the one that ended the turn.
+    let summary = shape
+        .iter()
+        .position(|kind| *kind == "summary")
+        .unwrap_or_else(|| panic!("no summary was written: {shape:?}"));
+    assert_eq!(
+        shape.iter().filter(|kind| **kind == "summary").count(),
+        1,
+        "{shape:?}"
+    );
+    assert_eq!(shape.last(), Some(&"spliced"), "{shape:?}");
+    assert!(
+        shape[summary..]
+            .iter()
+            .filter(|kind| **kind == "round")
+            .count()
+            >= 1,
+        "the agent went on while it was written: {shape:?}"
+    );
+    let turns: Vec<&String> = chats.iter().filter(|chat| offers_tools(chat)).collect();
+    let request = wire_messages(turns.last().expect("a spliced request"));
+    assert_eq!(request[0]["role"], "system");
+    assert!(
+        request[1]["content"].to_string().contains(STAND_IN_SUMMARY),
+        "{:?}",
+        request[1]
+    );
+    assert!(
+        request[2..].iter().any(|message| message["role"] == "tool"),
+        "the rounds since the cut stay: {request:#?}"
+    );
+    let records = rollout(&world);
+    let marker = records
+        .iter()
+        .find(|record| record["type"] == "compaction")
+        .unwrap_or_else(|| panic!("no compaction recorded: {records:#?}"));
+    assert_eq!(marker["payload"]["background"], true, "{marker}");
+    assert!(
+        marker["payload"]["kept"]
+            .as_u64()
+            .is_some_and(|kept| kept > 0),
+        "{marker}"
+    );
+    // The next turn re-sends what the splice built, then the reply and the
+    // new message.
+    let last = wire_messages(turns.last().expect("a last round"));
+    let second = run(&["-p", "-c", "--permission-mode", "master", "and now?"]);
+    assert!(second.status.success(), "{}", stderr(&second));
+    let chats = stand_in.chat_requests();
+    let next = chats[shape.len()..]
+        .iter()
+        .find(|chat| offers_tools(chat))
+        .expect("the next turn's request");
+    let next = wire_messages(next);
+    assert!(next.len() > last.len(), "{next:#?}");
+    // The system prompt names this process's scratchpad, so it is the one
+    // message that differs between two runs whatever compaction does.
+    let excerpt =
+        |value: &serde_json::Value| value.to_string().chars().take(600).collect::<String>();
+    for (index, (was, now)) in last.iter().zip(&next).enumerate().skip(1) {
+        assert!(
+            was == now,
+            "message {index} differs:\n{}\n---\n{}",
+            excerpt(was),
+            excerpt(now)
+        );
+    }
+    assert_eq!(next[last.len()]["role"], "assistant");
 }
 
 // ===== the system prompt flags (docs/system-prompt.md) =====
@@ -1570,9 +1755,12 @@ fn a_subagents_requests_are_recorded_under_its_id() {
 
 #[test]
 fn a_compactions_request_is_recorded_as_one() {
-    // A conversation continued past its window compacts before the prompt
-    // goes out; that summarization's usage line says so and sits right
-    // ahead of the compaction it made (docs/rollout-records.md).
+    // Every compaction's request is recorded as one: the one a turn makes as
+    // it runs (docs/background-compaction.md — a 2000-token window makes
+    // one, what rides every request alone passing its ceiling) and the one a
+    // conversation continued past its window makes before the prompt goes
+    // out. Its usage line says so and sits right ahead of the compaction it
+    // made (docs/rollout-records.md).
     let world = World::new("compact-usage");
     let stand_in = StandIn::start();
     let run = |args: &[&str]| {
@@ -1600,18 +1788,33 @@ fn a_compactions_request_is_recorded_as_one() {
     ]);
     assert!(second.status.success(), "{}", stderr(&second));
     let lines = rollout(&world);
-    let compaction = lines
+    let compactions: Vec<usize> = lines
         .iter()
-        .position(|line| line["type"] == "compaction")
-        .unwrap_or_else(|| panic!("the conversation compacted: {lines:#?}"));
-    assert_eq!(lines[compaction - 1]["type"], "usage", "{lines:#?}");
-    assert_eq!(lines[compaction - 1]["payload"]["compact"], true);
-    // Every other request is the conversation's own, untagged.
-    let tagged = lines
+        .enumerate()
+        .filter(|(_, line)| line["type"] == "compaction")
+        .map(|(at, _)| at)
+        .collect();
+    // The first run's turn compacts at its first round top and is spent;
+    // the second compacts before its prompt, then its turn once more.
+    assert_eq!(compactions.len(), 3, "{lines:#?}");
+    for at in compactions {
+        assert_eq!(lines[at - 1]["type"], "usage", "{lines:#?}");
+        assert_eq!(lines[at - 1]["payload"]["compact"], true);
+    }
+    // One tagged line per summary request; every other request is the
+    // conversation's own, untagged.
+    let chats = stand_in.chat_requests();
+    let summaries = chats.iter().filter(|chat| !offers_tools(chat)).count();
+    let usage: Vec<&serde_json::Value> = lines
         .iter()
-        .filter(|line| line["type"] == "usage" && line["payload"].get("compact").is_some())
+        .filter(|line| line["type"] == "usage")
+        .collect();
+    let tagged = usage
+        .iter()
+        .filter(|line| line["payload"].get("compact").is_some())
         .count();
-    assert_eq!(tagged, 1, "{lines:#?}");
+    assert_eq!(tagged, summaries, "{lines:#?}");
+    assert_eq!(usage.len() - tagged, chats.len() - summaries, "{lines:#?}");
 }
 
 #[test]

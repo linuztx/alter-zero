@@ -853,7 +853,7 @@ conversation a `/clear`, `/resume`, rewind or compaction replaces; the
 its session view): tokens in and out and the cache-hit share as a meter
 (`>99%` and `<1%` short of all or none); a window bar in category
 colours with the free space and the hatched auto-compact reserve allotted
-on cumulative cell boundaries, so the hatch starts at 90% to the cell; a
+on cumulative cell boundaries, so the hatch starts at the ceiling to the cell; a
 legend whose highlighted row's parts sit beside it from 76 columns, the
 highlight following the largest category until the user moves it; **live**
 — `tui::context_usage` hands over the tool set and re-counts at the loop
@@ -3185,9 +3185,23 @@ rides every request; before any frame the estimate, the tool schemas'
 included — `tokens::ContextMeter`,
 `docs/token-estimate.md`; **inside an agent
 session view it is the viewed agent's own** — `AgentRun::context_used` /
-`App::context_gauge`, `docs/agent-context-gauge.md`) and the loop **auto-runs** the
-same turn past codex's 90% threshold (`App::should_auto_compact`, one
-attempt per user turn, the cell tagged `· auto`)) in `docs/compact.md`; and
+`App::context_gauge`, `docs/agent-context-gauge.md`) and auto-compaction
+runs **in the background, inside the turn** (`docs/background-compaction.md`:
+opencode's design with Codex's verbatim tail — `run_agent_with`'s round
+checkpoint starts a summary about 60k tokens before the **ceiling**, the
+window less 15% and at least 16k (`app::auto_compact_threshold`), on a thread
+of its own over the conversation alone — the summarizer's own system prompt
+`prompts/compact_system.md`, never the session's, and no
+`<system-reminder>` (`context::summarizer_context`) — holds it while the
+agent works, and splices it in at the round top that reaches the ceiling,
+the rounds since its cut kept as real messages and the marker recording
+`kept`, how many items just before it ran while the summary was written,
+so the derivation replaces only what comes before them; the agent waits only
+when the ceiling
+comes first, a summary that outlives its turn lands at the idle loop bottom,
+and the loop's blocking summarization turn past the ceiling stays as the
+fallback — `App::should_auto_compact`, one attempt per user turn, the cell
+tagged `· auto`, a background one `· background`)) in `docs/compact.md`; and
 the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
 `ALTER_ZERO_*` environment variables — plus a hard-coded `retry::MAX_RETRIES`,
 a hard-coded `agent::MAX_TOOL_ITERATIONS`, and an always-on auto-compaction —

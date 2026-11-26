@@ -337,6 +337,22 @@ fn the_ceiling_keeps_at_least_16k_free_where_the_window_has_room_for_it() {
 }
 
 #[test]
+fn a_background_summary_starts_a_fixed_lead_before_the_ceiling() {
+    // 60k: about what a conversation grows while a summary is written.
+    assert_eq!(crate::app::compaction_start(200_000, 0), 110_000);
+    assert_eq!(crate::app::compaction_start(1_000_000, 0), 790_000);
+}
+
+#[test]
+fn a_short_cycle_starts_its_summary_halfway_to_the_ceiling() {
+    // A compaction that left 140k of a 200k window has 30k of room before
+    // the ceiling: starting 60k early would summarize again at once.
+    assert_eq!(crate::app::compaction_start(200_000, 140_000), 155_000);
+    // A cycle that starts past the ceiling starts there.
+    assert_eq!(crate::app::compaction_start(200_000, 180_000), 170_000);
+}
+
+#[test]
 fn auto_compact_triggers_past_the_ceiling() {
     // The window less 15%: 850 of 1000 (docs/background-compaction.md).
     let mut app = App::new();
@@ -762,4 +778,230 @@ fn a_model_switch_starts_the_calibration_over() {
     app.record_user_message(&later);
     app.sync_context_used();
     assert_eq!(app.context_used(), counted + estimate_of(&[&later]));
+}
+
+// --- background compaction (docs/background-compaction.md) ---
+
+#[test]
+fn a_background_summary_lands_keeping_what_joined_since_it_started() {
+    let mut app = App::new();
+    app.record_user_message("fix the parser");
+    app.note_compaction_started();
+    // Rounds the agent ran while the summary was written.
+    app.record_user_message("and its tests");
+    app.history.push(HistoryItem::Message(Message {
+        role: Role::Assistant,
+        text: "both read".to_string(),
+        timestamp: String::new(),
+        images: Vec::new(),
+    }));
+    let landed = app
+        .land_compaction("we read the parser", 31, true, &[])
+        .expect("it lands");
+    assert_eq!(
+        landed.kept, 2,
+        "the two items after the cut stay as they were"
+    );
+    assert!(landed.background && landed.auto);
+    assert_eq!(landed.secs, 31);
+    assert_eq!(app.history.last(), Some(&HistoryItem::Compaction(landed)));
+}
+
+#[test]
+fn an_inline_compaction_keeps_nothing() {
+    let mut app = App::new();
+    app.record_user_message("fix the parser");
+    app.note_compaction_started();
+    let landed = app
+        .land_compaction("all of it", 4, false, &[])
+        .expect("it lands");
+    assert_eq!(landed.kept, 0);
+    assert!(!landed.background && landed.auto);
+}
+
+#[test]
+fn a_summary_started_before_a_rewind_never_lands() {
+    // Its cut describes a history that is gone.
+    let mut app = App::new();
+    app.record_user_message("fix the parser");
+    app.note_compaction_started();
+    app.history_generation += 1;
+    assert!(app.land_compaction("stale", 4, true, &[]).is_none());
+    assert!(
+        !app.history
+            .iter()
+            .any(|item| matches!(item, HistoryItem::Compaction(_)))
+    );
+}
+
+#[test]
+fn a_summary_whose_start_was_never_noted_never_lands() {
+    // Its `CompactionStarted` was lost — the channel an Esc swaps, the one a
+    // `/clear` drains — so there is no cut to keep the items after: landing
+    // it would replace what the summary never read.
+    let mut app = App::new();
+    app.record_user_message("fix the parser");
+    assert!(app.land_compaction("unanchored", 4, true, &[]).is_none());
+    assert!(
+        !app.history
+            .iter()
+            .any(|item| matches!(item, HistoryItem::Compaction(_)))
+    );
+}
+
+#[test]
+fn a_noted_start_is_spent_by_its_landing() {
+    let mut app = App::new();
+    app.record_user_message("fix the parser");
+    app.note_compaction_started();
+    assert!(app.land_compaction("first", 4, true, &[]).is_some());
+    assert!(app.land_compaction("again", 4, true, &[]).is_none());
+}
+
+#[test]
+fn a_refused_summary_is_still_billed() {
+    // Its requests were made whether or not it lands.
+    let mut app = App::new();
+    app.record_user_message("fix the parser");
+    assert!(
+        app.land_compaction("unanchored", 4, true, &[usage_of(150_000, 3_000)])
+            .is_none()
+    );
+    assert_eq!(app.usage_since_launch.input, 150_000);
+}
+
+#[test]
+fn a_noted_start_waits_for_its_summary() {
+    let mut app = App::new();
+    app.record_user_message("fix the parser");
+    assert!(!app.compaction_noted());
+    app.note_compaction_started();
+    assert!(app.compaction_noted());
+    app.land_compaction("s", 1, true, &[]);
+    assert!(!app.compaction_noted(), "landing spends it");
+}
+
+#[test]
+fn a_rewrite_of_the_history_makes_a_noted_start_stale() {
+    let mut app = App::new();
+    app.record_user_message("fix the parser");
+    assert!(!app.compaction_is_stale(), "nothing noted");
+    app.note_compaction_started();
+    app.record_user_message("and its tests");
+    assert!(!app.compaction_is_stale(), "an append keeps the cut");
+    app.history_generation += 1;
+    assert!(app.compaction_is_stale());
+    app.forget_compaction();
+    assert!(!app.compaction_is_stale());
+}
+
+#[test]
+fn a_forgotten_compaction_ends_its_wait_and_never_lands() {
+    let mut app = App::new();
+    app.record_user_message("fix the parser");
+    app.begin_stream();
+    app.note_compaction_started();
+    app.set_compaction_waiting(true);
+    app.forget_compaction();
+    assert_eq!(app.status_verb(), None);
+    assert!(app.land_compaction("s", 1, true, &[]).is_none());
+}
+
+#[test]
+fn the_summarizers_usage_is_billed_to_the_session_not_the_gauge() {
+    let mut app = App::new();
+    app.record_user_message("fix the parser");
+    app.set_context_window(Some(200_000));
+    app.note_compaction_started();
+    let before = app.context_used();
+    let landed = app
+        .land_compaction("we read it", 4, true, &[usage_of(150_000, 3_000)])
+        .expect("it lands");
+    assert_eq!(app.usage_since_launch.input, 150_000);
+    assert_eq!(app.usage_since_launch.output, 3_000);
+    assert_eq!(
+        app.last_usage, None,
+        "the summarizer's request measures nothing"
+    );
+    assert_eq!(landed.before, before);
+}
+
+#[test]
+fn the_ceiling_wait_reads_compacting() {
+    let mut app = App::new();
+    app.record_user_message("fix the parser");
+    app.begin_stream();
+    assert_eq!(app.status_verb(), None);
+    app.set_compaction_waiting(true);
+    assert_eq!(app.status_verb(), Some(COMPACT_VERB));
+    app.note_compaction_started();
+    app.land_compaction("s", 1, false, &[]);
+    assert_eq!(app.status_verb(), None, "landing ends the wait");
+}
+
+#[test]
+fn a_wait_an_esc_cut_short_does_not_reach_the_next_turn() {
+    // The Esc cancels the wait and the summary goes on; the next turn's
+    // status line is its own.
+    let mut app = App::new();
+    app.record_user_message("fix the parser");
+    app.begin_stream();
+    app.set_compaction_waiting(true);
+    app.interrupt_turn(3);
+    app.record_user_message("and now the tests");
+    app.begin_stream();
+    assert_eq!(app.status_verb(), None);
+}
+
+#[test]
+fn a_failed_inline_compaction_ends_the_wait() {
+    let mut app = App::new();
+    app.record_user_message("fix the parser");
+    app.begin_stream();
+    app.set_compaction_waiting(true);
+    app.set_compaction_waiting(false);
+    assert_eq!(app.status_verb(), None);
+}
+
+#[test]
+fn a_turns_baseline_carries_what_its_splice_needs() {
+    let mut app = App::new();
+    app.user_instructions = Some("Run the linter before committing.".to_string());
+    app.set_context_window(Some(200_000));
+    app.record_user_message("fix the parser");
+    app.history.push(HistoryItem::Compaction(Compaction {
+        summary: "earlier".into(),
+        timestamp: String::new(),
+        before: 170_000,
+        after: 30_000,
+        auto: true,
+        secs: 20,
+        kept: 0,
+        background: true,
+    }));
+    app.record_user_message("now the tests");
+    let baseline = app.compaction_baseline();
+    assert_eq!(baseline.window, Some(200_000));
+    assert_eq!(
+        baseline.cycle_start, 30_000,
+        "what the last compaction left"
+    );
+    assert_eq!(baseline.used, app.context_used());
+    assert_eq!(
+        baseline.reminder.as_deref(),
+        Some(
+            crate::reminder::reminder_message(&["Run the linter before committing.", ""]).as_str()
+        )
+    );
+    assert_eq!(
+        baseline.typed,
+        vec!["fix the parser".to_string(), "now the tests".to_string()]
+    );
+}
+
+#[test]
+fn no_reminder_rides_a_baseline_with_nothing_to_remind_of() {
+    let mut app = App::new();
+    app.record_user_message("fix the parser");
+    assert_eq!(app.compaction_baseline().reminder, None);
 }

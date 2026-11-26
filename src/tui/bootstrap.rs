@@ -526,6 +526,10 @@ impl<'t> Session<'t> {
             &system_prompt,
             imagegen_setup,
         );
+        // A summary that finishes while the loop is idle wakes it
+        // (docs/background-compaction.md).
+        let (compaction_tx, compaction_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        models.compaction().set_waker(compaction_tx);
         // The walk above judged the `imagegen` built-in by the sign-in alone;
         // where the session does not offer the tool after all, the skill goes
         // too (docs/imagegen.md).
@@ -691,6 +695,7 @@ impl<'t> Session<'t> {
             telemetry_attempted: None,
             update_tx,
             update_rx,
+            compaction_rx,
             update_attempted: None,
             update_notice_pending: None,
             builtin_offers: builtin_syncs
@@ -1199,6 +1204,10 @@ impl<'t> Session<'t> {
         // …and the tip walk's position, for a quit that drew a tip on its way
         // out (docs/tips.md).
         self.sync_tip_cursor();
+        // A summary of the conversation still being written stops too: it
+        // lives in memory only, so nothing would land it
+        // (docs/background-compaction.md *Not yet*).
+        self.models.compaction().discard();
         // Stop any in-flight reply on the way out, but don't `join()` it: joining
         // would couple the terminal restore to the backend's worst case (the
         // interrupt-lag freeze, on the quit path). The process exits right after
@@ -1285,15 +1294,24 @@ impl<'t> Session<'t> {
         self.app
             .set_tool_definitions(self.models.backend().tool_definitions());
         self.app.sync_context_used();
-        // Auto-compact (docs/compact.md): past codex's 90%-of-window threshold,
+        // Auto-compact (docs/compact.md): past the ceiling (the window less 15%),
         // start the summarization turn on our own at this idle boundary — the loop
         // bottom sees every turn end and gauge change. `should_auto_compact`
         // pre-checks are cheap (the context derivation runs only once every gate
         // has passed), it can't fire mid-turn, and one attempt per user turn means
         // an Esc'd or failed compaction never loops. The StallAi test backend opts
         // out (it ignores the script).
+        //
+        // A background summary comes first (docs/background-compaction.md): one
+        // that finished while no turn could splice it lands here, and while one
+        // is still being written the blocking turn holds off — it lands when it
+        // is done.
+        if self.inflight.is_none() {
+            self.land_held_compaction();
+        }
         if self.inflight.is_none()
             && !self.models.is_stalled_test_backend()
+            && !self.models.compaction().in_flight()
             && self.app.should_auto_compact()
         {
             self.start_compact_turn(/*auto=*/ true);
