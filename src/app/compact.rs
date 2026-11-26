@@ -21,6 +21,12 @@ const RESERVE_PERCENT: u64 = 15;
 /// least twice as large).
 const RESERVE_MIN: u64 = 16_000;
 
+/// How far before the ceiling a background summary starts: about what a
+/// conversation grows by while a summary is written (30–60 s, and big reads
+/// can add 25k in that time). Fixed, since it measures growth, not the
+/// window.
+const COMPACTION_LEAD: u64 = 60_000;
+
 impl App {
     /// Begin a `/compact` turn (`docs/compact.md`), reusing the AI turn
     /// machinery like [`begin_shell`](App::begin_shell) so the summarization
@@ -75,6 +81,134 @@ impl App {
             offline: None,
             tip: None,
         });
+    }
+
+    /// A summary of the conversation started at this round top
+    /// ([`crate::stream::StreamEvent::CompactionStarted`]): note where it cut
+    /// the history, so its landing keeps what joins after
+    /// (`docs/background-compaction.md`). What streamed before the cut joins
+    /// the history first — the boundary flushes it, and so does this.
+    pub fn note_compaction_started(&mut self) {
+        self.flush_streaming_segment();
+        self.compaction_start = Some((self.history_generation, self.history.len()));
+    }
+
+    /// Whether the history was rewritten since the summary in flight
+    /// started — a `/clear`, a `/resume`, a rewind, an undone turn: its cut
+    /// describes a history that is gone, so the boundary discards it
+    /// (`docs/background-compaction.md` *A summary that outlives its turn*).
+    #[must_use]
+    pub fn compaction_is_stale(&self) -> bool {
+        self.compaction_start
+            .is_some_and(|(generation, _)| generation != self.history_generation)
+    }
+
+    /// Whether a summary's start is noted — one in flight has a cut in this
+    /// history to land against ([`land_compaction`](Self::land_compaction)).
+    #[must_use]
+    pub const fn compaction_noted(&self) -> bool {
+        self.compaction_start.is_some()
+    }
+
+    /// The summary in flight was discarded: forget where it started, and
+    /// stop waiting on it.
+    pub const fn forget_compaction(&mut self) {
+        self.compaction_start = None;
+        self.compaction_waiting = false;
+    }
+
+    /// The request reached the ceiling and waits for a summary (or stopped
+    /// waiting on a failed one): the status verb reads `Compacting…` while it
+    /// does ([`status_verb`](Self::status_verb)).
+    pub const fn set_compaction_waiting(&mut self, waiting: bool) {
+        self.compaction_waiting = waiting;
+    }
+
+    /// The verb the status line wears in place of its own: `Compacting…`
+    /// while the ceiling waits on a summary, else the running task's
+    /// `activeForm` ([`task_verb`](Self::task_verb)).
+    #[must_use]
+    pub fn status_verb(&self) -> Option<&str> {
+        if self.compaction_waiting {
+            Some(COMPACT_VERB)
+        } else {
+            self.task_verb()
+        }
+    }
+
+    /// Land a summary of the conversation
+    /// ([`crate::stream::StreamEvent::Compacted`], or one the boundary took
+    /// at idle): append its marker, keeping the items that joined since
+    /// [`note_compaction_started`](Self::note_compaction_started) — the
+    /// rounds that ran while it was written — and bill `usage`, its requests'
+    /// frames, to the session without letting them measure the conversation.
+    /// `background` when it was written while the agent worked; `secs` how
+    /// long it took. `None` — nothing appended — when the history was
+    /// rewritten since it started, or no start was noted: its cut describes a
+    /// history that is gone, or none the app knows.
+    /// See `docs/background-compaction.md`.
+    pub fn land_compaction(
+        &mut self,
+        summary: &str,
+        secs: u64,
+        background: bool,
+        usage: &[crate::stream::TokenUsage],
+    ) -> Option<Compaction> {
+        self.compaction_waiting = false;
+        // Its requests were made: billed whether or not it lands.
+        for frame in usage {
+            self.usage_since_launch.record(frame);
+        }
+        // No start noted means its `CompactionStarted` never reached the app
+        // (dropped with the channel an Esc swaps, or a `/clear` drains), so
+        // there is no cut to keep the items after.
+        let (generation, start) = self.compaction_start.take()?;
+        if generation != self.history_generation {
+            return None;
+        }
+        self.flush_streaming_segment();
+        let mut compaction = Compaction {
+            summary: summary.trim().to_string(),
+            timestamp: self.now_stamp(),
+            before: self.context_used,
+            after: 0,
+            auto: true,
+            secs,
+            kept: self.history.len().saturating_sub(start),
+            background,
+        };
+        self.history
+            .push(HistoryItem::Compaction(compaction.clone()));
+        self.refresh_context_used();
+        compaction.after = self.context_used;
+        if let Some(HistoryItem::Compaction(recorded)) = self.history.last_mut() {
+            recorded.after = self.context_used;
+        }
+        Some(compaction)
+    }
+
+    /// What a turn hands its background compaction before it starts
+    /// (`docs/background-compaction.md`): the window, the gauge, what the
+    /// last compaction left, the tool schemas' estimate, the exact reminder
+    /// the turn's context opens with, and the typed texts a splice keeps.
+    pub fn compaction_baseline(&mut self) -> crate::llm::compaction::Baseline {
+        self.sync_context_used();
+        let reminder = crate::reminder::reminder_message(&[
+            self.user_instructions.as_deref().unwrap_or_default(),
+            self.listings.as_deref().unwrap_or_default(),
+        ]);
+        let cycle_start = self.history.iter().rev().find_map(|item| match item {
+            HistoryItem::Compaction(compaction) => Some(compaction.after),
+            _ => None,
+        });
+        crate::llm::compaction::Baseline {
+            window: self.context_window,
+            used: self.context_used,
+            cycle_start: cycle_start.unwrap_or(0),
+            overhead: self.tools_estimate,
+            reminder: (!reminder.is_empty()).then_some(reminder),
+            typed: crate::context::recent_typed_texts(&self.history),
+        }
     }
 
     /// Whether a `/compact` turn is in flight (the summary buffer is open).
@@ -309,6 +443,23 @@ pub(crate) const fn auto_compact_threshold(window: u64) -> u64 {
         0
     };
     window.saturating_sub(if share > floor { share } else { floor })
+}
+
+/// Where a background summary starts for a `window`-token window whose
+/// cycle began at `cycle_start` tokens (what the last compaction left, or
+/// 0): [`COMPACTION_LEAD`] before the ceiling, but never more than half the
+/// cycle's room, so a small window does not summarize again right after
+/// every compaction (`docs/background-compaction.md` *The numbers*).
+#[must_use]
+pub(crate) const fn compaction_start(window: u64, cycle_start: u64) -> u64 {
+    let ceiling = auto_compact_threshold(window);
+    let half_room = ceiling.saturating_sub(cycle_start) / 2;
+    ceiling
+        - if half_room < COMPACTION_LEAD {
+            half_room
+        } else {
+            COMPACTION_LEAD
+        }
 }
 
 /// The estimate of a derived context: every message's text, a flat

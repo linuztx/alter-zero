@@ -1,12 +1,13 @@
 //! The async event loop: a `select!` over every source that can wake the app.
 //!
-//! Seventeen sources fan onto one thread — terminal input, coalesced draw
+//! Eighteen sources fan onto one thread — terminal input, coalesced draw
 //! ticks, the streamed reply, `@` file-search results, finished Ctrl+V
 //! clipboard reads, the git review's workers, the `/login` sign-in worker,
 //! `/usage` reads, the `/plugins` page's jobs, `/model` list fetches, the
 //! startup capability probe, background-shell events, subagent events, MCP
-//! server events, the telemetry ping's report, the update check's, and the
-//! rows the transcript worker has rendered.
+//! server events, the telemetry ping's report, the update check's, a
+//! background summary finishing, and the rows the transcript worker has
+//! rendered.
 //!
 //! **Input and a due frame come first, in that order** (`biased`), and every
 //! other source is chosen fairly among the rest ([`next_wake`]'s own
@@ -124,6 +125,7 @@ pub(crate) async fn run(term: &mut InlineViewport, startup: Startup) -> io::Resu
                 mcp: &mut session.mcp_rx,
                 telemetry: &mut session.telemetry_rx,
                 update: &mut session.update_rx,
+                compaction: &mut session.compaction_rx,
                 transcript: &mut session.transcript_rx,
                 transcript_open: session.transcript_worker.is_some(),
             }) => session.on_wake(wake)?,
@@ -170,6 +172,9 @@ enum Wake {
     Telemetry(Delivery),
     /// The update check answered (`docs/update.md`).
     Update(String),
+    /// A background summary of the conversation finished — the loop bottom
+    /// lands it once no turn is running (`docs/background-compaction.md`).
+    Compaction,
     /// A history item's rows for the Ctrl+O transcript, rendered off this
     /// thread — or `None`: the worker is gone, which only a render that
     /// panicked does (`docs/input-latency.md`).
@@ -198,6 +203,7 @@ struct Sources<'a> {
     mcp: &'a mut UnboundedReceiver<McpEvent>,
     telemetry: &'a mut UnboundedReceiver<Delivery>,
     update: &'a mut UnboundedReceiver<String>,
+    compaction: &'a mut UnboundedReceiver<()>,
     transcript: &'a mut UnboundedReceiver<ui::RenderedTranscriptItem>,
     /// Whether a transcript worker was started at all — a headless session
     /// has none, and its closed channel is nobody's news.
@@ -224,6 +230,7 @@ async fn next_wake(sources: Sources<'_>) -> Wake {
         Some(event) = sources.mcp.recv() => Wake::Mcp(event),
         Some(delivered) = sources.telemetry.recv() => Wake::Telemetry(delivered),
         Some(latest) = sources.update.recv() => Wake::Update(latest),
+        Some(()) = sources.compaction.recv() => Wake::Compaction,
         // No `Some(…)` pattern: this channel closing is itself the event.
         done = sources.transcript.recv(), if sources.transcript_open => Wake::Transcript(done),
         // Every channel closed (the session holds a sender of each, so this
@@ -252,6 +259,8 @@ impl Session<'_> {
             Wake::Mcp(event) => self.on_mcp_event(event),
             Wake::Telemetry(delivered) => self.on_telemetry_result(&delivered),
             Wake::Update(latest) => self.on_update_result(&latest),
+            // Nothing to do here: the loop bottom that follows lands it.
+            Wake::Compaction => {}
             Wake::Transcript(Some(done)) => self.on_transcript_item(done),
             // The worker's thread ended, which it does only by panicking in
             // a render: the hook has printed why and put the terminal back,

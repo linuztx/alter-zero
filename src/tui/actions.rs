@@ -522,6 +522,9 @@ impl Session<'_> {
         // docs/interrupt.md.
         self.abandon_inflight();
         self.render.reset();
+        // …and a summary of the wiped conversation still being written
+        // (docs/background-compaction.md).
+        self.discard_compaction();
         // …and the pictures the wiped conversation kept encoded for the wire
         // (`docs/memory.md`): nothing re-sends them now.
         alter_zero::images::clear_attachments();

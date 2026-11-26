@@ -1027,6 +1027,12 @@ impl AgentRun {
             | StreamEvent::ThinkingEnd
             | StreamEvent::AgentBatch { .. }
             | StreamEvent::AgentGroupDone { .. } => {}
+            // Never sent on an agent's channel: only the main turn compacts
+            // in the background (docs/background-compaction.md *Not yet*).
+            StreamEvent::CompactionStarted
+            | StreamEvent::CompactionWaiting
+            | StreamEvent::Compacted { .. }
+            | StreamEvent::CompactionFailed { .. } => {}
         }
         false
     }

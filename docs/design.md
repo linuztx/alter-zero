@@ -345,8 +345,15 @@ which Ctrl+V reads the clipboard from.
   from; mid-turn a `Toast(COMPACT_BUSY_NOTICE)`, an empty context a
   `Toast(COMPACT_EMPTY_NOTICE)` — see `docs/compact.md`, `smoke.sh`
   Phase 50; with the model's context window known the footer carries a
-  `{used}/{window} ({pct}%)` gauge and the loop **auto-compacts** past codex's 90%
-  threshold, the cell tagged `· auto` — Phase 51), and `/context` →
+  `{used}/{window} ({pct}%)` gauge and auto-compaction runs **in the
+  background, inside the turn**: a summary of the conversation alone (no
+  system prompt, no `<system-reminder>`) starts about 60k tokens before the
+  ceiling (the window less 15%, at least 16k), is held while the agent works,
+  and is spliced in at a round boundary with the rounds since its cut kept
+  as they were — the agent waits only if the ceiling arrives first; the
+  marker records `kept`, the items it leaves as they were, the cell tagged `· background`
+  (`docs/background-compaction.md`). The idle blocking turn past the ceiling
+  stays as its fallback, the cell tagged `· auto` — Phase 51), and `/context` →
   `OpenContextUsage` idle or mid-turn (the read-only page that breaks the
   window down by what fills it and reports the provider's tokens in/out and
   cache hit, kept live by the boundary — see `docs/context-usage.md`,

@@ -487,9 +487,11 @@ pub(super) fn strip_lines(
             ))
         } else {
             // While some task is in progress the spinner wears its
-            // activeForm instead of the turn's verb (docs/task-tools.md).
+            // activeForm instead of the turn's verb (docs/task-tools.md) —
+            // and while the ceiling waits on a summary, `Compacting`
+            // (docs/background-compaction.md *On screen*).
             app.status()
-                .map(|status| styled_status_line(status, app.task_verb(), app.spinner(), width))
+                .map(|status| styled_status_line(status, app.status_verb(), app.spinner(), width))
         };
         lines.push(line.unwrap_or_default());
         // The rows hanging off the status line, in `hang_rows`' sum: the

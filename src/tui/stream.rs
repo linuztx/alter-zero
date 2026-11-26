@@ -316,6 +316,46 @@ impl Session<'_> {
                 }
                 false
             }
+            StreamEvent::CompactionStarted => {
+                // A summary of the conversation started at this round top
+                // (docs/background-compaction.md): what streamed before the
+                // cut joins the history first — invariant 4's
+                // flush-before-you-interleave — so the history then holds
+                // exactly what the summary describes, and the app notes its
+                // length.
+                self.flush_segment(committing, width);
+                self.close_tool_group(committing, width);
+                self.render.reset();
+                self.app.note_compaction_started();
+                false
+            }
+            StreamEvent::CompactionWaiting => {
+                // The request reached the ceiling first: the turn waits on the
+                // summary, and the status line says `Compacting…`.
+                self.app.set_compaction_waiting(true);
+                false
+            }
+            StreamEvent::Compacted {
+                summary,
+                secs,
+                background,
+                usage,
+            } => {
+                // The summary was spliced into the request at this round top:
+                // its marker lands where the model's context changed, and its
+                // cell commits there (docs/background-compaction.md).
+                self.flush_segment(committing, width);
+                self.close_tool_group(committing, width);
+                self.render.reset();
+                self.land_compaction(&summary, secs, background, &usage, committing, width);
+                false
+            }
+            StreamEvent::CompactionFailed { reason } => {
+                // An inline summary failed: the request goes out as it was.
+                self.app.set_compaction_waiting(false);
+                self.toast(format!("Compaction failed: {reason}"), ToastKind::Error);
+                false
+            }
             StreamEvent::Steered { text } => {
                 // The running turn reached a round boundary and took a message
                 // the user queued into it (docs/queue.md). The model has it
@@ -733,6 +773,84 @@ impl Session<'_> {
                 .insert_before(ui::reasoning_lines(&reasoning, width));
             self.term.insert_before(vec![Line::default()]);
         }
+    }
+
+    /// Land a summary of the conversation (`docs/background-compaction.md`):
+    /// its requests' usage recorded ahead of the marker — billed, and
+    /// `compact`, as a `/compact` turn's are (docs/rollout-records.md) — then
+    /// the marker, keeping what joined since the summary started, and its
+    /// cell committed where it landed. Mid-turn from [`StreamEvent::Compacted`],
+    /// or at idle for one that outlived its turn.
+    pub(crate) fn land_compaction(
+        &mut self,
+        summary: &str,
+        secs: u64,
+        background: bool,
+        usage: &[alter_zero::stream::TokenUsage],
+        committing: bool,
+        width: u16,
+    ) {
+        for frame in usage {
+            self.recorder.record_usage(RequestUsage {
+                after: self.app.history.len(),
+                usage: *frame,
+                agent: None,
+                compact: true,
+            });
+        }
+        let Some(compaction) = self.app.land_compaction(summary, secs, background, usage) else {
+            return;
+        };
+        if committing {
+            let height = self.live_region_height();
+            self.term.set_view_height(height);
+            self.term
+                .insert_before(ui::compaction_lines(&compaction, width));
+            self.term.insert_before(vec![Line::default()]);
+        }
+    }
+
+    /// Land a summary that finished while no turn could splice it — at the
+    /// idle loop bottom, and as a turn starts — or let go of one whose cut a
+    /// rewrite of the history made stale (`docs/background-compaction.md` *A
+    /// summary that outlives its turn*). Its hooks' cells first, above the
+    /// marker's, when it has a start to land against.
+    pub(crate) fn land_held_compaction(&mut self) {
+        if self.app.compaction_is_stale() {
+            self.discard_compaction();
+        }
+        let Some(landing) = self.models.compaction().take_landable() else {
+            return;
+        };
+        let committing = self.commits_allowed();
+        let width = self.term.screen().width;
+        if self.app.compaction_noted() {
+            for note in landing.written.notes {
+                if let StreamEvent::HookNote {
+                    label,
+                    text,
+                    report,
+                } = note
+                {
+                    self.commit_hook_note(&label, &text, report, committing, width);
+                }
+            }
+        }
+        self.land_compaction(
+            &landing.written.text,
+            landing.secs,
+            true,
+            &landing.written.usage,
+            committing,
+            width,
+        );
+        self.frame.schedule_frame();
+    }
+
+    /// Let go of the summary in flight: the history it describes is gone.
+    pub(crate) fn discard_compaction(&mut self) {
+        self.models.compaction().discard();
+        self.app.forget_compaction();
     }
 
     /// Finalise the run of assistant text before an interleaved cell, so it slots

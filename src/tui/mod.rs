@@ -313,6 +313,11 @@ pub(crate) struct Session<'t> {
     /// and announces — the telemetry channel's twin.
     update_tx: tokio::sync::mpsc::UnboundedSender<String>,
     update_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    /// Woken when a background summary of the conversation finishes
+    /// (`docs/background-compaction.md` *A summary that outlives its turn*):
+    /// one that outlives its turn may finish while the loop sits idle with
+    /// nothing else to wake it, and the loop bottom lands it.
+    compaction_rx: tokio::sync::mpsc::UnboundedReceiver<()>,
     /// The UTC day this **session** last spawned a check for, so the
     /// turn-start rollover costs a string compare on the common path.
     update_attempted: Option<String>,

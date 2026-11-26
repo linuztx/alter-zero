@@ -64,6 +64,9 @@ impl Session<'_> {
     /// job to skip. See `docs/queue.md`.
     pub(crate) fn start_turn(&mut self, input: TurnInput) {
         let TurnInput { texts, images } = input;
+        // A summary that finished since the loop last looked lands before the
+        // message it never read (docs/background-compaction.md).
+        self.land_held_compaction();
         let width = self.term.screen().width;
         // Each path is recorded onto the message whose text carries its
         // placeholder, in text-occurrence order — a merged batch's duplicate
@@ -227,6 +230,7 @@ impl Session<'_> {
     /// reports the result, exactly like the user's example transcript. See
     /// `docs/background.md`.
     fn start_background_turn(&mut self, notices: &[PendingNotice]) {
+        self.land_held_compaction();
         // A loop-initiated turn: its prompt is synthesized from the notice
         // board, so the UserPromptSubmit hook must not fire for it
         // (docs/hooks.md).
@@ -264,6 +268,13 @@ impl Session<'_> {
     /// for it). Spawns on the **tools-free** one-off backend when one resolved,
     /// else the session backend.
     pub(crate) fn start_compact_turn(&mut self, auto: bool) {
+        // A `/compact` by hand summarizes everything now: a background summary
+        // still in flight would describe less, so it goes
+        // (docs/background-compaction.md). The automatic turn never runs
+        // while one is.
+        if !auto {
+            self.discard_compaction();
+        }
         let compact_backend = self
             .models
             .compact_backend(self.app.thinking.as_ref().map(|t| t.mode), auto);
@@ -302,6 +313,11 @@ impl Session<'_> {
         images: Vec<PathBuf>,
         context: Vec<context::ContextMessage>,
     ) {
+        // What this turn's round tops decide with: the window, the gauge, and
+        // what a splice must rebuild (docs/background-compaction.md).
+        self.models
+            .compaction()
+            .set_baseline(self.app.compaction_baseline());
         let cancel = CancelToken::new();
         let handle =
             self.models

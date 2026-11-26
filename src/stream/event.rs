@@ -596,6 +596,35 @@ pub enum StreamEvent {
     /// tool's execution. A backend with no ask gate attached never offers the
     /// tool, so it never sends this.
     AskUser(AskRequest),
+    /// A summary of the conversation started at this round top
+    /// (`docs/background-compaction.md`): the app notes how long its history
+    /// is — everything up to here is what the summary describes, everything
+    /// after it what the marker will keep. Sent after the round's results,
+    /// notices and steered messages, so the history then holds exactly what
+    /// the request does.
+    CompactionStarted,
+    /// The request reached the ceiling and waits for a summary to be written
+    /// (`docs/background-compaction.md`): the status line reads
+    /// `Compacting…` until [`Compacted`](Self::Compacted) or
+    /// [`CompactionFailed`](Self::CompactionFailed).
+    CompactionWaiting,
+    /// A summary was spliced into the request at this round top
+    /// (`docs/background-compaction.md`): the app appends its marker, keeping
+    /// what joined the history since [`CompactionStarted`](Self::CompactionStarted).
+    /// `background` when it was written while the agent worked (the cell's
+    /// `· background`), `false` for an inline one the ceiling waited on;
+    /// `secs` how long it took to write; `usage` the frames its requests
+    /// reported, billed to the session but never measuring the conversation.
+    Compacted {
+        summary: String,
+        secs: u64,
+        background: bool,
+        usage: Vec<TokenUsage>,
+    },
+    /// An inline compaction failed (`docs/background-compaction.md`): the
+    /// request goes out as it was, and the status stops reading
+    /// `Compacting…`.
+    CompactionFailed { reason: String },
     /// The backend failed; carries a human-readable message to show the user.
     Error(String),
     /// The reply is complete.
@@ -645,6 +674,10 @@ impl StreamEvent {
             | Self::Usage(_)
             | Self::Permission(_)
             | Self::AskUser(_)
+            | Self::CompactionStarted
+            | Self::CompactionWaiting
+            | Self::Compacted { .. }
+            | Self::CompactionFailed { .. }
             | Self::Error(_)
             | Self::StreamDone => false,
         }

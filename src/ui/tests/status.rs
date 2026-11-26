@@ -1497,3 +1497,24 @@ fn render_live_wears_the_session_spinner_on_the_status_row() {
     );
     assert_eq!(buf[(0, 0)].fg, status_color(), "the white head");
 }
+
+#[test]
+fn the_strip_reads_compacting_while_the_ceiling_waits() {
+    // The request reached the ceiling before its summary was written: the
+    // agent is waiting on it, and the status line says so
+    // (docs/background-compaction.md *On screen*).
+    let mut app = App::new();
+    app.record_user_message("fix the parser");
+    app.begin_stream();
+    app.set_compaction_waiting(true);
+    let texts: Vec<String> = crate::ui::live::strip_lines(&app, 80, None, 0)
+        .iter()
+        .map(plain)
+        .collect();
+    assert!(
+        texts
+            .iter()
+            .any(|text| text.contains(&format!("{}…", crate::app::COMPACT_VERB))),
+        "{texts:?}"
+    );
+}

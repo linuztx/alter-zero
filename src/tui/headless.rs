@@ -644,9 +644,16 @@ impl Session<'_> {
         self.app
             .set_tool_definitions(self.models.backend().tool_definitions());
         self.app.sync_context_used();
+        // A background summary that finished lands at the idle boundary, and
+        // one still being written holds the blocking turn off
+        // (docs/background-compaction.md).
+        if self.inflight.is_none() {
+            self.land_held_compaction();
+        }
         if compact
             && self.inflight.is_none()
             && !self.models.is_stalled_test_backend()
+            && !self.models.compaction().in_flight()
             && self.app.should_auto_compact()
         {
             self.start_compact_turn(/*auto=*/ true);

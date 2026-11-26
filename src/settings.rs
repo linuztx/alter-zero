@@ -201,7 +201,7 @@ impl SettingKey {
                 "Snapshot the working directory each turn so a rewind restores the code"
             }
             Self::AutoCompact => {
-                "Summarize the conversation on its own once the context window fills up"
+                "Summarize the conversation on its own, in the background, as the context window fills"
             }
             Self::ProjectDocs => "Load the project's AGENTS.md instructions into every request",
             Self::Hooks => {

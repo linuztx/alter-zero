@@ -178,7 +178,7 @@ pub const CUT_OFF_NOTE: &str = "[system] Your last response was cut off at the o
 
 /// Why a round ended without finishing (`docs/unfinished-replies.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Unfinished {
+pub(crate) enum Unfinished {
     /// No reply and no tool call.
     Empty,
     /// Stopped at the provider's output-token cap.
@@ -187,7 +187,7 @@ enum Unfinished {
 
 impl Unfinished {
     /// The transcript heading and the prompt the model reads next.
-    const fn continuation(self) -> (&'static str, &'static str) {
+    pub(crate) const fn continuation(self) -> (&'static str, &'static str) {
         match self {
             Self::Empty => (EMPTY_REPLY_LABEL, EMPTY_REPLY_NOTE),
             Self::CutOff => (CUT_OFF_LABEL, CUT_OFF_NOTE),
@@ -277,7 +277,10 @@ fn continue_unfinished(
 /// something (`docs/hooks.md` *The hook-run cell*): a hook note with no text,
 /// so the loop records and commits the cell while the model's context stays
 /// exactly what it was.
-fn send_hook_report(tx: &UnboundedSender<StreamEvent>, report: Option<crate::hooks::HookReport>) {
+pub(crate) fn send_hook_report(
+    tx: &UnboundedSender<StreamEvent>,
+    report: Option<crate::hooks::HookReport>,
+) {
     if let Some(report) = report {
         let _ = tx.send(StreamEvent::HookNote {
             label: report.note_label(),
@@ -408,6 +411,72 @@ pub fn run_agent(
     cancel: &CancelToken,
     max_tool_calls: usize,
     messages: &mut Vec<ChatMessage>,
+    round: impl FnMut(&[ChatMessage]) -> RoundOutcome,
+    execute: impl FnMut(&ToolCallRequest, &mut dyn FnMut(ToolProgress<'_>)) -> ToolOutcome,
+    pending_inputs: impl FnMut() -> Vec<PendingInput>,
+    run_agents: impl FnMut(&[ToolCallRequest]) -> Vec<(String, String)>,
+    approve: impl FnMut(&ToolCallRequest, bool) -> Approval,
+    hooks: &dyn HookSink,
+    session_command: &dyn Fn(&str) -> Option<String>,
+) {
+    run_agent_with(
+        tx,
+        cancel,
+        max_tool_calls,
+        messages,
+        round,
+        execute,
+        pending_inputs,
+        run_agents,
+        approve,
+        hooks,
+        session_command,
+        &mut NoCheckpoint,
+    );
+}
+
+/// What the loop may do with the conversation before each request goes out —
+/// the seam background compaction runs at (`docs/background-compaction.md`).
+/// [`run_agent_with`] asks it at the top of **every** round, once the pending
+/// inputs are delivered: the request then sends whatever it left in
+/// `messages`. It may block (a summary the ceiling has to wait for), polling
+/// `cancel`; a cancelled token stops the turn there, silently, like any other
+/// cancel.
+pub trait RoundCheckpoint {
+    /// Look at — and possibly rewrite — the conversation the next request
+    /// sends, telling the loop what happened on `tx`.
+    fn before_request(
+        &mut self,
+        messages: &mut Vec<ChatMessage>,
+        tx: &UnboundedSender<StreamEvent>,
+        cancel: &CancelToken,
+    );
+}
+
+/// The checkpoint that does nothing: [`run_agent`]'s, which every path but
+/// the main session's turn runs with — a subagent, a summarization.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoCheckpoint;
+
+impl RoundCheckpoint for NoCheckpoint {
+    fn before_request(
+        &mut self,
+        _messages: &mut Vec<ChatMessage>,
+        _tx: &UnboundedSender<StreamEvent>,
+        _cancel: &CancelToken,
+    ) {
+    }
+}
+
+/// [`run_agent`] with a [`RoundCheckpoint`] asked before every request — the
+/// main session's turn, whose checkpoint compacts in the background
+/// (`docs/background-compaction.md`).
+#[allow(clippy::too_many_arguments)] // the loop's full seam set (docs/agent-tool.md)
+pub fn run_agent_with(
+    tx: &UnboundedSender<StreamEvent>,
+    cancel: &CancelToken,
+    max_tool_calls: usize,
+    messages: &mut Vec<ChatMessage>,
     mut round: impl FnMut(&[ChatMessage]) -> RoundOutcome,
     mut execute: impl FnMut(&ToolCallRequest, &mut dyn FnMut(ToolProgress<'_>)) -> ToolOutcome,
     mut pending_inputs: impl FnMut() -> Vec<PendingInput>,
@@ -415,6 +484,7 @@ pub fn run_agent(
     mut approve: impl FnMut(&ToolCallRequest, bool) -> Approval,
     hooks: &dyn HookSink,
     session_command: &dyn Fn(&str) -> Option<String>,
+    checkpoint: &mut dyn RoundCheckpoint,
 ) {
     let mut used_calls = 0usize;
     // True from the first Stop/SubagentStop-forced continuation on — the
@@ -450,6 +520,14 @@ pub fn run_agent(
                     messages.push(ChatMessage::user(&text));
                 }
             }
+        }
+        // The round checkpoint (docs/background-compaction.md): a summary
+        // written in the background is spliced in here, after what this round
+        // delivers and before the request carries it — and the ceiling waits
+        // here for one still being written.
+        checkpoint.before_request(messages, tx, cancel);
+        if cancel.is_cancelled() {
+            return;
         }
         match round(messages) {
             // No answer at all: a round that only thought, or said nothing,
@@ -4142,6 +4220,116 @@ mod tests {
                 ("user".to_string(), "[background] note".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn the_round_checkpoint_rewrites_the_request_after_the_pending_inputs() {
+        // Background compaction's seam (docs/background-compaction.md): at
+        // the top of every round, once the pending inputs are delivered and
+        // before the request goes out, the checkpoint may rewrite the
+        // conversation — the request sends whatever it left.
+        struct Splicer {
+            calls: Vec<usize>,
+        }
+        impl RoundCheckpoint for Splicer {
+            fn before_request(
+                &mut self,
+                messages: &mut Vec<ChatMessage>,
+                _tx: &UnboundedSender<StreamEvent>,
+                _cancel: &CancelToken,
+            ) {
+                self.calls.push(messages.len());
+                if self.calls.len() == 2 {
+                    // The summary lands over everything but the newest message.
+                    let newest = messages.pop().expect("a message");
+                    messages.clear();
+                    messages.push(ChatMessage::user("SUMMARY"));
+                    messages.push(newest);
+                }
+            }
+        }
+        let (tx, _rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let calls = vec![call("c1", "bash", r#"{"command":"ls"}"#)];
+        let seen: RefCell<Vec<Vec<String>>> = RefCell::new(Vec::new());
+        let mut splicer = Splicer { calls: Vec::new() };
+        run_agent_with(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut vec![ChatMessage::user("list the repo")],
+            |msgs| {
+                seen.borrow_mut().push(msgs.iter().map(text_of).collect());
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n == 1 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    answered()
+                }
+            },
+            |_c, _sink| ToolOutcome::ok("Exit code: 0"),
+            || {
+                if *rounds.borrow() == 1 {
+                    vec![PendingInput::User("and the tests".to_string())]
+                } else {
+                    Vec::new()
+                }
+            },
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &NoHooks,
+            &no_sessions,
+            &mut splicer,
+        );
+        assert_eq!(
+            splicer.calls,
+            vec![1, 4],
+            "before each request, the steered message already in"
+        );
+        assert_eq!(
+            seen.borrow()[1],
+            vec!["SUMMARY".to_string(), "and the tests".to_string()],
+            "the second request is what the checkpoint left"
+        );
+    }
+
+    #[test]
+    fn a_cancel_at_the_round_checkpoint_sends_nothing() {
+        // An Esc while the checkpoint waits on a summary stops the turn there:
+        // no request goes out, and the boundary writes the notice.
+        struct Canceller<'a>(&'a CancelToken);
+        impl RoundCheckpoint for Canceller<'_> {
+            fn before_request(
+                &mut self,
+                _messages: &mut Vec<ChatMessage>,
+                _tx: &UnboundedSender<StreamEvent>,
+                _cancel: &CancelToken,
+            ) {
+                self.0.cancel();
+            }
+        }
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        run_agent_with(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut vec![ChatMessage::user("list the repo")],
+            |_msgs| panic!("no request after a cancel at the checkpoint"),
+            |_c, _sink| ToolOutcome::ok("Exit code: 0"),
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &NoHooks,
+            &no_sessions,
+            &mut Canceller(&cancel),
+        );
+        assert!(drain(&mut rx).is_empty(), "a cancel is a silent stop");
     }
 
     #[test]

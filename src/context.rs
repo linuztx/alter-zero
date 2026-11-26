@@ -40,7 +40,7 @@ pub const COMPACT_SYSTEM_PROMPT: &str = include_str!("../prompts/compact_system.
 
 /// Codex's `COMPACT_USER_MESSAGE_MAX_TOKENS`: the approx-token budget for the
 /// recent user messages replayed before the bridge after a `/compact`.
-const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
+pub(crate) const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
 
 /// Codex's `APPROX_BYTES_PER_TOKEN` — the byte↔token heuristic the budget
 /// uses (not the app's token estimate: the walk runs at every turn start and must
@@ -100,24 +100,39 @@ fn truncate_middle_to_tokens(text: &str, max_tokens: usize) -> String {
 /// [`Role::User`] messages collect (tool records, shell transcripts, notices,
 /// and earlier compaction markers all drop — codex's `collect_user_messages`).
 fn budgeted_user_texts(items: &[HistoryItem], budget: usize) -> Vec<String> {
+    budget_texts(typed_texts(items), budget)
+}
+
+/// The text of every typed user message in `items`, oldest first — what
+/// codex's `collect_user_messages` collects.
+fn typed_texts(items: &[HistoryItem]) -> impl DoubleEndedIterator<Item = &str> {
+    items.iter().filter_map(|item| match item {
+        HistoryItem::Message(message) if message.role == Role::User => Some(message.text.as_str()),
+        _ => None,
+    })
+}
+
+/// [`budgeted_user_texts`]' walk over plain texts, oldest first: newest→oldest
+/// keeping whole texts while they fit `budget` approx tokens, the first that
+/// overflows middle-truncated to what is left, then chronological again. A
+/// background summary's splice runs it over the texts its turn was handed
+/// (`docs/background-compaction.md` *What the splice builds*).
+pub(crate) fn budget_texts<'a>(
+    texts: impl DoubleEndedIterator<Item = &'a str>,
+    budget: usize,
+) -> Vec<String> {
     let mut selected = Vec::new();
     let mut remaining = budget;
-    for item in items.iter().rev() {
-        let HistoryItem::Message(message) = item else {
-            continue;
-        };
-        if message.role != Role::User {
-            continue;
-        }
+    for text in texts.rev() {
         if remaining == 0 {
             break;
         }
-        let tokens = approx_token_count(&message.text);
+        let tokens = approx_token_count(text);
         if tokens <= remaining {
-            selected.push(message.text.clone());
+            selected.push(text.to_string());
             remaining -= tokens;
         } else {
-            selected.push(truncate_middle_to_tokens(&message.text, remaining));
+            selected.push(truncate_middle_to_tokens(text, remaining));
             break;
         }
     }
@@ -125,10 +140,31 @@ fn budgeted_user_texts(items: &[HistoryItem], budget: usize) -> Vec<String> {
     selected
 }
 
+/// The newest typed user texts of `history`, whole and oldest first, up to
+/// and including the first the compacted shape's budget cannot fit — every
+/// text its walk (`budget_texts`) could ever reach, however many newer
+/// messages join them. What a turn hands its background summary, so the
+/// splice keeps the user's own words exactly as the derivation will
+/// (`docs/background-compaction.md` *What the splice builds*).
+#[must_use]
+pub fn recent_typed_texts(history: &[HistoryItem]) -> Vec<String> {
+    let mut recent = Vec::new();
+    let mut used = 0usize;
+    for text in typed_texts(history).rev() {
+        recent.push(text.to_string());
+        used = used.saturating_add(approx_token_count(text));
+        if used > COMPACT_USER_MESSAGE_MAX_TOKENS {
+            break;
+        }
+    }
+    recent.reverse();
+    recent
+}
+
 /// The compacted context's bridge message: [`SUMMARY_PREFIX`], a newline, and
 /// the marker's summary — codex's `format!("{SUMMARY_PREFIX}\n{summary}")`,
 /// with its "(no summary available)" fallback when the model streamed nothing.
-fn summary_bridge(summary: &str) -> String {
+pub(crate) fn summary_bridge(summary: &str) -> String {
     let body = if summary.is_empty() {
         "(no summary available)"
     } else {
@@ -2331,6 +2367,32 @@ mod tests {
         assert!(
             !prompt.contains("Alter Zero"),
             "never the session's persona: {prompt}"
+        );
+    }
+
+    #[test]
+    fn the_recent_typed_texts_are_the_ones_the_budget_walk_can_reach() {
+        // What a turn hands its background summary (docs/background-compaction.md
+        // *What the splice builds*): the newest typed texts, whole, up to and
+        // including the first the 20k budget cannot fit — anything older the
+        // walk can never reach, however many messages are steered in after.
+        let big = "x".repeat(60_000); // 15k approx tokens
+        let history = vec![
+            message(Role::User, "oldest"),
+            message(Role::User, &big),
+            message(Role::Assistant, "a reply drops"),
+            message(Role::User, &big),
+            message(Role::User, "newest"),
+        ];
+        let recent = recent_typed_texts(&history);
+        assert_eq!(recent, vec![big.clone(), big, "newest".to_string()]);
+        assert_eq!(
+            budget_texts(
+                recent.iter().map(String::as_str),
+                COMPACT_USER_MESSAGE_MAX_TOKENS
+            ),
+            budgeted_user_texts(&history, COMPACT_USER_MESSAGE_MAX_TOKENS),
+            "budgeting them is budgeting the whole history"
         );
     }
 
