@@ -115,7 +115,11 @@ pub fn compaction_lines(compaction: &crate::app::Compaction, width: u16) -> Vec<
             dim,
         ));
     }
-    if compaction.auto {
+    // A summary written while the agent worked says so; `· auto` stays the
+    // idle summarization turn's (docs/background-compaction.md *On screen*).
+    if compaction.background {
+        spans.push(Span::styled(" · background".to_string(), dim));
+    } else if compaction.auto {
         spans.push(Span::styled(" · auto".to_string(), dim));
     }
     vec![Line::from(spans)]

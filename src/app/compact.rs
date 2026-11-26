@@ -106,6 +106,8 @@ impl App {
             after: 0,
             auto: self.compact_auto,
             secs: elapsed_secs,
+            kept: 0,
+            background: false,
         };
         self.history
             .push(HistoryItem::Compaction(compaction.clone()));
@@ -359,4 +361,16 @@ pub struct Compaction {
     /// ` · {elapsed}` clause ([`format_elapsed`]-humanized). 0 = unknown (an
     /// old rollout), hiding the clause.
     pub secs: u64,
+    /// How many history items just before the marker its summary does **not**
+    /// describe: the rounds the agent ran while a background summary was
+    /// being written, which the derivation keeps as they were
+    /// (`docs/background-compaction.md` *The marker records `kept`*). 0 for
+    /// `/compact` and an inline compaction — everything before the marker is
+    /// replaced. Counted back from the marker, so a backtrack (which only ever
+    /// cuts a suffix) and a resume leave it valid.
+    pub kept: usize,
+    /// Whether the summary was written in the background while the agent
+    /// worked — the cell's `· background` tag — rather than by a turn of its
+    /// own.
+    pub background: bool,
 }

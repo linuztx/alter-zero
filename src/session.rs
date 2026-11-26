@@ -505,6 +505,15 @@ struct CompactionRecord {
     /// `serde(default)`ed like the gauge counts, 0 meaning unknown.
     #[serde(default, skip_serializing_if = "is_zero")]
     secs: u64,
+    /// The items just before the marker its summary does not describe — the
+    /// rounds that ran while a background summary was written
+    /// (`docs/background-compaction.md`). 0, and off the wire, for every
+    /// other marker, which is what a line from before it reads as.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    kept: u64,
+    /// Written in the background (the cell's `· background` tag).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    background: bool,
 }
 
 /// `skip_serializing_if` helper for the gauge counts' 0-means-unknown default.
@@ -836,6 +845,8 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             after: compaction.after,
             auto: compaction.auto,
             secs: compaction.secs,
+            kept: u64::try_from(compaction.kept).unwrap_or(u64::MAX),
+            background: compaction.background,
         }),
         // The recorder mirrors history append-only, so a background entry's
         // later completion update (`App::settle_agent_completion`) never
@@ -1184,6 +1195,8 @@ fn push_history_item(items: &mut Vec<HistoryItem>, record: ItemRecord) {
                 after: compaction.after,
                 auto: compaction.auto,
                 secs: compaction.secs,
+                kept: usize::try_from(compaction.kept).unwrap_or(usize::MAX),
+                background: compaction.background,
             }));
         }
         ItemRecord::Reasoning(reasoning) => {
@@ -1519,6 +1532,29 @@ mod tests {
     }
 
     #[test]
+    fn a_background_marker_round_trips_what_it_kept() {
+        // A summary written in the background stops `kept` items short of its
+        // marker (docs/background-compaction.md); a resume that lost the count
+        // would summarize those rounds away too.
+        let item = HistoryItem::Compaction(crate::app::Compaction {
+            summary: "we read the parser".into(),
+            timestamp: "03:20 PM".into(),
+            before: 172_000,
+            after: 78_000,
+            auto: true,
+            secs: 31,
+            kept: 4,
+            background: true,
+        });
+        let line = item_line(&item, "t");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        assert_eq!(value["payload"]["kept"], 4);
+        assert_eq!(value["payload"]["background"], true);
+        let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
+        assert_eq!(parsed, vec![item]);
+    }
+
+    #[test]
     fn a_compaction_marker_round_trips() {
         // The /compact marker persists so a /resume stays compacted
         // (docs/compact.md); the summary — and the gauge's before/after token
@@ -1530,6 +1566,8 @@ mod tests {
             after: 2_100,
             auto: true,
             secs: 36,
+            kept: 0,
+            background: false,
         });
         let line = item_line(&item, "t");
         let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
@@ -1770,6 +1808,10 @@ mod tests {
         assert_eq!((compaction.before, compaction.after), (0, 0));
         assert!(!compaction.auto);
         assert_eq!(compaction.secs, 0);
+        // …and every marker from before background compaction replaced all
+        // of the history before it (docs/background-compaction.md).
+        assert_eq!(compaction.kept, 0);
+        assert!(!compaction.background);
     }
 
     #[test]

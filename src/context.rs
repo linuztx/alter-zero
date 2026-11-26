@@ -627,12 +627,16 @@ pub fn context_messages_with(
 /// holds — the compaction split, then the per-item mapping.
 fn derive_history_into(out: &mut Derived, history: &[HistoryItem]) {
     // A `/compact` marker (docs/compact.md): the *last* one wins, and
-    // everything before it derives as codex's compacted shape — the budgeted
-    // recent user texts, then the summary bridge — with the items after it
-    // deriving normally. Earlier markers sit before the last one, so a prior
-    // compaction's summary is structurally excluded (only real user texts
-    // collect); codex needs an `is_summary_message` prefix check for the same
-    // exclusion because its summaries are plain user messages.
+    // everything its summary describes derives as codex's compacted shape —
+    // the budgeted recent user texts, then the summary bridge — with
+    // everything after deriving normally. Earlier markers sit before the last
+    // one, so a prior compaction's summary is structurally excluded (only
+    // real user texts collect); codex needs an `is_summary_message` prefix
+    // check for the same exclusion because its summaries are plain user
+    // messages. A background marker's summary stops `kept` items short of it
+    // — the rounds the agent ran while it was written — and those derive as
+    // they were (docs/background-compaction.md); the marker itself derives
+    // nothing.
     if let Some(cut) = history
         .iter()
         .rposition(|item| matches!(item, HistoryItem::Compaction(_)))
@@ -640,7 +644,8 @@ fn derive_history_into(out: &mut Derived, history: &[HistoryItem]) {
         let HistoryItem::Compaction(compaction) = &history[cut] else {
             unreachable!("rposition matched a Compaction");
         };
-        for text in budgeted_user_texts(&history[..cut], COMPACT_USER_MESSAGE_MAX_TOKENS) {
+        let described = cut - compaction.kept.min(cut);
+        for text in budgeted_user_texts(&history[..described], COMPACT_USER_MESSAGE_MAX_TOKENS) {
             push_user_text(out, text, vec![], TextOrigin::Typed);
         }
         push_user_text(
@@ -649,7 +654,7 @@ fn derive_history_into(out: &mut Derived, history: &[HistoryItem]) {
             vec![],
             TextOrigin::Summary,
         );
-        derive_into(out, &history[cut + 1..]);
+        derive_into(out, &history[described..]);
     } else {
         derive_into(out, history);
     }
@@ -2339,7 +2344,92 @@ mod tests {
             after: 0,
             auto: false,
             secs: 0,
+            kept: 0,
+            background: false,
         })
+    }
+
+    /// A marker written in the background, keeping the `kept` items before
+    /// it — the rounds that ran while its summary was written
+    /// (docs/background-compaction.md).
+    fn background_compaction(summary: &str, kept: usize) -> HistoryItem {
+        HistoryItem::Compaction(crate::app::Compaction {
+            summary: summary.to_string(),
+            timestamp: String::new(),
+            before: 0,
+            after: 0,
+            auto: true,
+            secs: 0,
+            kept,
+            background: true,
+        })
+    }
+
+    #[test]
+    fn a_background_marker_derives_as_a_marker_placed_where_its_summary_was_cut() {
+        let asked = message(Role::User, "fix the parser");
+        let first = tool(
+            "Read",
+            "src/parse.rs",
+            "fn parse() {}",
+            ToolStatus::Ok,
+            false,
+        );
+        let steered = message(Role::User, "and its tests");
+        let meanwhile = tool("Read", "tests/parse.rs", "#[test]", ToolStatus::Ok, false);
+        let reply = message(Role::Assistant, "both read");
+        let landed = vec![
+            asked.clone(),
+            first.clone(),
+            steered.clone(),
+            meanwhile.clone(),
+            reply.clone(),
+            background_compaction("read the parser", 2),
+        ];
+        let cut_there = vec![
+            asked,
+            first,
+            steered,
+            compaction("read the parser"),
+            meanwhile,
+            reply,
+        ];
+        assert_eq!(context_messages(&landed), context_messages(&cut_there));
+    }
+
+    #[test]
+    fn a_background_marker_keeping_nothing_derives_like_a_compact_marker() {
+        let history = |marker: HistoryItem| {
+            vec![
+                message(Role::User, "fix the parser"),
+                tool(
+                    "Read",
+                    "src/parse.rs",
+                    "fn parse() {}",
+                    ToolStatus::Ok,
+                    false,
+                ),
+                marker,
+                message(Role::User, "now the tests"),
+            ]
+        };
+        assert_eq!(
+            context_messages(&history(background_compaction("read it", 0))),
+            context_messages(&history(compaction("read it")))
+        );
+    }
+
+    #[test]
+    fn a_marker_keeping_more_than_it_follows_keeps_everything_before_it() {
+        // A record that claims more than the history holds (hand-edited, or
+        // cut short) keeps what there is rather than panicking.
+        let history = vec![
+            message(Role::User, "fix the parser"),
+            background_compaction("read it", 99),
+        ];
+        let ctx = context_messages(&history);
+        assert!(ctx[0].text.starts_with(SUMMARY_PREFIX), "{ctx:?}");
+        assert!(ctx[0].text.contains("fix the parser"), "{ctx:?}");
     }
 
     #[test]
