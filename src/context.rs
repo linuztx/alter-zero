@@ -30,6 +30,14 @@ pub const SUMMARIZATION_PROMPT: &str = include_str!("../prompts/compact_prompt.m
 /// followed by a newline and the marker's summary. See `docs/compact.md`.
 pub const SUMMARY_PREFIX: &str = include_str!("../prompts/compact_summary_prefix.md");
 
+/// The summarizer's own system prompt (`prompts/compact_system.md`): who it
+/// is and that the transcript is material, never instructions. It stands in
+/// for the session's persona, environment and scratchpad, which a summary
+/// request never carries — the next request opens with the current versions
+/// of all of them anyway. See `docs/background-compaction.md` *What the
+/// summarizer reads*.
+pub const COMPACT_SYSTEM_PROMPT: &str = include_str!("../prompts/compact_system.md");
+
 /// Codex's `COMPACT_USER_MESSAGE_MAX_TOKENS`: the approx-token budget for the
 /// recent user messages replayed before the bridge after a `/compact`.
 const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
@@ -465,6 +473,19 @@ fn push_user_text(out: &mut Derived, text: String, images: Vec<PathBuf>, origin:
 #[must_use]
 pub fn context_messages(history: &[HistoryItem]) -> Vec<ContextMessage> {
     context_messages_with(None, history)
+}
+
+/// What a summary request carries after [`COMPACT_SYSTEM_PROMPT`]: the
+/// conversation alone, then [`SUMMARIZATION_PROMPT`] as the final user entry.
+/// No `<system-reminder>` leads it — not the AGENTS.md instructions, not the
+/// skill or agent listings — whatever the session holds: those are constants
+/// the next request carries fresh, and a summary that restated them would only
+/// carry stale copies forward (`docs/background-compaction.md`).
+#[must_use]
+pub fn summarizer_context(history: &[HistoryItem]) -> Vec<ContextMessage> {
+    let mut messages = context_messages(history);
+    messages.push(ContextMessage::new(ContextRole::User, SUMMARIZATION_PROMPT));
+    messages
 }
 
 /// Whether `history` derives any conversation at all — i.e. whether
@@ -2256,6 +2277,56 @@ mod tests {
         assert_eq!(ContextRole::User.wire_name(), "user");
         assert_eq!(ContextRole::Assistant.wire_name(), "assistant");
         assert_eq!(ContextRole::Tool.wire_name(), "tool");
+    }
+
+    // --- the summarizer reads only the conversation (docs/background-compaction.md) ---
+
+    #[test]
+    fn the_summarizer_reads_the_conversation_then_the_prompt() {
+        let history = vec![
+            message(Role::User, "fix the parser"),
+            message(Role::Assistant, "on it"),
+        ];
+        let mut expected = context_messages(&history);
+        expected.push(ContextMessage::new(ContextRole::User, SUMMARIZATION_PROMPT));
+        assert_eq!(summarizer_context(&history), expected);
+    }
+
+    #[test]
+    fn the_summarizer_never_reads_a_system_reminder() {
+        // The session's own request leads with the AGENTS.md instructions and
+        // the listings; the summarizer's does not, whatever the session holds.
+        let history = vec![message(Role::User, "fix the parser")];
+        let session = context_messages_full(
+            Some("Run cargo fmt before committing."),
+            Some("- dataviz: charts"),
+            &history,
+        );
+        assert!(
+            session[0].text.starts_with(crate::reminder::REMINDER_OPEN),
+            "the request itself does lead with it: {session:?}"
+        );
+        let summarizer = summarizer_context(&history);
+        assert!(
+            summarizer
+                .iter()
+                .all(|m| !m.text.contains(crate::reminder::REMINDER_OPEN)),
+            "{summarizer:?}"
+        );
+    }
+
+    #[test]
+    fn the_summarizer_has_a_system_prompt_of_its_own() {
+        let prompt = COMPACT_SYSTEM_PROMPT.trim();
+        assert!(prompt.starts_with("You summarize"), "{prompt}");
+        assert!(
+            prompt.contains("not instructions"),
+            "the transcript is material, never orders: {prompt}"
+        );
+        assert!(
+            !prompt.contains("Alter Zero"),
+            "never the session's persona: {prompt}"
+        );
     }
 
     // --- /compact: the marker-aware derivation (docs/compact.md) ---
