@@ -481,11 +481,36 @@ fn the_compaction_cell_appends_the_token_shrink_and_auto_tag() {
         after: 2_100,
         auto: true,
         secs: 0,
+        kept: 0,
+        background: false,
     };
     let text = plain(&compaction_lines(&compaction, 120)[0]);
     assert!(text.starts_with(&format!("● {COMPACTED_NOTICE}")), "{text}");
     assert!(text.contains("88k → 2.1k tokens"), "{text}");
     assert!(text.ends_with("· auto"), "{text}");
+}
+
+#[test]
+fn a_background_compaction_cell_says_so_in_place_of_auto() {
+    // A summary written while the agent worked lands mid-turn as
+    // `· background`; `· auto` stays the idle summarization turn's
+    // (docs/background-compaction.md *On screen*).
+    let compaction = crate::app::Compaction {
+        summary: "s".into(),
+        timestamp: String::new(),
+        before: 173_000,
+        after: 78_000,
+        auto: true,
+        secs: 31,
+        kept: 4,
+        background: true,
+    };
+    let text = plain(&compaction_lines(&compaction, 120)[0]);
+    assert!(
+        text.ends_with("173k → 78k tokens · 31s · background"),
+        "{text}"
+    );
+    assert!(!text.contains("auto"), "{text}");
 }
 
 #[test]
@@ -497,6 +522,8 @@ fn a_manual_compaction_cell_shows_the_shrink_without_the_auto_tag() {
         after: 300,
         auto: false,
         secs: 0,
+        kept: 0,
+        background: false,
     };
     let text = plain(&compaction_lines(&compaction, 120)[0]);
     assert!(text.contains("1k → 300 tokens"), "{text}");
@@ -515,6 +542,8 @@ fn the_compaction_cell_appends_its_duration_between_the_shrink_and_the_auto_tag(
         after: 507,
         auto: true,
         secs: 36,
+        kept: 0,
+        background: false,
     };
     let text = plain(&compaction_lines(&compaction, 120)[0]);
     assert!(text.contains("2.1k → 507 tokens · 36s · auto"), "{text}");
