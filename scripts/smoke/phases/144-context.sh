@@ -198,8 +198,8 @@ for row in "System prompt" "System tools" "Project docs" "Skills" "Agent types" 
 	"Free space" "Auto-compact"; do
 	expect_has "$first" -E "[■□╱] $row +[0-9.]+k? +[<0-9.]+%" "the legend has no '$row' row with tokens and a share"
 done
-expect_has "$first" -E "Auto-compact +20k +10\.0%" \
-	"the auto-compact reserve is not the last 10% of the window"
+expect_has "$first" -E "Auto-compact +30k +15\.0%" \
+	"the auto-compact reserve is not the last 15% of the window (docs/background-compaction.md)"
 # The largest slice opens selected, its parts beside the legend.
 expect_has "$first" -E "❯ ■ System tools" "the largest slice (the tool schemas) did not open selected"
 expect_has "$first" -E "System tools · [0-9]+ tools" "the selected slice's detail heading is missing"
