@@ -844,6 +844,12 @@ impl AgentRun {
                     self.history.push(HistoryItem::Tool(front));
                 }
             }
+            // A subagent's loop carries no compaction slot yet
+            // (docs/background-compaction.md *Failures and edges*), so these
+            // never arrive here; were one to, there is nothing to snapshot.
+            StreamEvent::CompactionStart { .. }
+            | StreamEvent::CompactionWaiting { .. }
+            | StreamEvent::CompactionSwap { .. } => {}
             StreamEvent::Usage(usage) => {
                 // One frame ends one round: this is where the round's
                 // `Thought for …` cells trade their token estimate for
