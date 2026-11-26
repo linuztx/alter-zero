@@ -321,9 +321,13 @@ fn auto_compaction_obeys_the_setting() {
     });
     app.finish_stream();
     app.end_turn(1);
-    assert!(app.should_auto_compact(), "the gauge is past the threshold");
+    assert_eq!(
+        app.compaction_window(),
+        Some(1_000),
+        "the turn compacts against the window"
+    );
     app.settings_mut().auto_compact = false;
-    assert!(!app.should_auto_compact());
+    assert_eq!(app.compaction_window(), None);
 }
 
 #[test]

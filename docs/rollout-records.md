@@ -148,9 +148,10 @@ exactly as `StreamEvent::Usage` carried them:
   agent's requests. The conversation's own requests, `/compact`'s
   summarization included, carry no `agent`.
 - **`compact`** is present, as `true`, only on the request that wrote a
-  compaction's summary (`/compact` or auto-compact, `docs/compact.md`). That
-  request is the conversation's own, and its cost is the one an analysis
-  most often wants to set apart: it reads the whole context to replace it.
+  compaction's summary (`/compact`, `docs/compact.md`, or a summary written
+  in the background, `docs/background-compaction.md`). That request is the
+  conversation's own, and its cost is the one an analysis most often wants
+  to set apart: it reads the whole context to replace it.
 
 All five counts are always written, zeros included, so a reader needs no
 defaults. Their meaning is the per-turn `summary`'s: a finished turn's
@@ -158,7 +159,11 @@ defaults. Their meaning is the per-turn `summary`'s: a finished turn's
 lines it produced, and its `cached`/`cache_write` the sums of theirs. A
 subagent's lines are not in that sum (they are its group entry's), and a
 compaction has no `summary`: its `compact` line is followed by the
-`compaction` record instead.
+`compaction` record instead. A summary written in the background is in no
+turn's sum either, though its line can sit among a turn's: it is written
+where the summary finished, and the turn went on meanwhile, so the
+`compaction` record it made follows it after the turn's own lines and items
+of that while.
 
 ### Where the line sits
 

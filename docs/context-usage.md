@@ -78,8 +78,9 @@ One row, the page's width less the inset on both sides, standing for the
 whole window: each category's cells in its own colour, in the order the
 request carries them (system prompt, tools, the reminder's sections,
 messages), then the free space (`░`, dim), then the **auto-compact headroom**
-— the last 10% the session never fills, because at 90% the loop compacts on
-its own (`docs/compact.md`) — hatched `╱`.
+— the last 15% the session never fills, because at that ceiling a running
+turn swaps a background summary in (`docs/background-compaction.md`; at least
+16k from a 32k window up) — hatched `╱`.
 
 Each segment's cells are its **own** share of the window, rounded to the
 nearest cell (`allot_cells`), so a category's run is as long as its tokens
@@ -88,7 +89,8 @@ category with any tokens at all gets at least one cell, so the 161-token
 system prompt is a visible sliver rather than nothing — and that cell comes
 out of the **free space**, which is whatever the categories and the headroom
 leave, never out of a neighbour's run. The headroom is its own share too, so
-the hatching starts at 90% of the bar to the cell. The slivers' cells are
+the hatching starts at the ceiling — 85% of the bar on a 200k window — to
+the cell. The slivers' cells are
 paid for where a cell costs least: the used cells can read up to a cell per
 sliver fuller than the subtitle's share, which is the number to read. Only
 once the free space is down to its own last cell — a few cells short of the

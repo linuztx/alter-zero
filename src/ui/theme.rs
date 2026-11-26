@@ -2726,6 +2726,15 @@ pub(super) const OFFLINE_RIPPLE_GAP: &str = "  ";
 /// turn is waiting — so the row fits one 80-column line beside an ordinary
 /// host and leaves the reassurance to the count ticking.
 pub(super) const OFFLINE_ROW_LEAD: &str = "No connection to ";
+
+/// The background compaction row while its summary is being written
+/// (`docs/background-compaction.md` *What the user sees*) — the elapsed
+/// follows after ` · `.
+pub(super) const COMPACTION_WRITING_ROW: &str = "Compacting in the background";
+
+/// The background compaction row once its summary is written and held — the
+/// ceiling's share of the window follows, with its `%`.
+pub(super) const COMPACTION_HELD_ROW: &str = "Summary ready · swaps in at ";
 pub(super) const OFFLINE_ROW_TAIL: &str = " — trying again · ";
 
 /// Dim grey — the committed `"{done verb} for {n}"` turn summary.

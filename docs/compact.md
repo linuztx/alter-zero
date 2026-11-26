@@ -151,9 +151,13 @@ no new user bubble:
 
 ## Auto-compact + the context gauge
 
-Codex also compacts **automatically** near the context limit; so do we, with
-the same threshold — **90% of the model's context window**
-(`ModelInfo::auto_compact_token_limit`, `(context_window * 9) / 10`).
+Codex also compacts **automatically** near the context limit; so do we — **in
+the background, inside the running turn** (`docs/background-compaction.md`):
+past a start line a summary is written while the agent keeps working, and it
+is swapped in at a round top once the context reaches the **ceiling**, the
+window less the larger of 15% and 16k (170k on a 200k window). That replaced
+codex's 90%-of-window trigger, which only ever fired between turns, so a long
+turn overflowed before it got the chance.
 
 - **The window** comes from the provider's `/v1/models` record —
   `context_length` (OpenRouter and most aggregators) or
@@ -162,7 +166,7 @@ the same threshold — **90% of the model's context window**
   capability probe, persisted in `config.json` beside the vision flag, and
   overridable (or supplied for a provider that reports none, and for the
   dummy) via `ALTER_ZERO_CONTEXT_WINDOW`. Unknown window → no gauge, no
-  auto-compact.
+  compaction on its own.
 - **The gauge** shows in the footer whenever the window is known:
   `{model} · {cwd} · {used}/{window} ({pct}%)` (e.g. `1.3k/160k (0.8%)` — both
   counts humanized by the summary's token formatter, the share one decimal).
@@ -184,7 +188,7 @@ the same threshold — **90% of the model's context window**
   question — answers with the viewed agent's own context
   (`AgentRun::context_used`, the same rule, estimated from its transcript when
   a settle saw no frame) against the window of the model it runs on, while
-  `context_used`/`context_window` stay the trigger's inputs: auto-compact is a
+  `context_used`/`context_window` stay compaction's inputs: compaction is a
   fact about the lead's conversation whatever is on screen.
 - **An empty conversation reads a true zero.** The estimate returns 0 as soon
   as the derived context is empty — the *same* predicate `/compact` uses for
@@ -196,29 +200,31 @@ the same threshold — **90% of the model's context window**
   session made one state show two numbers, and the leftover-looking one
   (`139/1M` under a blank screen) read as conversation that hadn't really
   gone. `/clear` now lands exactly where a fresh session starts.
-- **The trigger** lives at the loop bottom, where every turn end and gauge
-  change lands: idle, past the threshold, and with a non-empty derivable
-  context, the loop starts the same summarization turn the command runs —
-  marked `auto`, so the cell reads `● Context compacted · 88k → 2.1k tokens
-  · auto`. **One attempt per user turn** (codex's per-turn semantics): a
-  compact turn ending *any* way — landed, Esc'd, or failed — blocks the
-  trigger until the next real turn begins, so an insufficient compaction
-  never loops and an interrupted one is never restarted against the user's
-  wishes. Messages queued while it runs dispatch onto the compacted context
-  at its turn end, exactly like the manual command.
+- **Compaction on its own** runs at the running turn's round tops and, between
+  turns, at the loop bottom (`docs/background-compaction.md` *Between
+  turns*): there, past the start line, a summary starts in the background
+  instead of a `Compacting…` turn — a message sent meanwhile dispatches at
+  once — and a summary held there lands, so the next turn starts compacted.
+  Its cell reads `● Context compacted · 170k → 82k tokens · 47s ·
+  background`. Two failed summaries in a cycle stop further starts until a
+  compaction lands, so a provider refusing every summary is not asked again
+  each round. The `/settings` **Auto compact** knob turns all of it off; the
+  command by hand still works, and lets a background summary go for its own.
 
 The marker cell's shrink clause (`· {before} → {after} tokens`) appears on
-manual compactions too — `before` is the gauge when the compaction began,
-`after` the gauge once the marker landed — the last count moved by the
-estimate of what the summary replaced, so the tool schemas and framing that
-ride every request stay in it (`docs/token-estimate.md`); both persist in the
-rollout (old files parse with the clause hidden). A ` · {elapsed}` clause
-follows the shrink (before the ` · auto` tag): how long the summarization
-turn ran — the boundary's turn clock passed into `finish_compact`,
-`format_elapsed`-humanized (`36s`, `1m 36s`), recorded as `secs` on the
-marker and persisted beside the gauge counts (0/absent on old rollouts hides
-it). The cell reads e.g. `● Context compacted · 2.1k → 507 tokens · 36s ·
-auto`.
+manual compactions too — `before` is the gauge when the compaction began (a
+background summary's: when it is swapped in, the turn having kept working
+while it was written), `after` the gauge once the marker landed — the last
+count moved by the estimate of what the summary replaced, so the tool schemas
+and framing that ride every request stay in it (`docs/token-estimate.md`);
+both persist in the rollout (old files parse with the clause hidden). A
+` · {elapsed}` clause follows the shrink (before the tag): how long the
+summary took — the boundary's turn clock passed into `finish_compact`, or the
+background worker's own — `format_elapsed`-humanized (`36s`, `1m 36s`),
+recorded as `secs` on the marker and persisted beside the gauge counts
+(0/absent on old rollouts hides it). The cell reads e.g. `● Context compacted
+· 2.1k → 507 tokens · 36s`, with ` · background` closing one written in the
+background, and ` · auto` one an older build's idle compaction turn wrote.
 
 ## Interrupts, errors, `/clear`
 
@@ -256,11 +262,11 @@ fully streamed.
 - `src/ui/message.rs` — `compaction_lines` (inline cell) and the transcript arm
   (cell + dim summary body); a `conversation_lines` arm so resizes repaint it.
 - `src/tui/` — the `Action::Compact` arm (`actions.rs`), the `StreamDone`
-  compact branch (`stream.rs`), `Session::start_compact_turn` (`turn.rs`,
-  shared with the loop-bottom auto trigger in `bootstrap.rs`),
-  `ModelSession::compact_backend` + its `real_backend` gate (`models.rs`), and
-  the `ALTER_ZERO_CONTEXT_WINDOW` override (`config.rs`) with the window's
-  seeding/persistence.
+  compact branch (`stream.rs`), `Session::start_compact_turn` (`turn.rs`),
+  `ModelSession::compact_backend` + its `real_backend` gate (`models.rs`) —
+  which the background summary is written on too (`compaction.rs`,
+  `docs/background-compaction.md`) — and the `ALTER_ZERO_CONTEXT_WINDOW`
+  override (`config.rs`) with the window's seeding/persistence.
 - `src/llm/models.rs` / `src/llm/settings.rs` — `ModelEntry::context`
   (`context_length` sniffing) and its `config.json` persistence.
 - `src/stream/dummy/turns.rs` — the dummy's text-only compact script (the

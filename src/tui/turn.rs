@@ -254,20 +254,23 @@ impl Session<'_> {
         self.spawn_reply(prompt, Vec::new(), context);
     }
 
-    /// Start a `/compact` summarization turn (`docs/compact.md`) — manual
-    /// (`Action::Compact`) or auto-triggered (the loop bottom's
-    /// `should_auto_compact`). Like [`Session::start_background_turn`], no user
-    /// message is recorded: the context is derived as-is and codex's
-    /// summarization prompt rides as its final user entry (the real backend
-    /// ignores the bare `prompt` whenever the context is non-empty; the prompt
-    /// argument still serves the dummy, which scripts a text-only canned summary
-    /// for it). Spawns on the **tools-free** one-off backend when one resolved,
-    /// else the session backend.
-    pub(crate) fn start_compact_turn(&mut self, auto: bool) {
+    /// Start the `/compact` summarization turn (`docs/compact.md`,
+    /// `Action::Compact`) — compaction by hand; compaction on its own runs in
+    /// the background (`docs/background-compaction.md`), and a summary being
+    /// written there is let go for this one. Like
+    /// [`Session::start_background_turn`], no user message is recorded: the
+    /// context is derived as-is and codex's summarization prompt rides as its
+    /// final user entry (the real backend ignores the bare `prompt` whenever
+    /// the context is non-empty; the prompt argument still serves the dummy,
+    /// which scripts a text-only canned summary for it). Spawns on the
+    /// **tools-free** one-off backend when one resolved, else the session
+    /// backend.
+    pub(crate) fn start_compact_turn(&mut self) {
+        self.let_go_of_compaction();
         let compact_backend = self
             .models
-            .compact_backend(self.app.thinking.as_ref().map(|t| t.mode), auto);
-        self.app.begin_compact(auto);
+            .compact_backend(self.app.thinking.as_ref().map(|t| t.mode), false);
+        self.app.begin_compact(false);
         self.app.count_user_input(context::SUMMARIZATION_PROMPT);
         self.render.reset();
         self.clocks.start_turn();

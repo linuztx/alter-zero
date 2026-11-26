@@ -479,13 +479,13 @@ pub fn context_messages(history: &[HistoryItem]) -> Vec<ContextMessage> {
 
 /// Whether `history` derives any conversation at all — i.e. whether
 /// [`context_messages`] would return anything — without building it. The
-/// gates that only need the yes/no (the context gauge's zero state, the
-/// auto-compact "anything to summarize" check, `/compact`'s `Nothing to
-/// compact` rejection) used to derive the whole window — every message text,
-/// tool output, and shell transcript cloned into fresh `String`s — just to
-/// test `.is_empty()`; on a long conversation that is hundreds of kilobytes
-/// of transient allocation per check, and `should_auto_compact` runs at the
-/// loop bottom. The match is deliberately exhaustive (no wildcard): adding a
+/// gates that only need the yes/no (the context gauge's zero state,
+/// background compaction's "anything to summarize" check, `/compact`'s
+/// `Nothing to compact` rejection) used to derive the whole window — every
+/// message text, tool output, and shell transcript cloned into fresh
+/// `String`s — just to test `.is_empty()`; on a long conversation that is
+/// hundreds of kilobytes of transient allocation per check, and the
+/// compaction check runs at the loop bottom. The match is deliberately exhaustive (no wildcard): adding a
 /// history variant forces this answer to be decided alongside its
 /// [`context_messages`] arm, and the equivalence test sweeps every kind so
 /// the two can never quietly disagree.

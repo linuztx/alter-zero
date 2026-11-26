@@ -895,6 +895,11 @@ impl ReplySource for LlmBackend {
         // every round boundary.
         let steer = self.steer.clone();
         thread::spawn(move || {
+            // A new turn may compact again, whatever the last one found
+            // futile (docs/background-compaction.md *Failures and edges*).
+            if let Some(slot) = &compaction {
+                slot.turn_started();
+            }
             // Encoding the attachments reads files — done here on the backend
             // thread so a large image never stalls the event loop. A known
             // non-vision model gets omission notes instead of parts

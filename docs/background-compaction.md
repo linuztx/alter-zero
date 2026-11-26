@@ -1,8 +1,8 @@
 # Background compaction — compacting a turn while it runs
 
-`/compact` and the auto-compact it shares a turn with (`docs/compact.md`) only
-ever ran **between** turns: `App::should_auto_compact` refused while a turn was
-in flight, so one long agentic turn — twenty tool rounds of file reads and test
+`/compact` and the auto-compact it shared a turn with (`docs/compact.md`) only
+ever ran **between** turns: the trigger refused while a turn was in flight, so
+one long agentic turn — twenty tool rounds of file reads and test
 logs — grew until a request no longer fit and the turn ended on the provider's
 error or on `the reply filled the model's context window before it finished —
 run /compact to make room`. The idle auto-compact that followed had to send the
@@ -13,10 +13,6 @@ summary is written in the background while the agent keeps working, held, and
 swapped into the turn's message list at a round boundary once the context
 reaches its ceiling. The agent waits only if the summary is not written by
 then.
-
-**Status:** landing in phases, each its own commit — the summarizer's input
-first, then the anchored marker, the policy, the round-top step, and the
-boundary. A section describes what the code does once its phase has landed.
 
 ## Where it comes from
 
@@ -121,7 +117,12 @@ round top it decides at.
    derives the summarizer's input from `history[..keep_from]` and starts the
    summary on a worker of its own (`tui::workers::spawn_background_compaction`),
    a tools-free one-off backend streaming into a private channel; the result
-   comes back on the loop's compaction channel.
+   comes back on the loop's compaction channel. A real session never writes
+   it on its own backend, which checks the slot at its round tops and would
+   wait on itself: with no one-off to hand the summary counts as failed. The
+   compact hooks run for it as for any compaction on its own (`trigger:
+   auto`, `docs/hooks.md`); their cells are held and committed above the
+   summary's own when it lands.
 3. **Held.** The summary is not applied when it lands: the slot marks it
    ready, the strip's row says so, and the turn keeps working on its full
    list.
@@ -180,15 +181,43 @@ item before it.
 
 ## Failures and edges
 
-- **A summary that fails** frees the slot, and the next round top past the
-  start line starts another; after **two** failures in a cycle no background
-  start is tried until a compaction lands (opencode's cap). At the ceiling the
-  turn then goes out uncompacted, as it did before this change, and meets the
+- **A summary that fails** frees the slot, raises a red `Background
+  compaction failed — {reason}` toast, and the next round top past the start
+  line starts another; after **two** failures in a cycle no background start
+  is tried until a compaction lands (opencode's cap). At the ceiling the turn
+  then goes out uncompacted, as it did before this change, and meets the
   provider's limit the way it always has.
-- **The history moved** — `/clear`, a backtrack, a `/resume`, a `/model`
-  switch, a manual `/compact`: the job is cancelled and forgotten (codex's
-  generation check, `App::history_generation`). A summary already paid for is
-  still billed.
+- **The history moved** — the conversation replaced or rewound (`/clear`, a
+  `/resume`, a backtrack: `App::history_epoch`), or an item the summary
+  covers taken back (the turn that started it undone before anything
+  streamed): the job is cancelled and forgotten at the next loop bottom
+  (codex's generation check, narrowed). The epoch is not
+  `App::history_generation`, which also moves for changes that leave what
+  was said alone — a re-render, an agent's entry updated in place, a failed
+  attempt withdrawn — and forgetting a summary on those would throw away one
+  already paid for. A `/compact` by hand lets the job go for its own, as does
+  turning **Auto compact** off or a window becoming unknown. A `/model`
+  switch keeps it: the summary is the conversation's whichever model wrote
+  it, and the lines move with the new window.
+- **A compaction that could not help** — one that leaves the context still
+  at or past the ceiling, by the gauge's count or by the turn's own at its
+  next round top: the system prompt and tool schemas alone fill a small
+  window, or the tail kept verbatim is that large. Summarizing again at once
+  would land in the same place, and the next round top would start another,
+  for ever, so none is started for the rest of the turn
+  (`CompactionSlot::futile`); the turn goes on uncompacted, as before this
+  change, and the next turn tries again (`CompactionSlot::turn_started`,
+  called by the turn's own thread). Between turns the loop bottom starts
+  none while it holds. This is the old trigger's one attempt per turn, kept
+  for the case it existed for.
+- **Billing**: a summary's usage frames join the since-launch ledger on the
+  `/context` page, whatever became of it, and never the gauge or the last
+  request, its request being the summarizer's. The rollout records each as a
+  `compact` usage line where the summary finished (`docs/rollout-records.md`).
+- **A summary the output cap cut off** goes on in another round, as any
+  reply does (`docs/unfinished-replies.md`); a connection lost in a round
+  takes back only what that round's attempt streamed
+  (`compaction::SummaryStream`, `App::track_attempt`'s rule).
 - **Esc** stops the turn, not the summary: it stays held, and is applied at
   the idle loop bottom if the history it covers is unchanged.
 - **Rate limits**: the summary is a second request on the same provider while
@@ -205,7 +234,9 @@ item before it.
   `⎿ Compacting in the background · 12s`; once written, `⎿ Summary ready ·
   swaps in at 85%`. The spinner keeps its verb — the agent is still working.
 - At the swap: the `● Context compacted · 170k → 82k tokens · 47s ·
-  background` cell, in place in the transcript, and the gauge drops.
+  background` cell, in place in the transcript, and the gauge drops. Its
+  `before` is the context at the swap — the turn kept working while the
+  summary was written — and its elapsed the summary's own.
 - Waiting at the ceiling: the status verb `Compacting…` until the swap.
 
 ## Files
@@ -219,5 +250,13 @@ item before it.
 - `src/stream/event.rs` — `CompactionStart`, `CompactionWaiting`,
   `CompactionSwap`.
 - `src/app/compact.rs` — the job's state, the marker, the idle start.
-- `src/tui/` — the worker, the channel, the event arms, the swap.
+- `src/tui/compaction.rs` — the start, the worker's answer, the swap, the
+  loop-bottom tick; `src/tui/workers.rs` — the worker
+  (`spawn_background_compaction`); the event arms in `src/tui/stream.rs`,
+  the channel in `src/tui/event_loop.rs` and the headless loop.
+- `src/ui/compaction_row.rs` — the row under the status line.
 - `prompts/compact_system.md` — the summarizer's system prompt.
+- `scripts/smoke/phases/051-autocompact.sh` (between turns),
+  `170-compactinput.sh` (what the summarizer reads) and
+  `171-midturncompact.sh` (inside a running turn, against a stub provider:
+  the start, the wait, the swap, the verbatim tail, the cell in place).

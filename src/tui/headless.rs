@@ -272,8 +272,10 @@ pub(crate) async fn run(mut startup: Startup) -> i32 {
     let mut emitted = run_start;
     let start = session.run_start_info(resumed);
     write(&reporter.start(&start.as_start()));
-    // A conversation past its window compacts before the prompt goes out —
-    // the TUI's idle-boundary rule, run once here (docs/compact.md).
+    // A conversation past its start line starts a summary in the background
+    // before the prompt goes out — the TUI's idle-boundary rule, run once
+    // here — and the prompt's turn adopts it, swapping it in at its ceiling
+    // (docs/background-compaction.md *Between turns*).
     session.after_headless_iteration(true);
     let mut prompt = interrupted.is_none().then_some(prompt);
     // How long the run may sit with nothing left but background subagents
@@ -324,6 +326,9 @@ pub(crate) async fn run(mut startup: Startup) -> i32 {
             Some(event) = session.bg_rx.recv() => session.on_bg_event(event),
             Some(event) = session.agent_rx.recv() => session.on_headless_agent_message(event),
             Some(event) = session.mcp_rx.recv() => session.on_mcp_event(event),
+            // A long `-p` task compacts as it runs
+            // (docs/background-compaction.md).
+            Some(done) = session.compaction_rx.recv() => session.on_compaction_done(done),
             Some((provider, result)) = session.probe_rx.recv(),
                 if session.models.probe_pending() =>
             {
@@ -337,7 +342,7 @@ pub(crate) async fn run(mut startup: Startup) -> i32 {
                 agents_deadline.unwrap_or_else(Instant::now),
             )), if agents_deadline.is_some() => {}
         }
-        // Compaction at the loop bottom only while the run waits on its
+        // A summary starts between turns only while the run waits on its
         // subagents — the idle boundary a follow-up turn will come out of.
         let waiting = session.waiting_on_agents();
         session.after_headless_iteration(waiting);
@@ -637,20 +642,14 @@ impl Session<'_> {
     }
 
     /// The loop-bottom work a headless run needs from the TUI's
-    /// `after_iteration`: the context gauge an auto-compaction reads, that
-    /// compaction itself when `compact` allows it, the rollout, the reaping
-    /// — and none of the screen's.
+    /// `after_iteration`: the context gauge background compaction reads, its
+    /// tick — a summary started between turns only when `compact` allows it
+    /// — the rollout, the reaping, and none of the screen's.
     fn after_headless_iteration(&mut self, compact: bool) {
         self.app
             .set_tool_definitions(self.models.backend().tool_definitions());
         self.app.sync_context_used();
-        if compact
-            && self.inflight.is_none()
-            && !self.models.is_stalled_test_backend()
-            && self.app.should_auto_compact()
-        {
-            self.start_compact_turn(/*auto=*/ true);
-        }
+        self.tick_background_compaction(compact);
         self.recorder
             .sync(&self.app.history, self.app.history_generation());
         self.reaping.retain(|handle| !handle.is_finished());

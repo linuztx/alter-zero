@@ -250,6 +250,7 @@ pub fn hang_rows(app: &App, width: u16) -> u16 {
     super::tasks::task_rows(app, width)
         .saturating_add(super::tips::tip_rows(app, width))
         .saturating_add(super::offline::offline_rows(app, width))
+        .saturating_add(super::compaction_row::compaction_rows(app, width))
 }
 
 /// Columns the input field's text occupies: the box spans the full width (no side
