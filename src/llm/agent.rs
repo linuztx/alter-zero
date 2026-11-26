@@ -318,6 +318,11 @@ pub enum RoundOutcome {
     /// `--max-turns` budget ([`RoundBudget`]). The turn ends on this
     /// message, the way the tool-call ceiling ends one.
     Limit(String),
+    /// The request was never sent: at its ceiling the turn swapped a summary
+    /// in (`docs/background-compaction.md`), and this is the list to go on
+    /// with — the conversation re-derived from history, the summary bridged
+    /// in. The loop replaces its list with it and asks again.
+    Compacted(Vec<ChatMessage>),
 }
 
 /// One thing waiting to be folded into the next round's context, taken at
@@ -536,6 +541,12 @@ pub fn run_agent(
                 return;
             }
             RoundOutcome::Cancelled => return,
+            // The context was compacted at this round's top: the same round
+            // runs again, on the list the boundary re-derived — the next ask
+            // goes out compacted (docs/background-compaction.md).
+            RoundOutcome::Compacted(compacted) => {
+                *messages = compacted;
+            }
             // A request the run's budget refused: the turn ends on the
             // limit's own message, the tool-call ceiling's shape — and its
             // `StopFailure` kind, the reference's catch-all for a local limit.
@@ -1164,6 +1175,49 @@ mod tests {
         let (skills, errors) = super::super::skill::discover_skills(&[root.to_path_buf()]);
         assert!(errors.is_empty(), "{errors:?}");
         crate::skills::SkillRegistry::new(skills)
+    }
+
+    // ===== a round that compacted (docs/background-compaction.md) =====
+
+    #[test]
+    fn a_compacted_round_replaces_the_list_and_asks_again() {
+        // At its ceiling the turn swaps a summary in before its request goes
+        // out: the round reports the list to continue with, and the loop
+        // asks again with it, the same turn going on.
+        let (tx, mut rx) = unbounded_channel();
+        let mut messages = vec![
+            ChatMessage::user("port the module"),
+            ChatMessage::new("assistant", "reading every file"),
+        ];
+        let compacted = vec![ChatMessage::user("port the module\n\nthe summary")];
+        let mut seen: Vec<Vec<ChatMessage>> = Vec::new();
+        run_agent(
+            &tx,
+            &CancelToken::new(),
+            MAX_TOOL_ITERATIONS,
+            &mut messages,
+            |msgs| {
+                seen.push(msgs.to_vec());
+                if seen.len() == 1 {
+                    RoundOutcome::Compacted(compacted.clone())
+                } else {
+                    answered()
+                }
+            },
+            |_, _| ToolOutcome::ok(""),
+            Vec::new,
+            |_| Vec::new(),
+            |_, _| Approval::Allow,
+            &NoHooks,
+            &no_sessions,
+        );
+        assert_eq!(seen.len(), 2, "the round is asked again: {seen:?}");
+        assert_eq!(seen[1], compacted, "on the compacted list");
+        assert_eq!(messages, compacted, "which the turn keeps");
+        assert!(
+            matches!(drain(&mut rx).last(), Some(StreamEvent::StreamDone)),
+            "and the turn ends as usual"
+        );
     }
 
     // ===== how a call ran (docs/rollout-records.md) =====
