@@ -579,6 +579,24 @@ pub enum StreamEvent {
     /// the app-side estimate into the provider's own accounting, prompt-cache
     /// detail included. The dummy never sends it. See `docs/prompt-caching.md`.
     Usage(TokenUsage),
+    /// The turn passed its **start line** at a round top
+    /// (`docs/background-compaction.md`): a summary of everything recorded
+    /// so far is to be written in the background while the turn goes on. The
+    /// loop takes the snapshot where this lands — every item the turn
+    /// produced before it is in history, nothing of the round about to start
+    /// is — and starts the summary as job `id` of the
+    /// [`crate::compaction::CompactionSlot`].
+    CompactionStart { id: u64 },
+    /// The turn reached its **ceiling** with summary `id` unwritten and waits
+    /// for it before sending its request — the status line's fixed
+    /// `Compacting…` verb until the swap (`docs/background-compaction.md`).
+    CompactionWaiting { id: u64 },
+    /// The turn is at its ceiling with summary `id` written and **waits for
+    /// the swap**: the loop appends the anchored marker, commits its cell and
+    /// answers on the [`crate::compaction::CompactionSlot`] with the context
+    /// re-derived from history, which the turn continues on
+    /// (`docs/background-compaction.md` *The lifecycle*).
+    CompactionSwap { id: u64 },
     /// A `write`/`edit`/`bash` call is **waiting on the user's approval**
     /// (`docs/permissions.md`). Sent by the backend thread just before it
     /// blocks on the [`crate::permission::PermissionGate`]; the loop raises
@@ -643,6 +661,9 @@ impl StreamEvent {
             | Self::Retrying { .. }
             | Self::Offline { .. }
             | Self::Usage(_)
+            | Self::CompactionStart { .. }
+            | Self::CompactionWaiting { .. }
+            | Self::CompactionSwap { .. }
             | Self::Permission(_)
             | Self::AskUser(_)
             | Self::Error(_)

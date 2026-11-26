@@ -102,6 +102,11 @@ fn main() {
             // The round's wire identity (docs/prompt-caching.md): the TUI
             // stamps its records with it; the harness has none.
             StreamEvent::RoundCalls(_) => {}
+            // Background compaction (docs/background-compaction.md): the harness
+            // hands its backend no slot, so none is ever sent.
+            StreamEvent::CompactionStart { .. }
+            | StreamEvent::CompactionWaiting { .. }
+            | StreamEvent::CompactionSwap { .. } => {}
             // A task tool call: cell-less in the TUI; the harness just logs it.
             StreamEvent::TaskCall {
                 name, args, output, ..

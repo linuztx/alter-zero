@@ -167,6 +167,7 @@ pub mod builtins;
 pub mod checkpoint;
 pub mod cli;
 pub mod clipboard;
+pub mod compaction;
 pub mod context;
 pub mod context_usage;
 pub mod file_search;

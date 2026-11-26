@@ -518,6 +518,12 @@ impl Session<'_> {
                 self.app.set_offline(&host, attempts);
                 false
             }
+            // Background compaction's events (docs/background-compaction.md):
+            // only a turn handed a configured `CompactionSlot` sends them, and
+            // no backend is handed one yet.
+            StreamEvent::CompactionStart { .. }
+            | StreamEvent::CompactionWaiting { .. }
+            | StreamEvent::CompactionSwap { .. } => false,
             StreamEvent::Usage(usage) => {
                 // The round's real usage frame: snap the live tally from the
                 // app-side estimate to the provider's own accounting (cache
