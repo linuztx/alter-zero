@@ -99,19 +99,30 @@ no new user bubble:
   (`COMPACT_VERB` "Compacting", which never rotates; the verb cursor does not
   move, so the walk through the status verbs is unaffected) plus an empty streaming buffer and an empty
   **`compact_buffer`** — the flag *and* the accumulator;
-- the context is derived as usual and codex's verbatim summarization prompt
+- the summarizer reads **the conversation only**
+  (`docs/background-compaction.md` *What the summarizer reads*):
+  `context::conversation_messages` derives the history as the request would,
+  minus every `<system-reminder>` — no leading one (AGENTS.md, the skill and
+  agent listings) and no hook `additionalContext` note, which is stored
+  wrapped in one. Codex's verbatim summarization prompt
   (`prompts/compact_prompt.md`, "You are performing a CONTEXT CHECKPOINT
   COMPACTION…") is pushed onto it as a final user entry — necessary because
   the real backend ignores the bare `prompt` argument whenever the context is
   non-empty. The prompt is never recorded into history (codex-parity: it
   lives only in the request);
 - the request runs on a **one-off tools-free backend** —
-  `LlmBackend::configure(cfg, system_prompt, /*tools=*/false)` with the same
-  persona+environment prompt and no background-notice injection — so the
-  model can only answer with text (codex sends the summarize request with no
-  tools). When no real backend is configured the session backend (the dummy)
-  is used instead; `stream::turn_events` scripts a text-only summary for the
-  compact prompt so the flow is drivable offline (and by `smoke.sh`).
+  `LlmBackend::configure(cfg, Some(COMPACT_SYSTEM_PROMPT), /*tools=*/false)`:
+  the summarizer's **own** system prompt (`prompts/compact_system.md` — the
+  messages are material to summarize, not instructions; don't continue the
+  task), never the agent's persona, environment and scratchpad blocks, and no
+  background-notice injection — so the model can only answer with text
+  (codex sends the summarize request with no tools). Nothing is lost: the
+  system prompt and a freshly rendered reminder ride every later request as
+  they always do. And no cache is: a request without the tools never shared
+  the agent's cached prefix. When no real backend is configured the session
+  backend (the dummy) is used instead; `stream::turn_events` scripts a
+  text-only summary for the compact prompt so the flow is drivable offline
+  (and by `smoke.sh`).
 
   **"No real backend" means the session isn't talking to one** — the tracked
   `ModelSession::real_backend`, not "does a config resolve". Gating on a usable
@@ -226,10 +237,12 @@ fully streamed.
 
 - `prompts/compact_prompt.md` / `prompts/compact_summary_prefix.md` — codex's
   prompt bytes verbatim (the prefix file has **no** trailing newline; the
-  bridge is `prefix + "\n" + summary`).
+  bridge is `prefix + "\n" + summary`); `prompts/compact_system.md` — the
+  summarizer's own system prompt.
 - `src/context.rs` — the prompt consts, `approx_token_count`, the budget walk
-  (`compacted_user_texts`), the bridge, and the marker-aware
-  `context_messages`; all pure and unit-tested.
+  (`compacted_user_texts`), the bridge, the marker-aware
+  `context_messages`, and `conversation_messages` (the summarizer's
+  reminder-free input); all pure and unit-tested.
 - `src/app/` — `HistoryItem::Compaction(Compaction)` (`types.rs`), `begin_compact` /
   `finish_compact` / the `push_chunk` diversion, the `/compact` command +
   busy/empty guards, `Action::Compact`.
