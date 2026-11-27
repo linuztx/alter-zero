@@ -88,5 +88,6 @@ Use CLI `gpt-image-1.5` with `background=transparent` and a transparent-capable 
 - If a request fails because a specific option is unsupported by the selected GPT Image model, retry manually without that option only when the option is not required by the user. If true transparent CLI output is required, ask before switching to `gpt-image-1.5` instead of dropping `background=transparent`, unless the user already explicitly chose that fallback.
 
 ## Important boundary
-- `quality`, `input_fidelity`, explicit masks, `background`, `output_format`, and related parameters are fallback-only execution controls.
+- `input_fidelity`, explicit masks, `background`, `output_format`, and related parameters are fallback-only execution controls.
 - Do not assume they are built-in `imagegen` tool arguments.
+- The built-in tool has its own `size`, `quality`, `transparent_background` and `gif` arguments; see `SKILL.md`.

@@ -656,10 +656,14 @@ which Ctrl+V reads the clipboard from.
   quota. The tool POSTs Codex's body to the Codex backend's
   `/images/generations` or `/images/edits` with the shared bearer. It
   streams the answer's base64 straight into
-  `~/.alter-zero/generated_images/<session>/N.png`, kilobytes whatever the
-  image weighs. The cell names the file and draws it, and the picture rides
-  the model's context and is replayed like an image `read`. No size,
-  quality or model parameter, as in Codex: the backend chooses.
+  `~/.alter-zero/generated_images/<session>/N.png` (`N.gif` for an
+  animation), kilobytes whatever the image weighs. The cell names the file
+  and draws it, and the picture rides the model's context and is replayed
+  like an image `read`, a GIF as its first frame. Every request names
+  GPT-Image-2.6 Sunburst, sent once more with `gpt-image-2` when the backend
+  refuses that model. The call takes a `size` and a `quality`, both `auto`
+  by default and checked before anything is sent, and a `gif` for a short
+  looping animation; it takes no model and no count.
 - **A release reaches the built-ins it changed** (`docs/builtin-updates.md`):
   every launch syncs the built-in skills and agent types before the walks
   read them. A copy whose bytes `prompts/shipped.sha256` lists — every

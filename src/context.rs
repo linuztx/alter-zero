@@ -1748,6 +1748,7 @@ mod tests {
         let fact = crate::llm::imagegen::format_generated(
             "PNG",
             (1024, 1024),
+            None,
             1_500_000,
             "/home/me/.alter-zero/generated_images/s1/1.png",
         );
@@ -2672,7 +2673,7 @@ mod tests {
     fn a_generated_image_without_its_arguments_replays_its_prompt() {
         // `prompt` is required, and a validating provider rejects the call
         // without it; the header summary is the prompt (docs/imagegen.md).
-        let fact = crate::llm::imagegen::format_generated("PNG", (8, 8), 90, "/g/s1/1.png");
+        let fact = crate::llm::imagegen::format_generated("PNG", (8, 8), None, 90, "/g/s1/1.png");
         let history = vec![tool(
             crate::llm::imagegen::IMAGEGEN_TOOL_DISPLAY,
             "a red fox",

@@ -1,6 +1,7 @@
-//! The `imagegen` tool: images made and edited with OpenAI's `gpt-image-2`
-//! through the user's **ChatGPT Codex sign-in**, whatever provider the
-//! conversation itself runs on (`docs/imagegen.md`).
+//! The `imagegen` tool: images — stills and looping GIFs — made and edited
+//! with OpenAI's newest image model, GPT-Image-2.6 Sunburst, through the
+//! user's **ChatGPT Codex sign-in**, whatever provider the conversation
+//! itself runs on (`docs/imagegen.md`).
 //!
 //! Ported from OpenAI Codex's built-in `image_gen.imagegen`, which is a
 //! client-side function rather than the hosted Responses tool: the model
@@ -15,6 +16,7 @@
 
 pub(crate) mod scan;
 
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -34,9 +36,221 @@ pub const IMAGEGEN_TOOL_NAME: &str = "imagegen";
 /// The cell header's name: `● ImageGen(a red fox at dawn)`.
 pub const IMAGEGEN_TOOL_DISPLAY: &str = "ImageGen";
 
-/// The image model every request names. Codex hard-codes it too: the tool
-/// takes no model, size or quality — the backend chooses (`docs/imagegen.md`).
-pub const IMAGE_MODEL: &str = "gpt-image-2";
+/// The image model a request names: OpenAI's newest, GPT-Image-2.6
+/// Sunburst — the one of the pair made for finished work and consistent
+/// edits, and the Images API's own default for an edit (`docs/imagegen.md`
+/// *The model*). The tool takes no model; the call's `quality` is the speed
+/// control.
+pub const IMAGE_MODEL: &str = "gpt-image-2.6-sunburst";
+
+/// The model a request is sent again with when the backend refuses
+/// [`IMAGE_MODEL`] by name: the one images were made with before it, so a
+/// backend that does not take the newest yet still makes the image
+/// (`docs/imagegen.md` *The model*).
+pub const FALLBACK_IMAGE_MODEL: &str = "gpt-image-2";
+
+/// What both edges of an exact `size` are multiples of.
+const SIZE_STEP: u32 = 16;
+/// The longest edge an exact `size` may have.
+const MAX_SIZE_EDGE: u32 = 3840;
+/// How many times its short edge an exact `size`'s long edge may be.
+const MAX_SIZE_RATIO: u32 = 3;
+/// The most pixels an exact `size` may have: 3840x2160's.
+const MAX_SIZE_PIXELS: u64 = 3840 * 2160;
+/// The frames a GIF may have.
+const GIF_FRAME_COUNTS: RangeInclusive<u32> = 2..=16;
+/// How long each frame of a GIF may show, in milliseconds.
+const GIF_FRAME_DURATIONS_MS: RangeInclusive<u32> = 20..=2000;
+
+/// The pixel size a call asks for (`docs/imagegen.md` *The tool*).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageSize {
+    /// The backend chooses from the prompt — the default.
+    Auto,
+    /// Exactly this many pixels wide and high.
+    Exact(u32, u32),
+}
+
+impl ImageSize {
+    /// What the request's `size` says: `auto`, or `1536x1024`.
+    #[must_use]
+    pub fn wire(self) -> String {
+        match self {
+            Self::Auto => "auto".to_string(),
+            Self::Exact(width, height) => format!("{width}x{height}"),
+        }
+    }
+
+    /// Read a call's `size`: `auto` (in any case, or nothing at all), or
+    /// WIDTHxHEIGHT as the backend takes it — both edges multiples of 16, the
+    /// longer at most 3840 and at most three times the shorter, and no more
+    /// pixels than 3840x2160 has. Refused here, naming the rule, rather than
+    /// after a request the backend would refuse the same way.
+    fn parse(raw: &str) -> Result<Self, String> {
+        let text = raw.trim();
+        if text.is_empty() || text.eq_ignore_ascii_case("auto") {
+            return Ok(Self::Auto);
+        }
+        let shapeless =
+            || format!("`size` is `auto` or WIDTHxHEIGHT, such as `1536x1024` — not `{text}`");
+        let (width, height) = text.split_once(['x', 'X']).ok_or_else(shapeless)?;
+        let edge = |edge: &str| edge.trim().parse::<u32>().ok().filter(|edge| *edge > 0);
+        let (Some(width), Some(height)) = (edge(width), edge(height)) else {
+            return Err(shapeless());
+        };
+        if width % SIZE_STEP != 0 || height % SIZE_STEP != 0 {
+            // The nearest size on the grid, offered when it passes the rest.
+            let on_grid = |edge: u32| {
+                (edge.saturating_add(SIZE_STEP / 2) / SIZE_STEP * SIZE_STEP).max(SIZE_STEP)
+            };
+            let nearest = format!("{}x{}", on_grid(width), on_grid(height));
+            let offer = if Self::parse(&nearest).is_ok() {
+                format!(" — try {nearest}")
+            } else {
+                String::new()
+            };
+            return Err(format!(
+                "`size` {width}x{height}: both edges must be multiples of {SIZE_STEP}{offer}"
+            ));
+        }
+        let (long, short) = (width.max(height), width.min(height));
+        if long > MAX_SIZE_EDGE {
+            return Err(format!(
+                "`size` {width}x{height}: an edge may be at most {MAX_SIZE_EDGE} pixels"
+            ));
+        }
+        if long > short * MAX_SIZE_RATIO {
+            return Err(format!(
+                "`size` {width}x{height}: the long edge may be at most {MAX_SIZE_RATIO} times                  the short one"
+            ));
+        }
+        if u64::from(width) * u64::from(height) > MAX_SIZE_PIXELS {
+            return Err(format!(
+                "`size` {width}x{height}: at most 8,294,400 pixels, as 3840x2160 has"
+            ));
+        }
+        Ok(Self::Exact(width, height))
+    }
+}
+
+/// How much care the image is rendered with (`docs/imagegen.md` *The tool*).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageQuality {
+    /// The backend chooses — the default.
+    Auto,
+    /// The fastest: drafts, thumbnails, quick tries.
+    Low,
+    /// Between the two.
+    Medium,
+    /// The most detail: dense text, final assets.
+    High,
+}
+
+impl ImageQuality {
+    /// Every quality, in the order the spec lists them.
+    const ALL: [Self; 4] = [Self::Auto, Self::Low, Self::Medium, Self::High];
+
+    /// What the request's `quality` says.
+    #[must_use]
+    pub fn wire(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+
+    /// Read a call's `quality`, in any case; nothing at all is `auto`.
+    fn parse(raw: &str) -> Result<Self, String> {
+        let text = raw.trim();
+        if text.is_empty() {
+            return Ok(Self::Auto);
+        }
+        Self::ALL
+            .into_iter()
+            .find(|quality| quality.wire().eq_ignore_ascii_case(text))
+            .ok_or_else(|| {
+                format!("`quality` is one of `auto`, `low`, `medium` or `high` — not `{text}`")
+            })
+    }
+}
+
+/// A looping GIF instead of a still: how many frames, and how long each
+/// shows — the backend's own defaults (9 frames, 200 ms each) for what is
+/// left out (`docs/imagegen.md` *A GIF*).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GifOptions {
+    /// Frames in the loop, 2 to 16.
+    pub frame_count: Option<u32>,
+    /// How long each frame shows, 20 to 2000 milliseconds.
+    pub frame_duration_ms: Option<u32>,
+}
+
+impl GifOptions {
+    /// Read a call's `gif`: an object of the two numbers (`{}` for the
+    /// defaults), or the bare `true` or `false` a model may send instead;
+    /// `null` is no GIF. A field it does not take does nothing, so it is
+    /// refused by name, as an unknown argument is.
+    fn parse(value: Option<Value>) -> Result<Option<Self>, String> {
+        let fields = match value {
+            None | Some(Value::Null | Value::Bool(false)) => return Ok(None),
+            Some(Value::Bool(true)) => return Ok(Some(Self::default())),
+            Some(Value::Object(fields)) => fields,
+            Some(other) => {
+                return Err(format!(
+                    "`gif` is an object — `{{}}` for the defaults — not {other}"
+                ));
+            }
+        };
+        let mut gif = Self::default();
+        for (name, value) in &fields {
+            match name.as_str() {
+                "frame_count" => gif.frame_count = gif_number(name, value, GIF_FRAME_COUNTS)?,
+                "frame_duration_ms" => {
+                    gif.frame_duration_ms = gif_number(name, value, GIF_FRAME_DURATIONS_MS)?;
+                }
+                _ => {
+                    return Err(format!(
+                        "`gif` takes `frame_count` and `frame_duration_ms`, not `{name}`"
+                    ));
+                }
+            }
+        }
+        Ok(Some(gif))
+    }
+}
+
+/// One of a GIF's numbers: a whole number in `range`, or `null` for the
+/// backend's default.
+fn gif_number(
+    name: &str,
+    value: &Value,
+    range: RangeInclusive<u32>,
+) -> Result<Option<u32>, String> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    value
+        .as_u64()
+        .and_then(|number| u32::try_from(number).ok())
+        .filter(|number| range.contains(number))
+        .map(Some)
+        .ok_or_else(|| {
+            format!(
+                "`gif.{name}` must be a whole number from {} to {}, not {value}",
+                range.start(),
+                range.end()
+            )
+        })
+}
+
+/// Whether a call's arguments ask for a GIF — what the running cell names
+/// while it is made (`Generating GIF…`).
+#[must_use]
+pub fn asks_for_gif(arguments: &str) -> bool {
+    ImagegenArgs::parse(arguments).is_ok_and(|args| args.gif.is_some())
+}
 
 /// How many images one call may edit or take as references.
 pub const MAX_REFERENCED_IMAGES: usize = 5;
@@ -75,6 +289,34 @@ pub fn imagegen_spec() -> Value {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Absolute paths of up to 5 local images to edit or to use as references."
+                },
+                "size": {
+                    "type": "string",
+                    "description": "`auto` (the default), or WIDTHxHEIGHT such as `1536x1024`: multiples of 16, up to 3840, at most 3:1."
+                },
+                "quality": {
+                    "type": "string",
+                    "enum": ImageQuality::ALL.map(ImageQuality::wire),
+                    "description": "`auto` (the default); `low` is fastest, for drafts; `high` for dense text and final assets."
+                },
+                "gif": {
+                    "type": "object",
+                    "description": "Make a looping GIF of 2 to 16 frames instead of a still; `{}` takes the defaults.",
+                    "properties": {
+                        "frame_count": {
+                            "type": "integer",
+                            "minimum": GIF_FRAME_COUNTS.start(),
+                            "maximum": GIF_FRAME_COUNTS.end(),
+                            "description": "Frames in the loop, 2 to 16. Defaults to 9."
+                        },
+                        "frame_duration_ms": {
+                            "type": "integer",
+                            "minimum": GIF_FRAME_DURATIONS_MS.start(),
+                            "maximum": GIF_FRAME_DURATIONS_MS.end(),
+                            "description": "How long each frame shows, in milliseconds, 20 to 2000. Defaults to 200."
+                        }
+                    },
+                    "additionalProperties": false
                 }
             },
             "required": ["prompt"],
@@ -84,17 +326,19 @@ pub fn imagegen_spec() -> Value {
 }
 
 /// The tool's description: what it does and its sharp edges, short — every
-/// word rides every request that offers it, and the craft Codex's
-/// `imagegen_description.md` spells out (when to draw, how to word a prompt,
-/// where a picture belongs) is the `imagegen` skill's, listed whenever the
-/// tool is offered (`docs/imagegen.md`).
+/// word rides every request that offers it, and the craft (when to draw, how
+/// to word a prompt, where a picture belongs, how to animate) is the
+/// `imagegen` skill's, listed whenever the tool is offered
+/// (`docs/imagegen.md`).
 const IMAGEGEN_DESCRIPTION: &str = "\
 Generate an image from a prompt, or edit images, with ChatGPT's image model \
 through the user's ChatGPT sign-in. Each call makes one image (it can take a \
 minute or two), saves it, shows it to the user and returns its path. Generate \
 directly, without asking for confirmation. For an edit or a style reference, \
 list the images in `referenced_image_paths`, looking at a local one with `read` \
-first; set `transparent_background` for a cutout.";
+first; set `transparent_background` for a cutout. Set `gif` for a short looping \
+animation; to change one, reference a spritesheet of its frames, not the GIF \
+itself.";
 
 /// A call's arguments, checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,16 +349,23 @@ pub struct ImagegenArgs {
     pub transparent_background: bool,
     /// The images to edit or take as references, as the model wrote them.
     pub referenced_image_paths: Vec<String>,
+    /// The pixel size asked for.
+    pub size: ImageSize,
+    /// The rendering quality asked for.
+    pub quality: ImageQuality,
+    /// A looping GIF instead of a still, when asked for.
+    pub gif: Option<GifOptions>,
 }
 
 impl ImagegenArgs {
     /// Parse a call's raw arguments. An argument the tool does not take is
-    /// refused, naming the ones it does — a model that sends `size` learns at
-    /// once that it does nothing (Codex's `deny_unknown_fields`).
+    /// refused, naming the ones it does — a model that sends a count learns
+    /// at once that it does nothing.
     ///
     /// # Errors
-    /// Unparseable or unknown arguments, a blank prompt, or more than
-    /// [`MAX_REFERENCED_IMAGES`] references — each a message the model reads.
+    /// Unparseable or unknown arguments, a blank prompt, more than
+    /// [`MAX_REFERENCED_IMAGES`] references, or a `size`, `quality` or `gif`
+    /// the backend would refuse — each a message the model reads.
     pub fn parse(arguments: &str) -> Result<Self, String> {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -125,6 +376,12 @@ impl ImagegenArgs {
             transparent_background: Option<bool>,
             #[serde(default)]
             referenced_image_paths: Option<Vec<String>>,
+            #[serde(default)]
+            size: Option<String>,
+            #[serde(default)]
+            quality: Option<String>,
+            #[serde(default)]
+            gif: Option<Value>,
         }
         let raw: Raw = crate::llm::tools::parse_args(arguments)?;
         let prompt = raw.prompt.unwrap_or_default().trim().to_string();
@@ -142,6 +399,9 @@ impl ImagegenArgs {
             prompt,
             transparent_background: raw.transparent_background.unwrap_or(false),
             referenced_image_paths,
+            size: ImageSize::parse(raw.size.as_deref().unwrap_or_default())?,
+            quality: ImageQuality::parse(raw.quality.as_deref().unwrap_or_default())?,
+            gif: GifOptions::parse(raw.gif)?,
         })
     }
 }
@@ -154,6 +414,11 @@ pub(crate) struct ImageRequest {
     pub prompt: String,
     pub transparent_background: bool,
     pub images: Vec<AttachmentUrl>,
+    /// [`IMAGE_MODEL`], or [`FALLBACK_IMAGE_MODEL`] once the backend refused it.
+    pub model: &'static str,
+    pub size: ImageSize,
+    pub quality: ImageQuality,
+    pub gif: Option<GifOptions>,
 }
 
 impl ImageRequest {
@@ -174,8 +439,9 @@ impl crate::llm::body::BodySource for ImageRequest {
         struct Reference<'a> {
             image_url: &'a AttachmentUrl,
         }
-        // Codex's fields, in its order: the backend chooses the size and the
-        // quality, and `background` is never `auto` (`docs/imagegen.md`).
+        // The Images API's fields: `background` is never `auto`, and a GIF
+        // is its format with the frames beside it as siblings, each left out
+        // for the backend's default (`docs/imagegen.md`).
         #[derive(serde::Serialize)]
         struct Body<'a> {
             prompt: &'a str,
@@ -184,7 +450,13 @@ impl crate::llm::body::BodySource for ImageRequest {
             background: &'static str,
             model: &'static str,
             quality: &'static str,
-            size: &'static str,
+            size: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            output_format: Option<&'static str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            frame_count: Option<u32>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            frame_duration_ms: Option<u32>,
         }
         let body = Body {
             prompt: &self.prompt,
@@ -198,9 +470,12 @@ impl crate::llm::body::BodySource for ImageRequest {
             } else {
                 "opaque"
             },
-            model: IMAGE_MODEL,
-            quality: "auto",
-            size: "auto",
+            model: self.model,
+            quality: self.quality.wire(),
+            size: self.size.wire(),
+            output_format: self.gif.map(|_| "gif"),
+            frame_count: self.gif.and_then(|gif| gif.frame_count),
+            frame_duration_ms: self.gif.and_then(|gif| gif.frame_duration_ms),
         };
         serde_json::to_writer(out, &body)
     }
@@ -211,13 +486,25 @@ impl crate::llm::body::BodySource for ImageRequest {
 const GENERATED_HEAD: &str = "Generated image ";
 
 /// The one fact line a generated image's cell shows and the model reads:
-/// `Generated image (PNG, 1536x1024, 2.1 MB) saved to /…/1.png`. The path is
-/// last, so a path full of digits can never be read as the size.
+/// `Generated image (PNG, 1536x1024, 2.1 MB) saved to /…/1.png`, an
+/// animation's frames after its size — `(GIF, 480x270, 9 frames, 1.1 MB)`.
+/// The path is last, so a path full of digits can never be read as the
+/// size, and the size is always the second fact ([`generated_image`]).
 #[must_use]
-pub fn format_generated(label: &str, size: (u32, u32), bytes: u64, path: &str) -> String {
+pub fn format_generated(
+    label: &str,
+    size: (u32, u32),
+    frames: Option<u32>,
+    bytes: u64,
+    path: &str,
+) -> String {
     let bytes = usize::try_from(bytes).unwrap_or(usize::MAX);
+    let frames = frames
+        .filter(|frames| *frames > 1)
+        .map(|frames| format!(", {frames} frames"))
+        .unwrap_or_default();
     format!(
-        "{GENERATED_HEAD}({label}, {}x{}, {}) saved to {path}",
+        "{GENERATED_HEAD}({label}, {}x{}{frames}, {}) saved to {path}",
         size.0,
         size.1,
         crate::llm::tools::human_size(bytes)
@@ -267,11 +554,13 @@ pub enum Shown {
     Unavailable,
 }
 
-/// What the model reads for a generated image: the fact line, then Codex's
+/// What the model reads for a generated image: the fact line, then the
 /// note on where generated images live and what to do with them, then what
-/// it can see of the picture.
+/// it can see of the picture — for an `animated` one, the still of its first
+/// frame (`docs/images.md` *A GIF goes up as a still*) — and, when the
+/// backend refused [`IMAGE_MODEL`], the `model` that made it.
 #[must_use]
-pub fn model_result(fact: &str, dir: &str, shown: Shown) -> String {
+pub fn model_result(fact: &str, dir: &str, shown: Shown, animated: bool, model: &str) -> String {
     let mut text = format!(
         "{fact}\n\
          Generated images are saved to {dir} by default. If you need the image at another \
@@ -281,7 +570,16 @@ pub fn model_result(fact: &str, dir: &str, shown: Shown) -> String {
          again in your reply as a Markdown image or a file link."
     );
     match shown {
+        Shown::Attached(None) if animated => text.push_str(
+            "\nThe picture attached for you is the GIF's first frame, as a still; the file \
+             itself is animated.",
+        ),
         Shown::Attached(None) => {}
+        Shown::Attached(Some((width, height))) if animated => text.push_str(&format!(
+            "\nThe picture attached for you is the GIF's first frame, as a still shrunk to \
+             {width}x{height} to fit the attachment limit; the file itself is animated and \
+             full size."
+        )),
         Shown::Attached(Some((width, height))) => text.push_str(&format!(
             "\nThe picture attached for you is a copy shrunk to {width}x{height} to fit the \
              attachment limit; the file itself is full size."
@@ -294,6 +592,11 @@ pub fn model_result(fact: &str, dir: &str, shown: Shown) -> String {
             "\nThe picture could not be attached for you to look at; the file itself is \
              complete.",
         ),
+    }
+    if model != IMAGE_MODEL {
+        text.push_str(&format!(
+            "\nThis image was made with {model}: the image backend did not take {IMAGE_MODEL}."
+        ));
     }
     text
 }
@@ -474,6 +777,9 @@ pub(crate) struct Saved {
     pub label: &'static str,
     /// The pixel size, from the file's header.
     pub size: (u32, u32),
+    /// A GIF's frames ([`crate::images::gif_frame_count`]); `None` for a
+    /// still.
+    pub frames: Option<u32>,
     /// The file's size in bytes.
     pub bytes: u64,
 }
@@ -630,12 +936,18 @@ fn save_answer(
     let size = reader
         .into_dimensions()
         .map_err(|e| ImagegenError::Save(format!("the image did not parse: {e}")))?;
+    // An animation's frames, counted off its blocks without a pixel decoded.
+    let frames = (format == image::ImageFormat::Gif)
+        .then(|| std::fs::File::open(staging.path()).ok())
+        .flatten()
+        .and_then(crate::images::gif_frame_count);
     let path = crate::clipboard::keep_numbered(staging, dir, ext).map_err(ImagegenError::Save)?;
     Ok(Saved {
         bytes: split.decoded,
         path,
         label,
         size,
+        frames,
     })
 }
 
@@ -704,6 +1016,73 @@ fn with_retries<T>(
     }
 }
 
+/// Whether a refusal says the backend does not take `model` itself — the one
+/// refusal worth asking again with [`FALLBACK_IMAGE_MODEL`]: a bad request
+/// answered at once, so nothing was made or billed. The error's `param` says
+/// so when there is one (`model`, or the other field it is about instead),
+/// else a code naming an unknown model, else the error's words naming the
+/// model.
+fn refuses_model(status: u16, body: &str, model: &str) -> bool {
+    #[derive(Deserialize, Default)]
+    struct Fields {
+        #[serde(default)]
+        param: Option<String>,
+        #[serde(default)]
+        code: Option<String>,
+    }
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum ErrorField {
+        Fields(Fields),
+        Other(serde::de::IgnoredAny),
+    }
+    #[derive(Deserialize)]
+    struct Envelope {
+        #[serde(default)]
+        error: Option<ErrorField>,
+    }
+    if !matches!(status, 400 | 404 | 422) {
+        return false;
+    }
+    let fields = serde_json::from_str::<Envelope>(body)
+        .ok()
+        .and_then(|envelope| match envelope.error {
+            Some(ErrorField::Fields(fields)) => Some(fields),
+            _ => None,
+        })
+        .unwrap_or_default();
+    if let Some(param) = fields.param.filter(|param| !param.is_empty()) {
+        return param == "model";
+    }
+    if fields.code.as_deref().is_some_and(|code| {
+        matches!(
+            code,
+            "model_not_found" | "invalid_model" | "unsupported_model"
+        )
+    }) {
+        return true;
+    }
+    error_message(body).contains(model)
+}
+
+/// Make the image with [`IMAGE_MODEL`] and, when the backend refuses that
+/// model by name (`refuses_model`), once more with [`FALLBACK_IMAGE_MODEL`],
+/// handing back the model that made it (`docs/imagegen.md` *The model*). Any
+/// other failure stands: another model would be refused the same way.
+fn with_model_fallback<T>(
+    mut attempt: impl FnMut(&'static str) -> Result<T, ImagegenError>,
+) -> Result<(T, &'static str), ImagegenError> {
+    match attempt(IMAGE_MODEL) {
+        Ok(made) => Ok((made, IMAGE_MODEL)),
+        Err(ImagegenError::Refused { status, body })
+            if refuses_model(status, &body, IMAGE_MODEL) =>
+        {
+            attempt(FALLBACK_IMAGE_MODEL).map(|made| (made, FALLBACK_IMAGE_MODEL))
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// Where the sign-in's requests go and the headers they carry — the bearer
 /// minted from the stored refresh token through the cache every ChatGPT
 /// request shares (`docs/chatgpt.md`), the provider's own headers, the
@@ -752,13 +1131,15 @@ const FREE_PLAN: &str =
     "image generation needs a paid ChatGPT plan, and this account is on the Free plan";
 
 /// Check the images a call names and resolve each to an absolute path: a
-/// PNG, JPEG or WebP judged by its content, under the API's
-/// [`MAX_REFERENCE_BYTES`]. A relative path resolves against the working
-/// directory, the file tools' rule.
+/// PNG, JPEG, WebP or GIF judged by its content, under the API's
+/// [`MAX_REFERENCE_BYTES`] — a GIF goes up as a still of its first frame, as
+/// every GIF sent anywhere does (`docs/images.md` *A GIF goes up as a
+/// still*). A relative path resolves against the working directory, the
+/// file tools' rule.
 ///
 /// # Errors
 /// The first image that is missing, not a file, too large, or not one of
-/// the three formats — named, so the model can fix the call.
+/// the four formats — named, so the model can fix the call.
 pub(crate) fn resolve_references(paths: &[String]) -> Result<Vec<PathBuf>, String> {
     paths
         .iter()
@@ -780,13 +1161,13 @@ pub(crate) fn resolve_references(paths: &[String]) -> Result<Vec<PathBuf>, Strin
                 .map_err(|e| format!("could not read the referenced image {shown}: {e}"))?;
             match format {
                 Some(
-                    image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::WebP,
+                    image::ImageFormat::Png
+                    | image::ImageFormat::Jpeg
+                    | image::ImageFormat::WebP
+                    | image::ImageFormat::Gif,
                 ) => Ok(path),
-                Some(image::ImageFormat::Gif) => Err(format!(
-                    "the referenced image {shown} is a GIF — convert it to PNG first"
-                )),
                 _ => Err(format!(
-                    "the referenced image {shown} is not a PNG, JPEG or WebP image"
+                    "the referenced image {shown} is not a PNG, JPEG, WebP or GIF image"
                 )),
             }
         })
@@ -819,13 +1200,16 @@ impl Attachment {
 }
 
 /// The outcome for a saved image: the fact line on the cell, the fact and
-/// Codex's note for the model, and the picture attached when there is one to
-/// attach — or, for a model that cannot see, the mark that has the agent
-/// loop send the note the replay sends in its place.
-fn finished(saved: &Saved, dir: &Path, attachment: Attachment) -> ToolOutcome {
+/// the note for the model — which says what it is looking at of an
+/// animation, and which model made the image when it was not
+/// [`IMAGE_MODEL`] — and the picture attached when there is one to attach,
+/// or, for a model that cannot see, the mark that has the agent loop send
+/// the note the replay sends in its place.
+fn finished(saved: &Saved, dir: &Path, attachment: Attachment, model: &str) -> ToolOutcome {
     let fact = format_generated(
         saved.label,
         saved.size,
+        saved.frames,
         saved.bytes,
         &saved.path.to_string_lossy(),
     );
@@ -834,8 +1218,9 @@ fn finished(saved: &Saved, dir: &Path, attachment: Attachment) -> ToolOutcome {
         Attachment::Withheld => Shown::Withheld,
         Attachment::Unavailable => Shown::Unavailable,
     };
-    let model = model_result(&fact, &dir.to_string_lossy(), shown);
-    let outcome = ToolOutcome::ok(fact).with_context(model);
+    let animated = saved.frames.is_some_and(|frames| frames > 1);
+    let note = model_result(&fact, &dir.to_string_lossy(), shown, animated, model);
+    let outcome = ToolOutcome::ok(fact).with_context(note);
     match attachment {
         Attachment::Attached(fitted) => outcome.with_image(fitted.url),
         Attachment::Withheld => outcome.with_image_withheld(),
@@ -869,7 +1254,7 @@ pub(crate) fn run_imagegen(
     let worker_dir = dir.clone();
     let worker_cancel = cancel.clone();
     let result = crate::llm::off_thread(
-        move || -> Result<(Saved, Attachment), String> {
+        move || -> Result<(Saved, Attachment, &'static str), String> {
             let target = resolve_target(&cfg)?;
             let images = references
                 .iter()
@@ -883,27 +1268,37 @@ pub(crate) fn run_imagegen(
                 prompt: args.prompt,
                 transparent_background: args.transparent_background,
                 images,
+                model: IMAGE_MODEL,
+                size: args.size,
+                quality: args.quality,
+                gif: args.gif,
             };
-            let saved = with_retries(RETRY_PAUSE, &worker_cancel, || {
-                request_image(&target, &request, &worker_dir, &worker_cancel)
+            let (saved, model) = with_model_fallback(|model| {
+                let asked = ImageRequest {
+                    model,
+                    ..request.clone()
+                };
+                with_retries(RETRY_PAUSE, &worker_cancel, || {
+                    request_image(&target, &asked, &worker_dir, &worker_cancel)
+                })
             })
             .map_err(|error| error.text(unix_now()))?;
             // Encoded here, on the worker the turn abandons on Esc: a picture
             // past the cap is decoded and shrunk.
             let attachment = Attachment::for_saved(&saved.path, vision);
-            Ok((saved, attachment))
+            Ok((saved, attachment, model))
         },
         cancel,
     );
     match result {
         None => unanswered(cancel),
         Some(Err(error)) => ToolOutcome::error(error),
-        Some(Ok((saved, attachment))) => {
+        Some(Ok((saved, attachment, model))) => {
             let shown = saved.path.to_string_lossy().into_owned();
             // The cell this call resolves draws the picture from the file
             // (`docs/images.md`).
             crate::images::remember_size(&shown, saved.size);
-            finished(&saved, &dir, attachment)
+            finished(&saved, &dir, attachment, model)
         }
     }
 }
@@ -963,7 +1358,6 @@ mod tests {
             params["properties"]["referenced_image_paths"]["items"]["type"],
             "string"
         );
-        // No size, quality or count: the backend chooses (docs/imagegen.md).
         let names: Vec<&str> = params["properties"]
             .as_object()
             .unwrap()
@@ -972,8 +1366,36 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["prompt", "transparent_background", "referenced_image_paths"]
+            [
+                "prompt",
+                "transparent_background",
+                "referenced_image_paths",
+                "size",
+                "quality",
+                "gif"
+            ]
         );
+        // No model and no count: one image per call, the model this tool
+        // names (docs/imagegen.md).
+        let properties = &params["properties"];
+        assert_eq!(properties["size"]["type"], "string");
+        assert_eq!(
+            properties["quality"]["enum"],
+            json!(["auto", "low", "medium", "high"])
+        );
+        let gif = &properties["gif"];
+        assert_eq!(gif["type"], "object");
+        assert_eq!(gif["additionalProperties"], false);
+        assert_eq!(gif["properties"]["frame_count"]["type"], "integer");
+        assert_eq!(gif["properties"]["frame_count"]["minimum"], 2);
+        assert_eq!(gif["properties"]["frame_count"]["maximum"], 16);
+        assert_eq!(gif["properties"]["frame_duration_ms"]["type"], "integer");
+        assert_eq!(gif["properties"]["frame_duration_ms"]["minimum"], 20);
+        assert_eq!(gif["properties"]["frame_duration_ms"]["maximum"], 2000);
+        for field in ["frame_count", "frame_duration_ms"] {
+            let text = gif["properties"][field]["description"].as_str().unwrap();
+            assert!(text.ends_with('.') && text.len() < 110, "{field}: {text}");
+        }
     }
 
     #[test]
@@ -985,7 +1407,7 @@ mod tests {
         // when to draw, how to word a prompt — is the skill's (CLAUDE.md's
         // tool prose rule, docs/imagegen.md).
         let words = description.split_whitespace().count();
-        assert!(words <= 80, "{words} words: {description}");
+        assert!(words <= 100, "{words} words: {description}");
         assert!(description.contains("path"), "names what it returns");
         assert!(
             description.contains("`referenced_image_paths`"),
@@ -995,16 +1417,15 @@ mod tests {
             description.contains("`transparent_background`"),
             "{description}"
         );
-        // This app looks at a local image with `read`; Codex's `view_image`,
-        // code mode and GIF output are not here.
+        // A GIF is offered, with its one sharp edge: an animation is
+        // changed through a spritesheet of its frames, never by editing the
+        // GIF itself (docs/imagegen.md).
+        assert!(description.contains("`gif`"), "{description}");
+        assert!(description.contains("spritesheet"), "{description}");
+        // This app looks at a local image with `read`; another client's
+        // `view_image`, code mode and image counts are not here.
         assert!(description.contains("`read`"), "{description}");
-        for absent in [
-            "view_image",
-            "num_last_images_to_include",
-            "@exec",
-            "gif",
-            "GIF",
-        ] {
+        for absent in ["view_image", "num_last_images_to_include", "@exec"] {
             assert!(!description.contains(absent), "{absent}: {description}");
         }
         // Every parameter is one short sentence (CLAUDE.md's tool prose rule).
@@ -1026,6 +1447,9 @@ mod tests {
                 prompt: "a red fox at dawn".to_string(),
                 transparent_background: false,
                 referenced_image_paths: Vec::new(),
+                size: ImageSize::Auto,
+                quality: ImageQuality::Auto,
+                gif: None,
             }
         );
         assert_eq!(
@@ -1038,6 +1462,9 @@ mod tests {
                 prompt: "add a hat".to_string(),
                 transparent_background: true,
                 referenced_image_paths: vec!["/tmp/fox.png".to_string()],
+                size: ImageSize::Auto,
+                quality: ImageQuality::Auto,
+                gif: None,
             }
         );
     }
@@ -1045,18 +1472,141 @@ mod tests {
     #[test]
     fn a_null_optional_argument_reads_as_its_default() {
         let args = ImagegenArgs::parse(
-            r#"{"prompt": "x", "transparent_background": null, "referenced_image_paths": null}"#,
+            r#"{"prompt": "x", "transparent_background": null, "referenced_image_paths": null,
+                "size": null, "quality": null, "gif": null}"#,
         )
         .unwrap();
         assert!(!args.transparent_background);
         assert!(args.referenced_image_paths.is_empty());
+        assert_eq!(args.size, ImageSize::Auto);
+        assert_eq!(args.quality, ImageQuality::Auto);
+        assert_eq!(args.gif, None);
+    }
+
+    fn parse_size(size: &str) -> Result<ImageSize, String> {
+        ImagegenArgs::parse(&json!({"prompt": "x", "size": size}).to_string()).map(|a| a.size)
+    }
+
+    #[test]
+    fn size_is_auto_or_width_by_height() {
+        for auto in ["auto", "AUTO", " auto ", ""] {
+            assert_eq!(parse_size(auto), Ok(ImageSize::Auto), "{auto:?}");
+        }
+        assert_eq!(parse_size("1536x1024"), Ok(ImageSize::Exact(1536, 1024)));
+        assert_eq!(parse_size("1024X1536"), Ok(ImageSize::Exact(1024, 1536)));
+        assert_eq!(
+            parse_size(" 2048 x 1152 "),
+            Ok(ImageSize::Exact(2048, 1152))
+        );
+        assert_eq!(parse_size("3840x2160"), Ok(ImageSize::Exact(3840, 2160)));
+        assert_eq!(parse_size("2160x3840"), Ok(ImageSize::Exact(2160, 3840)));
+        assert_eq!(ImageSize::Exact(1536, 1024).wire(), "1536x1024");
+        assert_eq!(ImageSize::Auto.wire(), "auto");
+    }
+
+    #[test]
+    fn a_size_the_backend_would_refuse_is_refused_with_its_rule() {
+        // Refused before a minute is spent waiting on the same answer.
+        for shapeless in [
+            "big",
+            "1536",
+            "1536x",
+            "x1024",
+            "0x512",
+            "1536x1024x2",
+            "-16x16",
+        ] {
+            let error = parse_size(shapeless).unwrap_err();
+            assert!(error.contains("`size`"), "{shapeless}: {error}");
+            assert!(error.contains("WIDTHxHEIGHT"), "{shapeless}: {error}");
+        }
+        // Edges off the 16-pixel grid: the nearest size on it is offered.
+        let error = parse_size("1920x1080").unwrap_err();
+        assert!(error.contains("multiples of 16"), "{error}");
+        assert!(error.contains("1920x1088"), "{error}");
+        let error = parse_size("4096x2048").unwrap_err();
+        assert!(error.contains("3840"), "{error}");
+        let error = parse_size("3840x1024").unwrap_err();
+        assert!(error.contains("3 times"), "{error}");
+        // Within every edge rule, past the pixel count 3840x2160 has.
+        let error = parse_size("2896x2880").unwrap_err();
+        assert!(error.contains("8,294,400"), "{error}");
+    }
+
+    fn parse_quality(quality: &str) -> Result<ImageQuality, String> {
+        ImagegenArgs::parse(&json!({"prompt": "x", "quality": quality}).to_string())
+            .map(|a| a.quality)
+    }
+
+    #[test]
+    fn quality_is_one_of_four() {
+        assert_eq!(parse_quality("auto"), Ok(ImageQuality::Auto));
+        assert_eq!(parse_quality(""), Ok(ImageQuality::Auto));
+        assert_eq!(parse_quality("low"), Ok(ImageQuality::Low));
+        assert_eq!(parse_quality("MEDIUM"), Ok(ImageQuality::Medium));
+        assert_eq!(parse_quality(" high "), Ok(ImageQuality::High));
+        let error = parse_quality("ultra").unwrap_err();
+        assert!(error.contains("`quality`"), "{error}");
+        for value in ["`auto`", "`low`", "`medium`", "`high`"] {
+            assert!(error.contains(value), "{value}: {error}");
+        }
+        assert_eq!(ImageQuality::Medium.wire(), "medium");
+    }
+
+    fn parse_gif(gif: Value) -> Result<Option<GifOptions>, String> {
+        ImagegenArgs::parse(&json!({"prompt": "x", "gif": gif}).to_string()).map(|a| a.gif)
+    }
+
+    #[test]
+    fn a_gif_takes_its_frames_and_how_long_each_shows() {
+        assert_eq!(parse_gif(json!({})), Ok(Some(GifOptions::default())));
+        assert_eq!(
+            parse_gif(json!({"frame_count": 4, "frame_duration_ms": 120})),
+            Ok(Some(GifOptions {
+                frame_count: Some(4),
+                frame_duration_ms: Some(120),
+            }))
+        );
+        assert_eq!(
+            parse_gif(json!({"frame_count": 16, "frame_duration_ms": null})),
+            Ok(Some(GifOptions {
+                frame_count: Some(16),
+                frame_duration_ms: None,
+            }))
+        );
+        // A model that says yes or no to a GIF is understood.
+        assert_eq!(parse_gif(json!(true)), Ok(Some(GifOptions::default())));
+        assert_eq!(parse_gif(json!(false)), Ok(None));
+        assert_eq!(parse_gif(Value::Null), Ok(None));
+    }
+
+    #[test]
+    fn a_gif_the_backend_would_refuse_is_refused_by_its_field() {
+        for frames in [json!(1), json!(17), json!("4"), json!(2.5), json!(-3)] {
+            let error = parse_gif(json!({"frame_count": frames})).unwrap_err();
+            assert!(error.contains("`gif.frame_count`"), "{frames}: {error}");
+            assert!(error.contains("2 to 16"), "{frames}: {error}");
+        }
+        for ms in [json!(10), json!(2001)] {
+            let error = parse_gif(json!({"frame_duration_ms": ms})).unwrap_err();
+            assert!(error.contains("`gif.frame_duration_ms`"), "{ms}: {error}");
+            assert!(error.contains("20 to 2000"), "{ms}: {error}");
+        }
+        // A field it does not take does nothing, so it is refused by name.
+        let error = parse_gif(json!({"loop": 0})).unwrap_err();
+        assert!(error.contains("`loop`"), "{error}");
+        assert!(error.contains("`frame_count`"), "{error}");
+        let error = parse_gif(json!("yes")).unwrap_err();
+        assert!(error.contains("`gif`"), "{error}");
     }
 
     #[test]
     fn an_argument_the_tool_does_not_take_is_refused_by_name() {
-        let error = ImagegenArgs::parse(r#"{"prompt": "x", "size": "1536x1024"}"#).unwrap_err();
-        assert!(error.contains("`size`"), "{error}");
+        // A model that passes a count learns at once that it does nothing.
+        let error = ImagegenArgs::parse(r#"{"prompt": "x", "n": 2}"#).unwrap_err();
+        assert!(error.contains("`n`"), "{error}");
         assert!(error.contains("`referenced_image_paths`"), "{error}");
+        assert!(error.contains("`gif`"), "{error}");
     }
 
     #[test]
@@ -1083,44 +1633,184 @@ mod tests {
         );
     }
 
+    /// A request for `prompt` with every choice at its default.
+    fn request(
+        prompt: &str,
+        transparent_background: bool,
+        images: Vec<AttachmentUrl>,
+    ) -> ImageRequest {
+        ImageRequest {
+            prompt: prompt.to_string(),
+            transparent_background,
+            images,
+            model: IMAGE_MODEL,
+            size: ImageSize::Auto,
+            quality: ImageQuality::Auto,
+            gif: None,
+        }
+    }
+
     #[test]
-    fn a_new_image_is_a_generation_with_codexs_fields() {
-        let request = ImageRequest {
-            prompt: "paint a blue whale".to_string(),
-            transparent_background: false,
-            images: Vec::new(),
-        };
+    fn a_new_image_is_a_generation_with_the_newest_model() {
+        let request = request("paint a blue whale", false, Vec::new());
         assert_eq!(request.endpoint(), "images/generations");
         assert_eq!(
             body(&request),
             json!({"prompt": "paint a blue whale", "background": "opaque",
-                   "model": "gpt-image-2", "quality": "auto", "size": "auto"})
+                   "model": "gpt-image-2.6-sunburst", "quality": "auto", "size": "auto"})
         );
     }
 
     #[test]
     fn an_edit_carries_its_images_as_data_urls() {
-        let request = ImageRequest {
-            prompt: "add a red hat".to_string(),
-            transparent_background: true,
-            images: vec![AttachmentUrl::from(
+        let request = request(
+            "add a red hat",
+            true,
+            vec![AttachmentUrl::from(
                 "data:image/png;base64,Zm9v".to_string(),
             )],
-        };
+        );
         assert_eq!(request.endpoint(), "images/edits");
         assert_eq!(
             body(&request),
             json!({"prompt": "add a red hat",
                    "images": [{"image_url": "data:image/png;base64,Zm9v"}],
-                   "background": "transparent", "model": "gpt-image-2",
+                   "background": "transparent", "model": "gpt-image-2.6-sunburst",
                    "quality": "auto", "size": "auto"})
+        );
+    }
+
+    #[test]
+    fn a_size_and_a_quality_ride_the_body_as_asked() {
+        let mut asked = request("a poster", false, Vec::new());
+        asked.size = ImageSize::Exact(1024, 1536);
+        asked.quality = ImageQuality::High;
+        let sent = body(&asked);
+        assert_eq!(sent["size"], "1024x1536");
+        assert_eq!(sent["quality"], "high");
+    }
+
+    #[test]
+    fn a_gif_is_asked_for_as_its_format_beside_its_frames() {
+        // The Images API takes the format and its controls as siblings.
+        let mut animated = request("a waving mascot", true, Vec::new());
+        animated.gif = Some(GifOptions {
+            frame_count: Some(4),
+            frame_duration_ms: Some(120),
+        });
+        assert_eq!(
+            body(&animated),
+            json!({"prompt": "a waving mascot", "background": "transparent",
+                   "model": "gpt-image-2.6-sunburst", "quality": "auto", "size": "auto",
+                   "output_format": "gif", "frame_count": 4, "frame_duration_ms": 120})
+        );
+        // `{}`: the backend's own defaults, so nothing but the format.
+        animated.gif = Some(GifOptions::default());
+        let sent = body(&animated);
+        assert_eq!(sent["output_format"], "gif");
+        assert!(sent.get("frame_count").is_none(), "{sent}");
+        assert!(sent.get("frame_duration_ms").is_none(), "{sent}");
+        // A still names no format at all: PNG is the default.
+        assert!(
+            body(&request("x", false, Vec::new()))
+                .get("output_format")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn only_a_refusal_of_the_model_itself_reads_as_one() {
+        let named = r#"{"error": {"message": "Invalid value: 'gpt-image-2.6-sunburst'.", "type": "invalid_request_error", "param": "model", "code": "invalid_value"}}"#;
+        assert!(refuses_model(400, named, IMAGE_MODEL));
+        let unknown =
+            r#"{"error": {"message": "The model does not exist.", "code": "model_not_found"}}"#;
+        assert!(refuses_model(404, unknown, IMAGE_MODEL));
+        // A body that only says which model, in words.
+        let worded = r#"{"detail": "Unsupported model gpt-image-2.6-sunburst"}"#;
+        assert!(refuses_model(400, worded, IMAGE_MODEL));
+        assert!(refuses_model(
+            422,
+            "model gpt-image-2.6-sunburst is not available",
+            IMAGE_MODEL
+        ));
+        // Another field refused, even one whose message names the model.
+        let size = r#"{"error": {"message": "gpt-image-2.6-sunburst: 512x512 is too small", "param": "size"}}"#;
+        assert!(!refuses_model(400, size, IMAGE_MODEL));
+        assert!(!refuses_model(
+            400,
+            r#"{"error": {"message": "bad prompt"}}"#,
+            IMAGE_MODEL
+        ));
+        // A limit, the plan, a backend failing: never the model's fault.
+        assert!(!refuses_model(429, worded, IMAGE_MODEL));
+        assert!(!refuses_model(403, worded, IMAGE_MODEL));
+        assert!(!refuses_model(500, worded, IMAGE_MODEL));
+    }
+
+    #[test]
+    fn a_model_the_backend_refuses_is_asked_for_again_as_the_one_before_it() {
+        let refused = || ImagegenError::Refused {
+            status: 400,
+            body: r#"{"error": {"param": "model", "message": "unknown model"}}"#.to_string(),
+        };
+        let asked = std::cell::RefCell::new(Vec::new());
+        let made = with_model_fallback(|model| {
+            asked.borrow_mut().push(model);
+            if model == IMAGE_MODEL {
+                Err(refused())
+            } else {
+                Ok(7)
+            }
+        });
+        assert_eq!(made.unwrap(), (7, FALLBACK_IMAGE_MODEL));
+        assert_eq!(*asked.borrow(), [IMAGE_MODEL, FALLBACK_IMAGE_MODEL]);
+        // Made with the newest: asked once.
+        asked.borrow_mut().clear();
+        let made = with_model_fallback(|model| {
+            asked.borrow_mut().push(model);
+            Ok(1)
+        });
+        assert_eq!(made.unwrap(), (1, IMAGE_MODEL));
+        assert_eq!(*asked.borrow(), [IMAGE_MODEL]);
+        // Any other refusal stands: asking another model would not change it.
+        asked.borrow_mut().clear();
+        let made: Result<((), _), _> = with_model_fallback(|model| {
+            asked.borrow_mut().push(model);
+            Err(ImagegenError::Refused {
+                status: 400,
+                body: r#"{"error": {"param": "size", "message": "too small"}}"#.to_string(),
+            })
+        });
+        assert!(made.is_err());
+        assert_eq!(*asked.borrow(), [IMAGE_MODEL]);
+    }
+
+    #[test]
+    fn an_animations_fact_line_names_its_frames() {
+        let line = format_generated("GIF", (480, 270), Some(9), 1_200_000, "/g/1.gif");
+        assert_eq!(
+            line,
+            "Generated image (GIF, 480x270, 9 frames, 1.1 MB) saved to /g/1.gif"
+        );
+        assert_eq!(
+            generated_image(&line),
+            Some(("/g/1.gif".to_string(), (480, 270)))
+        );
+        assert_eq!(
+            generated_facts(&line),
+            Some("Generated image (GIF, 480x270, 9 frames, 1.1 MB)")
+        );
+        // One frame is no animation.
+        assert_eq!(
+            format_generated("GIF", (8, 8), Some(1), 70, "/g/2.gif"),
+            "Generated image (GIF, 8x8, 70 B) saved to /g/2.gif"
         );
     }
 
     #[test]
     fn the_fact_line_round_trips_its_path_and_size() {
         let path = "/home/me/.alter-zero/generated_images/17638x12/1.png";
-        let line = format_generated("PNG", (1536, 1024), 2_200_000, path);
+        let line = format_generated("PNG", (1536, 1024), None, 2_200_000, path);
         assert_eq!(
             line,
             "Generated image (PNG, 1536x1024, 2.1 MB) saved to \
@@ -1135,7 +1825,7 @@ mod tests {
 
     #[test]
     fn the_facts_are_the_fact_line_up_to_its_file() {
-        let line = format_generated("PNG", (1536, 1024), 2_200_000, "/g/1.png");
+        let line = format_generated("PNG", (1536, 1024), None, 2_200_000, "/g/1.png");
         assert_eq!(
             generated_facts(&line),
             Some("Generated image (PNG, 1536x1024, 2.1 MB)")
@@ -1157,7 +1847,7 @@ mod tests {
         );
         // The first line is the fact line; the model's note under it is not
         // part of the path.
-        let line = format_generated("PNG", (8, 8), 70, "/tmp/a.png");
+        let line = format_generated("PNG", (8, 8), None, 70, "/tmp/a.png");
         let output = format!("{line}\nmore text");
         assert_eq!(
             generated_image(&output),
@@ -1166,28 +1856,67 @@ mod tests {
     }
 
     #[test]
-    fn the_model_reads_the_fact_and_codexs_note() {
-        let fact = format_generated("PNG", (1024, 1024), 1_500_000, "/g/1.png");
-        let text = model_result(&fact, "/g", Shown::Attached(None));
+    fn the_model_reads_the_fact_and_the_note() {
+        let fact = format_generated("PNG", (1024, 1024), None, 1_500_000, "/g/1.png");
+        let text = model_result(&fact, "/g", Shown::Attached(None), false, IMAGE_MODEL);
         assert!(text.starts_with(&fact), "{text}");
         assert!(text.contains("Generated images are saved to /g"), "{text}");
         assert!(text.contains("copy it"), "{text}");
         assert!(text.contains("leave the original in place"), "{text}");
         assert!(text.contains("already sees the image"), "{text}");
         assert!(!text.contains("cannot see"), "{text}");
+        assert!(!text.contains("first frame"), "{text}");
+        assert!(!text.contains(FALLBACK_IMAGE_MODEL), "{text}");
+    }
+
+    #[test]
+    fn a_model_looking_at_an_animation_is_told_it_sees_its_first_frame() {
+        let fact = format_generated("GIF", (480, 270), Some(9), 1_200_000, "/g/1.gif");
+        let text = model_result(&fact, "/g", Shown::Attached(None), true, IMAGE_MODEL);
+        assert!(text.contains("first frame"), "{text}");
+        assert!(text.contains("animated"), "{text}");
+        let text = model_result(
+            &fact,
+            "/g",
+            Shown::Attached(Some((240, 135))),
+            true,
+            IMAGE_MODEL,
+        );
+        assert!(text.contains("first frame"), "{text}");
+        assert!(text.contains("240x135"), "{text}");
+    }
+
+    #[test]
+    fn an_image_made_with_the_model_before_says_so() {
+        let fact = format_generated("PNG", (1024, 1024), None, 1_500_000, "/g/1.png");
+        let text = model_result(
+            &fact,
+            "/g",
+            Shown::Attached(None),
+            false,
+            FALLBACK_IMAGE_MODEL,
+        );
+        assert!(text.contains(FALLBACK_IMAGE_MODEL), "{text}");
+        assert!(text.contains(IMAGE_MODEL), "names the one refused: {text}");
     }
 
     #[test]
     fn a_model_that_cannot_see_is_told_the_picture_was_not_attached() {
-        let fact = format_generated("PNG", (1024, 1024), 1_500_000, "/g/1.png");
-        let text = model_result(&fact, "/g", Shown::Withheld);
+        let fact = format_generated("PNG", (1024, 1024), None, 1_500_000, "/g/1.png");
+        let text = model_result(&fact, "/g", Shown::Withheld, false, IMAGE_MODEL);
         assert!(text.contains("cannot see images"), "{text}");
     }
 
     #[test]
     fn a_picture_sent_smaller_tells_the_model_what_it_is_looking_at() {
-        let fact = format_generated("PNG", (3840, 2160), 20_000_000, "/g/1.png");
-        let text = model_result(&fact, "/g", Shown::Attached(Some((1536, 864))));
+        let fact = format_generated("PNG", (3840, 2160), None, 20_000_000, "/g/1.png");
+        let text = model_result(
+            &fact,
+            "/g",
+            Shown::Attached(Some((1536, 864))),
+            false,
+            IMAGE_MODEL,
+        );
         assert!(text.contains("1536x864"), "{text}");
         assert!(text.contains("full size"), "the file is untouched: {text}");
         assert!(!text.contains("cannot see"), "{text}");
@@ -1195,8 +1924,8 @@ mod tests {
 
     #[test]
     fn a_picture_that_could_not_be_attached_never_blames_the_model() {
-        let fact = format_generated("PNG", (1024, 1024), 1_500_000, "/g/1.png");
-        let text = model_result(&fact, "/g", Shown::Unavailable);
+        let fact = format_generated("PNG", (1024, 1024), None, 1_500_000, "/g/1.png");
+        let text = model_result(&fact, "/g", Shown::Unavailable, false, IMAGE_MODEL);
         assert!(!text.contains("cannot see images"), "{text}");
         assert!(text.contains("could not be attached"), "{text}");
     }
@@ -1322,11 +2051,7 @@ mod tests {
     }
 
     fn generation(prompt: &str) -> ImageRequest {
-        ImageRequest {
-            prompt: prompt.to_string(),
-            transparent_background: false,
-            images: Vec::new(),
-        }
+        request(prompt, false, Vec::new())
     }
 
     #[test]
@@ -1384,14 +2109,14 @@ mod tests {
         let png = tiny_png();
         let (base, server) = serve(vec![(200, image_answer(&png))]);
         let dir = tempfile::tempdir().unwrap();
-        let request = ImageRequest {
-            prompt: "add a red hat".to_string(),
-            transparent_background: true,
-            images: vec![AttachmentUrl::from(
+        let edit = request(
+            "add a red hat",
+            true,
+            vec![AttachmentUrl::from(
                 "data:image/png;base64,Zm9v".to_string(),
             )],
-        };
-        request_image(&target(&base), &request, dir.path(), &CancelToken::new()).unwrap();
+        );
+        request_image(&target(&base), &edit, dir.path(), &CancelToken::new()).unwrap();
         let received = &server.join().unwrap()[0];
         assert!(
             received
@@ -1403,6 +2128,61 @@ mod tests {
         let body: Value = serde_json::from_slice(&received.body).unwrap();
         assert_eq!(body["images"][0]["image_url"], "data:image/png;base64,Zm9v");
         assert_eq!(body["background"], "transparent");
+    }
+
+    /// A 1×1 GIF of two frames, red then blue.
+    const TWO_FRAME_GIF: [u8; 107] = [
+        0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x81, 0x00, 0x00, 0xff, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0xff, 0x0b, 0x4e, 0x45,
+        0x54, 0x53, 0x43, 0x41, 0x50, 0x45, 0x32, 0x2e, 0x30, 0x03, 0x01, 0x00, 0x00, 0x00, 0x21,
+        0xf9, 0x04, 0x00, 0x14, 0x00, 0x00, 0x00, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01,
+        0x00, 0x00, 0x08, 0x04, 0x00, 0x01, 0x04, 0x04, 0x00, 0x21, 0xf9, 0x04, 0x01, 0x14, 0x00,
+        0x01, 0x00, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x81, 0x00, 0x00, 0xff,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x04, 0x00, 0x01, 0x04, 0x04,
+        0x00, 0x3b,
+    ];
+
+    #[test]
+    fn a_gif_answer_is_saved_as_a_gif_with_its_frames_counted() {
+        let (base, server) = serve(vec![(200, image_answer(&TWO_FRAME_GIF))]);
+        let dir = tempfile::tempdir().unwrap();
+        let mut animated = generation("a pixel turning blue");
+        animated.gif = Some(GifOptions::default());
+        let saved =
+            request_image(&target(&base), &animated, dir.path(), &CancelToken::new()).unwrap();
+        server.join().unwrap();
+        assert_eq!(saved.path, dir.path().join("1.gif"));
+        assert_eq!(
+            (saved.label, saved.size, saved.frames),
+            ("GIF", (1, 1), Some(2))
+        );
+        assert_eq!(std::fs::read(&saved.path).unwrap(), TWO_FRAME_GIF);
+    }
+
+    #[test]
+    fn a_backend_that_refuses_the_newest_model_makes_the_image_with_the_one_before() {
+        let png = tiny_png();
+        let refusal = r#"{"error": {"message": "Invalid value: 'gpt-image-2.6-sunburst'.", "param": "model"}}"#;
+        let (base, server) = serve(vec![(400, refusal.to_string()), (200, image_answer(&png))]);
+        let dir = tempfile::tempdir().unwrap();
+        let cancel = CancelToken::new();
+        let base_request = generation("a lighthouse");
+        let (saved, model) = with_model_fallback(|model| {
+            let asked = ImageRequest {
+                model,
+                ..base_request.clone()
+            };
+            request_image(&target(&base), &asked, dir.path(), &cancel)
+        })
+        .unwrap();
+        assert_eq!(model, FALLBACK_IMAGE_MODEL);
+        assert_eq!(saved.path, dir.path().join("1.png"));
+        let received = server.join().unwrap();
+        let models: Vec<Value> = received
+            .iter()
+            .map(|r| serde_json::from_slice::<Value>(&r.body).unwrap()["model"].clone())
+            .collect();
+        assert_eq!(models, [json!(IMAGE_MODEL), json!(FALLBACK_IMAGE_MODEL)]);
     }
 
     #[test]
@@ -1567,10 +2347,14 @@ mod tests {
             resolve_references(&[show(&png)]).unwrap(),
             std::slice::from_ref(&png)
         );
-        let error = resolve_references(&[show(&gif)]).unwrap_err();
-        assert!(error.contains("GIF"), "{error}");
+        // A GIF is taken: the encoder sends its first frame as a still
+        // (docs/images.md "A GIF goes up as a still").
+        assert_eq!(
+            resolve_references(&[show(&gif)]).unwrap(),
+            std::slice::from_ref(&gif)
+        );
         let error = resolve_references(&[show(&text)]).unwrap_err();
-        assert!(error.contains("not a PNG, JPEG or WebP"), "{error}");
+        assert!(error.contains("not a PNG, JPEG, WebP or GIF"), "{error}");
         let error = resolve_references(&[show(dir.path())]).unwrap_err();
         assert!(error.contains("not a file"), "{error}");
         let error = resolve_references(&[show(&dir.path().join("gone.png"))]).unwrap_err();
@@ -1597,6 +2381,7 @@ mod tests {
             path: dir.join("1.png"),
             label: "PNG",
             size: (1024, 1536),
+            frames: None,
             bytes: 1_500_000,
         }
     }
@@ -1609,7 +2394,7 @@ mod tests {
             url: url.clone(),
             sent: None,
         };
-        let outcome = finished(&saved(dir), dir, Attachment::Attached(fitted));
+        let outcome = finished(&saved(dir), dir, Attachment::Attached(fitted), IMAGE_MODEL);
         assert!(outcome.ok);
         assert_eq!(
             outcome.output,
@@ -1624,7 +2409,7 @@ mod tests {
     #[test]
     fn a_model_that_cannot_see_gets_the_file_and_no_picture() {
         let dir = Path::new("/g");
-        let outcome = finished(&saved(dir), dir, Attachment::Withheld);
+        let outcome = finished(&saved(dir), dir, Attachment::Withheld, IMAGE_MODEL);
         assert!(outcome.ok);
         assert_eq!(outcome.image, None);
         assert!(outcome.image_withheld, "the loop sends the replay's note");
@@ -1635,6 +2420,43 @@ mod tests {
                 .unwrap()
                 .contains("cannot see images")
         );
+    }
+
+    #[test]
+    fn a_saved_animation_finishes_with_its_frames_and_the_still_it_shows() {
+        let dir = Path::new("/g");
+        let animation = Saved {
+            path: dir.join("1.gif"),
+            label: "GIF",
+            size: (480, 270),
+            frames: Some(9),
+            bytes: 1_200_000,
+        };
+        let fitted = crate::images::FittedAttachment {
+            url: AttachmentUrl::from("data:image/png;base64,Zm9v".to_string()),
+            sent: None,
+        };
+        let outcome = finished(&animation, dir, Attachment::Attached(fitted), IMAGE_MODEL);
+        assert_eq!(
+            outcome.output,
+            "Generated image (GIF, 480x270, 9 frames, 1.1 MB) saved to /g/1.gif"
+        );
+        assert!(
+            outcome.context.as_deref().unwrap().contains("first frame"),
+            "{:?}",
+            outcome.context
+        );
+    }
+
+    #[test]
+    fn a_call_asking_for_a_gif_is_known_by_its_arguments() {
+        assert!(asks_for_gif(r#"{"prompt": "x", "gif": {}}"#));
+        assert!(asks_for_gif(
+            r#"{"prompt": "x", "gif": {"frame_count": 4}}"#
+        ));
+        assert!(!asks_for_gif(r#"{"prompt": "x"}"#));
+        assert!(!asks_for_gif(r#"{"prompt": "x", "gif": null}"#));
+        assert!(!asks_for_gif("not json"));
     }
 
     #[test]

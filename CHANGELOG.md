@@ -12,6 +12,29 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **Image generation makes GIFs, takes a size and a quality, and uses
+  OpenAI's newest image model.** The `imagegen` tool now asks for
+  GPT-Image-2.6 Sunburst (`gpt-image-2.6-sunburst`). When the ChatGPT
+  backend refuses that model, the same request goes once more with
+  `gpt-image-2`, and the model is told which one made the image.
+  - `gif` makes a short looping animation of 2 to 16 frames, each shown
+    for 20 to 2000 ms; `{}` takes the defaults of 9 frames at 200 ms. It is
+    saved as a `.gif`, the cell names its frames and says
+    `Generating GIF…` while it runs, and the model is shown the first frame
+    as a still.
+  - `size` is `auto` or WIDTHxHEIGHT, such as `1536x1024`, up to
+    `3840x2160`. A size the backend would refuse is refused before the
+    request goes out, naming the rule it breaks; edges off the 16-pixel
+    grid come with the nearest size on it.
+  - `quality` is `auto`, `low`, `medium` or `high`.
+  - Both default to `auto`, which leaves the choice to the backend.
+  - A GIF can be a reference image, sent as its first frame.
+  - The built-in `imagegen` skill teaches the new controls, and how to
+    change an animation through a spritesheet of its frames
+    (`docs/imagegen.md`).
+
 ### Fixed
 
 - **A GIF reaches the model as a still.** A `read` of a GIF, or a pasted

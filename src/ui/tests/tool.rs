@@ -4387,7 +4387,7 @@ fn the_fold_shows_three_rows_of_one_long_line_unmarked() {
 
 fn generated_cell(path: &str, status: ToolStatus) -> ToolCall {
     let output = if status == ToolStatus::Ok {
-        crate::llm::imagegen::format_generated("PNG", (1536, 1024), 2_200_000, path)
+        crate::llm::imagegen::format_generated("PNG", (1536, 1024), None, 2_200_000, path)
     } else {
         "image generation failed: HTTP 500: image backend failed".to_string()
     };

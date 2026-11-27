@@ -95,6 +95,27 @@ fn a_running_image_generation_shows_how_long_it_has_run() {
 }
 
 #[test]
+fn a_running_gif_generation_says_it_is_making_a_gif() {
+    // What is being made is the call's own `gif` argument (docs/imagegen.md).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool(
+        crate::llm::imagegen::IMAGEGEN_TOOL_DISPLAY,
+        "a waving mascot",
+        Some(r#"{"prompt":"a waving mascot","gif":{"frame_count":6}}"#),
+    );
+    app.set_command_elapsed(Some(Duration::from_secs(7)));
+    let preview: Vec<String> = preview_tool_lines(&app, 80).iter().map(plain).collect();
+    assert_eq!(
+        preview,
+        [
+            "● ImageGen(a waving mascot)".to_string(),
+            "  ⎿  Generating GIF… (7s)".to_string(),
+        ]
+    );
+}
+
+#[test]
 fn a_running_command_whose_output_fits_shows_the_clock_row_under_it() {
     // Second shape: output, but nothing hidden above the window — the clock
     // row stands alone under the output, counting against the model's own

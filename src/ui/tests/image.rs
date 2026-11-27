@@ -57,7 +57,7 @@ fn image_read(path: &str, px: (u32, u32)) -> HistoryItem {
 /// records one: the prompt as its header, the fact line as its cell
 /// (`docs/imagegen.md`).
 fn generated(path: &str, px: (u32, u32)) -> HistoryItem {
-    let fact = crate::llm::imagegen::format_generated("PNG", px, 4096, path);
+    let fact = crate::llm::imagegen::format_generated("PNG", px, None, 4096, path);
     HistoryItem::Tool(ToolCall {
         name: crate::llm::imagegen::IMAGEGEN_TOOL_DISPLAY.to_string(),
         args: "a red fox".to_string(),

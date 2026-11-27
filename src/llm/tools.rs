@@ -4383,7 +4383,7 @@ mod tests {
 
     #[test]
     fn a_generated_images_note_names_its_saved_file_and_the_imagegen_call() {
-        let fact = crate::llm::imagegen::format_generated("PNG", (8, 8), 70, "/g/s/1.png");
+        let fact = crate::llm::imagegen::format_generated("PNG", (8, 8), None, 70, "/g/s/1.png");
         let note = attachment_note(
             crate::llm::imagegen::IMAGEGEN_TOOL_NAME,
             r#"{"prompt": "a fox"}"#,
@@ -4415,7 +4415,7 @@ mod tests {
 
     #[test]
     fn the_attached_image_of_a_recorded_cell_is_found_by_its_tool() {
-        let fact = crate::llm::imagegen::format_generated("PNG", (8, 8), 70, "/g/s/1.png");
+        let fact = crate::llm::imagegen::format_generated("PNG", (8, 8), None, 70, "/g/s/1.png");
         assert_eq!(
             recorded_attachment("ImageGen", "a fox", &fact),
             Some(attachment_note("imagegen", r#"{"prompt": "a fox"}"#, &fact))

@@ -256,8 +256,8 @@ assert headers["originator"] == "codex_cli_rs", headers
 assert "version" not in headers, "Codex sends no version header: %s" % headers
 assert headers.get("x-codex-image-turn-id"), headers
 body = json.loads(request["body"])
-assert body == {"prompt": "a red square", "background": "opaque", "model": "gpt-image-2",
-                "quality": "auto", "size": "auto"}, body
+assert body == {"prompt": "a red square", "background": "opaque",
+                "model": "gpt-image-2.6-sunburst", "quality": "auto", "size": "auto"}, body
 turns = [e for e in entries if e["path"].startswith("/responses")]
 assert len(turns) == 2, f"{len(turns)} turn requests"
 second = json.loads(turns[1]["body"])

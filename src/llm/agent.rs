@@ -4384,7 +4384,7 @@ mod tests {
         // as this one did and the prompt cache holds.
         use crate::llm::MessageContent;
         let path = "/c/generated_images/s1/1.png";
-        let fact = crate::llm::imagegen::format_generated("PNG", (8, 8), 90, path);
+        let fact = crate::llm::imagegen::format_generated("PNG", (8, 8), None, 90, path);
         let (tx, mut rx) = unbounded_channel();
         let cancel = CancelToken::new();
         let rounds = RefCell::new(0);

@@ -512,6 +512,8 @@ pub(super) const TOOL_RUNNING: &str = "Running…";
 /// generation takes minutes, and a bare `Running…` that long reads as stuck
 /// (`docs/imagegen.md`).
 pub(super) const IMAGEGEN_RUNNING: &str = "Generating image…";
+/// [`IMAGEGEN_RUNNING`] for a call whose `gif` asks for an animation.
+pub(super) const IMAGEGEN_RUNNING_GIF: &str = "Generating GIF…";
 /// What a finished `imagegen` cell's second row opens with, before the file
 /// it names (`docs/imagegen.md`).
 pub(super) const IMAGEGEN_SAVED_TO: &str = "Saved to";

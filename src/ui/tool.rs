@@ -488,8 +488,9 @@ fn generated_image_body(
     Some(rows)
 }
 
-/// A running `imagegen` call: its header over `⎿ Generating image… (42s)`,
-/// the call's own clock (`docs/imagegen.md`).
+/// A running `imagegen` call: its header over `⎿ Generating image… (42s)`
+/// — `Generating GIF…` when its arguments ask for one — the call's own
+/// clock (`docs/imagegen.md`).
 pub(super) fn imagegen_running_lines(
     tool: &ToolCall,
     elapsed: Duration,
@@ -498,9 +499,18 @@ pub(super) fn imagegen_running_lines(
     paths: &PathDisplay,
 ) -> Vec<Line<'static>> {
     let mut lines = tool_header_lines(tool, width, /*collapsed=*/ true, Some(pulse), paths);
+    let making = if tool
+        .arguments
+        .as_deref()
+        .is_some_and(crate::llm::imagegen::asks_for_gif)
+    {
+        IMAGEGEN_RUNNING_GIF
+    } else {
+        IMAGEGEN_RUNNING
+    };
     lines.push(result_row(
         0,
-        format!("{IMAGEGEN_RUNNING} ({})", format_elapsed(elapsed.as_secs())),
+        format!("{making} ({})", format_elapsed(elapsed.as_secs())),
     ));
     lines
 }

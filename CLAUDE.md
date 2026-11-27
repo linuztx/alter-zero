@@ -3367,9 +3367,22 @@ every real backend is offered the **`imagegen`** tool, whatever provider the
 session runs on: Codex's client-side `image_gen.imagegen` as a plain function,
 `prompt` + `transparent_background` + `referenced_image_paths` (≤5; every
 picture here has a file, so Codex's `num_last_images_to_include` is not
-ported), no size, quality or model (Codex sends `gpt-image-2`, `auto`,
-`auto`). The pure core is `src/llm/imagegen/` — the spec, the checked
-arguments (unknown ones refused by name, Codex's `deny_unknown_fields`), the
+ported, and a GIF reference goes up as its first frame) + `size` (`auto`, or
+WIDTHxHEIGHT checked against the backend's grid before anything is sent:
+multiples of 16, an edge ≤3840, ≤3:1, ≤3840x2160's pixels, the nearest
+on-grid size offered) + `quality` (`auto`/`low`/`medium`/`high`) + `gif`
+(`{frame_count 2–16, frame_duration_ms 20–2000}`, `{}` or a bare `true` for
+the backend's 9 × 200 ms, sent as `output_format: "gif"` with the numbers
+beside it), and no model or count: every request names
+`gpt-image-2.6-sunburst` (`imagegen::IMAGE_MODEL`), sent once more as
+`gpt-image-2` when the backend refuses that model by name
+(`imagegen::refuses_model` — the error's `param`, a model-not-found code, or
+its words naming the model — through `with_model_fallback`, the model told
+which made the image), and a GIF answer is saved as `.gif`, its frames
+counted off its blocks (`images::gif_frame_count`) onto the fact line and
+shown to the model as its first frame (`docs/images.md` *A GIF goes up as a
+still*). The pure core is `src/llm/imagegen/` — the spec, the checked
+arguments (unknown ones refused by name, inside `gif` too), the
 typed body (a `BodySource`, references as the session's shared
 `AttachmentUrl` encodings, an edit's body streamed), the fact line
 `Generated image (PNG, WxH, size) saved to {path}` (`format_generated` /
@@ -3387,9 +3400,10 @@ fresh `x-codex-image-turn-id` (no `version`: Codex sends none) to
 on Esc (`llm::off_thread`, moved out of the MCP manager; a worker that dies
 is a failure, never an interrupt), retries an unreached host or a 5xx twice
 — never a connection lost after the request went out, which may already be
-billed — and saves to `{config_home}/generated_images/{session}/N.png` by the
-paste folder's numbering. The picture rides the next request held to the
-`read` tool's attachment cap: one past it is sent as a copy shrunk until it
+billed — and saves to `{config_home}/generated_images/{session}/N.png`
+(`N.gif` for an animation) by the paste folder's numbering. The picture
+rides the next request held to the `read` tool's attachment cap: one past it
+is sent as a copy shrunk until it
 fits (`images::fitted_attachment_data_url`), kept in `.attachments/` beside
 it so the encoder sends the same copy on every later turn, a restart
 included, decoded from the file with no throwaway encoding
@@ -3403,7 +3417,8 @@ pattern, the shared `ChatGptSignin` handle kept current by `/login` saves and
 provider reloads); a `read`'s three hardcoded places now take the generated
 image too (`tools::attachment_note`/`recorded_attachment`,
 `ui::image::tool_image`), the cell shows the facts over `Saved to ~/…`
-linked, and a running call counts `Generating image… (Ns)`.
+linked, and a running call counts `Generating image… (Ns)` —
+`Generating GIF…` when its arguments ask for one (`imagegen::asks_for_gif`).
 The `/settings` **Image generation** row (per directory, on by default,
 unavailable without the sign-in, its toast saying how to sign in) gates tool
 and skill, `ALTER_ZERO_IMAGEGEN` seeding it for a run, and a `/login` save

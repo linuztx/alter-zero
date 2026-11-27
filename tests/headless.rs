@@ -674,6 +674,11 @@ fn chat_reply(body: &str) -> String {
             serde_json::json!({"choices": [{"delta": {"content": RETRIED_REPLY}}]}),
             serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
         ]
+    } else if said.contains(ANIMATE) {
+        call(
+            "imagegen",
+            serde_json::json!({"prompt": "a waving fox", "gif": {"frame_count": 2}}),
+        )
     } else if said.contains(DRAW) {
         call("imagegen", serde_json::json!({"prompt": "a fox mascot"}))
     } else if said.contains(DELEGATE) {
@@ -1578,6 +1583,9 @@ fn the_rollout_says_why_a_call_never_ran() {
 /// What a prompt says to make the stand-in model draw.
 const DRAW: &str = "HEADLESS_DRAW";
 
+/// What a prompt says to make the stand-in model ask for a two-frame GIF.
+const ANIMATE: &str = "HEADLESS_ANIMATE";
+
 /// What the note a generated picture rides under says, which tells the
 /// stand-in model its round is over.
 const GENERATED_NOTE: &str = "from the imagegen tool call above";
@@ -1590,10 +1598,16 @@ const CHATGPT_ACCESS: &str = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJodHRwczovL2
 /// A 2x2 PNG, as the Images API's `b64_json` carries it — 74 bytes decoded.
 const PIXEL_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP4X6HxH4QZYAwAXuoKeUwHsUUAAAAASUVORK5CYII=";
 
+/// A 1x1 GIF of two frames, red then blue — 107 bytes decoded.
+const TWO_FRAME_GIF: &str = "R0lGODlhAQABAIEAAP8AAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQAFAAAACwAAAAAAQABAAAIBAABBAQAIfkEARQAAQAsAAAAAAEAAQCBAAD/AAAAAAAAAAAACAQAAQQEADs=";
+
+/// How the stand-in's Images API refuses a model it does not take.
+const MODEL_REFUSAL: &str = r#"{"error":{"message":"Invalid value: 'gpt-image-2.6-sunburst'.","type":"invalid_request_error","param":"model","code":"invalid_value"}}"#;
+
 /// A stand-in for OpenAI's auth server and ChatGPT's backend on one port:
 /// `POST /oauth/token` mints [`CHATGPT_ACCESS`], anything else is answered
-/// as the Images API with [`PIXEL_PNG`]. Every request's head and body is
-/// kept.
+/// as the Images API — with [`TWO_FRAME_GIF`] for a GIF, [`PIXEL_PNG`] for a
+/// still. Every request's head and body is kept.
 struct ChatGpt {
     base: String,
     requests: Arc<Mutex<Vec<(String, String)>>>,
@@ -1601,6 +1615,15 @@ struct ChatGpt {
 
 impl ChatGpt {
     fn start() -> Self {
+        Self::serving(false)
+    }
+
+    /// A stand-in whose Images API does not take the newest model yet.
+    fn refusing_the_newest_model() -> Self {
+        Self::serving(true)
+    }
+
+    fn serving(refuse_newest: bool) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
         let base = format!("http://{}", listener.local_addr().expect("an address"));
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -1611,14 +1634,27 @@ impl ChatGpt {
                 let Some((head, body)) = read_request(&mut stream) else {
                     continue;
                 };
-                let reply = if head.starts_with("POST /oauth/token ") {
-                    format!(r#"{{"access_token":"{CHATGPT_ACCESS}","expires_in":3600}}"#)
+                let (status, reply) = if head.starts_with("POST /oauth/token ") {
+                    (
+                        "200 OK",
+                        format!(r#"{{"access_token":"{CHATGPT_ACCESS}","expires_in":3600}}"#),
+                    )
+                } else if refuse_newest && body.contains(r#""model":"gpt-image-2.6-sunburst""#) {
+                    ("400 Bad Request", MODEL_REFUSAL.to_string())
+                } else if body.contains(r#""output_format":"gif""#) {
+                    (
+                        "200 OK",
+                        format!(r#"{{"created":1,"data":[{{"b64_json":"{TWO_FRAME_GIF}"}}]}}"#),
+                    )
                 } else {
-                    format!(r#"{{"created":1,"data":[{{"b64_json":"{PIXEL_PNG}"}}]}}"#)
+                    (
+                        "200 OK",
+                        format!(r#"{{"created":1,"data":[{{"b64_json":"{PIXEL_PNG}"}}]}}"#),
+                    )
                 };
                 log.lock().expect("the log").push((head, body));
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
                     reply.len()
                 );
                 let _ = stream.write_all(response.as_bytes());
@@ -1645,6 +1681,23 @@ fn draw_run(world: &World, chat: &StandIn, chatgpt: &ChatGpt, signed_in: bool) -
 
 /// [`draw_run`]'s command, for a run that adds to its environment.
 fn draw_command(world: &World, chat: &StandIn, chatgpt: &ChatGpt, signed_in: bool) -> Command {
+    draw_command_saying(
+        world,
+        chat,
+        chatgpt,
+        signed_in,
+        &format!("{DRAW} draw a fox"),
+    )
+}
+
+/// [`draw_command`] with a prompt of its own.
+fn draw_command_saying(
+    world: &World,
+    chat: &StandIn,
+    chatgpt: &ChatGpt,
+    signed_in: bool,
+    prompt: &str,
+) -> Command {
     let file = world.dir("providers.toml");
     std::fs::write(
         &file,
@@ -1658,8 +1711,7 @@ fn draw_command(world: &World, chat: &StandIn, chatgpt: &ChatGpt, signed_in: boo
         ),
     )
     .expect("the providers file");
-    let prompt = format!("{DRAW} draw a fox");
-    let mut command = world.command(&["-p", &prompt]);
+    let mut command = world.command(&["-p", prompt]);
     command
         .env("ALTER_ZERO_PROVIDERS_FILE", file)
         .env("ALTER_ZERO_PROVIDER", "stub")
@@ -1749,7 +1801,7 @@ fn a_chatgpt_sign_in_lets_another_providers_model_draw() {
     assert_eq!(
         sent,
         serde_json::json!({"prompt": "a fox mascot", "background": "opaque",
-            "model": "gpt-image-2", "quality": "auto", "size": "auto"})
+            "model": "gpt-image-2.6-sunburst", "quality": "auto", "size": "auto"})
     );
     // The picture landed in the session's generated-images folder…
     let pictures = generated_pictures(&world);
@@ -1783,6 +1835,101 @@ fn a_chatgpt_sign_in_lets_another_providers_model_draw() {
             .is_some_and(|url| url.starts_with("data:image/png;base64,")),
         "{attachment}"
     );
+}
+
+/// The tool result the model read in a chat request.
+fn tool_result(request: &str) -> String {
+    let request: serde_json::Value = serde_json::from_str(request).expect("a JSON request");
+    request["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|message| message["role"] == "tool")
+        .and_then(|message| message["content"].as_str())
+        .expect("the tool result")
+        .to_string()
+}
+
+#[test]
+fn a_chatgpt_sign_in_lets_another_providers_model_animate() {
+    // The model asks for a GIF; the animation is kept whole, and what the
+    // model is shown of it is its first frame as a still (docs/imagegen.md,
+    // docs/images.md "A GIF goes up as a still").
+    let world = World::new("animate");
+    let chat = StandIn::start();
+    let chatgpt = ChatGpt::start();
+    let out = draw_command_saying(
+        &world,
+        &chat,
+        &chatgpt,
+        true,
+        &format!("{ANIMATE} animate a fox"),
+    )
+    .stdin(Stdio::null())
+    .output()
+    .expect("the binary runs");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), "Done.", "{}", stderr(&out));
+    let requests = chatgpt.requests();
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    let (head, body) = &requests[1];
+    assert!(
+        head.starts_with("POST /backend-api/codex/images/generations "),
+        "{head}"
+    );
+    let sent: serde_json::Value = serde_json::from_str(body).expect("a JSON body");
+    assert_eq!(
+        sent,
+        serde_json::json!({"prompt": "a waving fox", "background": "opaque",
+            "model": "gpt-image-2.6-sunburst", "quality": "auto", "size": "auto",
+            "output_format": "gif", "frame_count": 2})
+    );
+    let pictures = generated_pictures(&world);
+    assert_eq!(pictures.len(), 1, "{pictures:?}");
+    assert!(pictures[0].ends_with("1.gif"), "{pictures:?}");
+    assert_eq!(std::fs::metadata(&pictures[0]).expect("saved").len(), 107);
+    let chats = chat.chat_requests();
+    assert_eq!(chats.len(), 2, "{chats:?}");
+    let result = tool_result(&chats[1]);
+    assert!(
+        result.starts_with("Generated image (GIF, 1x1, 2 frames, "),
+        "{result}"
+    );
+    assert!(result.contains("first frame"), "{result}");
+    let second: serde_json::Value = serde_json::from_str(&chats[1]).expect("a JSON request");
+    let attachment = second["messages"]
+        .as_array()
+        .and_then(|messages| messages.last())
+        .expect("the attachment");
+    assert!(
+        attachment["content"][1]["image_url"]["url"]
+            .as_str()
+            .is_some_and(|url| url.starts_with("data:image/png;base64,")),
+        "the model is shown a still, never the GIF: {attachment}"
+    );
+}
+
+#[test]
+fn a_backend_that_refuses_the_newest_model_still_draws_with_the_one_before() {
+    let world = World::new("fallback");
+    let chat = StandIn::start();
+    let chatgpt = ChatGpt::refusing_the_newest_model();
+    let out = draw_run(&world, &chat, &chatgpt, true);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), "Done.", "{}", stderr(&out));
+    let models: Vec<String> = chatgpt
+        .requests()
+        .iter()
+        .filter(|(head, _)| head.contains("/images/"))
+        .map(|(_, body)| {
+            let body: serde_json::Value = serde_json::from_str(body).expect("a JSON body");
+            body["model"].as_str().expect("a model").to_string()
+        })
+        .collect();
+    assert_eq!(models, ["gpt-image-2.6-sunburst", "gpt-image-2"]);
+    assert_eq!(generated_pictures(&world).len(), 1);
+    let result = tool_result(&chat.chat_requests()[1]);
+    assert!(result.contains("made with gpt-image-2"), "{result}");
 }
 
 #[test]

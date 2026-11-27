@@ -1,6 +1,6 @@
 ---
 name: imagegen
-description: Generate or edit raster images (photos, illustrations, textures, sprites, mockups, transparent cutouts) with the imagegen tool. Not for SVG/vector or code-native assets, an existing icon or logo system, or visuals built in HTML/CSS/canvas.
+description: Generate or edit raster images (photos, illustrations, textures, sprites, mockups, transparent cutouts, looping GIFs) with the imagegen tool. Not for SVG/vector or code-native assets, an existing icon or logo system, or HTML/CSS/canvas visuals.
 # Adapted from OpenAI Codex's imagegen system skill (Apache-2.0): changed for
 # Alter Zero's imagegen tool, its paths and the read tool. Complete terms in
 # LICENSE.txt; scripts/image_gen.py and scripts/remove_chroma_key.py are
@@ -16,7 +16,7 @@ Generates or edits images for the current project (for example website assets, g
 
 This skill has exactly two top-level modes:
 
-- **Default built-in tool mode (preferred):** built-in `imagegen` tool for image generation, editing, and transparent-image requests. Does not require `OPENAI_API_KEY`: it makes the image with the user's ChatGPT sign-in, whatever model this conversation runs on.
+- **Default built-in tool mode (preferred):** built-in `imagegen` tool for image generation, editing, transparent-image and GIF requests. Does not require `OPENAI_API_KEY`: it makes the image with the user's ChatGPT sign-in, whatever model this conversation runs on, using OpenAI's newest image model, GPT-Image-2.6 Sunburst. It takes `size`, `quality` and `gif` itself (see *Built-in size, quality and GIF*).
 - **Fallback CLI mode:** `scripts/image_gen.py` CLI, run as `python3 <base directory>/scripts/image_gen.py` (the `Base directory` line above names the folder). Use when the user explicitly asks for or confirms the CLI/API/model path. Requires `OPENAI_API_KEY`.
 
 Within CLI fallback, the CLI exposes three subcommands:
@@ -27,7 +27,7 @@ Within CLI fallback, the CLI exposes three subcommands:
 
 Rules:
 - Use the built-in `imagegen` tool by default for normal image generation and editing requests.
-- Do not switch to CLI fallback for ordinary quality, size, or file-path control.
+- Do not switch to CLI fallback for ordinary quality, size, or file-path control: the built-in tool takes `size` and `quality` itself.
 - For transparent images, ask built-in `imagegen` for a transparent background and preserve the generated alpha.
 - Never silently switch from built-in `imagegen` or CLI `gpt-image-2` to CLI `gpt-image-1.5`; ask the user first unless they explicitly requested `gpt-image-1.5`.
 - The word `batch` by itself does not mean CLI fallback. If the user asks for many assets or says to batch-generate assets without explicitly asking for CLI/API/model controls, stay on the built-in path and issue one built-in call per requested asset or variant.
@@ -80,6 +80,7 @@ Intent:
 
 Built-in edit semantics:
 - Built-in edit mode takes each image to edit, or to use as a reference, by its absolute path in `referenced_image_paths` (at most 5). Every image in this conversation has a file: a pasted image's path, one you read, or one generated earlier.
+- A GIF in `referenced_image_paths` reaches the image model as its first frame only. To change an animation, see *GIF requests*.
 - If you have not seen a local image yet, look at it with the `read` tool before editing it.
 - If a local file still needs masks or other explicit CLI-only parameters, use the explicit CLI fallback only when the user asks for it.
 - For edits, preserve invariants aggressively and save non-destructively by default.
@@ -106,7 +107,7 @@ Assume the user wants a new image unless they clearly ask to change an existing 
 9. Augment the prompt based on specificity:
    - If the user's prompt is already specific and detailed, normalize it into a clear spec without adding creative requirements.
    - If the user's prompt is generic, add tasteful augmentation only when it materially improves output quality.
-10. Use the built-in `imagegen` tool by default.
+10. Use the built-in `imagegen` tool by default, setting `size`, `quality` or `gif` when the request calls for them.
 11. For transparent-output requests, ask built-in `imagegen` for a transparent background and preserve the generated alpha channel.
 12. Inspect outputs and validate: subject, style, composition, text accuracy, and invariants/avoid items.
 13. Iterate with a single targeted change, then re-check.
@@ -119,6 +120,22 @@ Assume the user wants a new image unless they clearly ask to change an existing 
 ## Transparent image requests
 
 Ask built-in `imagegen` for a genuinely transparent background and preserve its alpha.
+
+## Built-in size, quality and GIF
+
+The built-in `imagegen` tool takes three controls of its own. Leave each out unless the request calls for it.
+
+- `size`: `auto` (the default, chosen from the prompt) or `WIDTHxHEIGHT`. Both edges must be multiples of 16, the longer at most 3840 and at most 3 times the shorter, with no more pixels than `3840x2160`. Set it when the asset has a target shape: a banner, a phone wallpaper, a 16:9 slide. Common sizes are `1024x1024` square, `1536x1024` landscape, `1024x1536` portrait, `2048x1152` 2K landscape, `3840x2160` 4K landscape and `2160x3840` 4K portrait. Square images are typically fastest.
+- `quality`: `auto` (the default), `low`, `medium` or `high`. Use `low` for fast drafts, thumbnails and quick iterations. Use `high` for dense text, diagrams, identity-sensitive edits and final assets. Large sizes and high quality take longer.
+- `gif`: set it to make a short looping animation instead of a still. `{}` takes the defaults (9 frames, 200 ms each). `frame_count` takes 2 to 16 frames and `frame_duration_ms` 20 to 2000 ms.
+
+## GIF requests
+
+- Use `imagegen` only for simple GIFs of 2 to 16 frames: a waving mascot, a spinning icon, a blinking sign. For a longer or more complex animation, use other tools instead.
+- Describe the motion in the prompt: what moves, how far, and that the loop should run seamlessly.
+- Leave `transparent_background` off for a GIF. The Images API documents transparent output for PNG and WebP only.
+- What you are shown of a GIF, generated or read, is its first frame as a still. The file keeps every frame, and the tool result says how many.
+- To edit a GIF, first inspect its frames. Then lay them out as a spritesheet with equal-sized cells in a regular grid (Pillow or ImageMagick from `bash` can do both). Pass that spritesheet through `referenced_image_paths` and set `gif` to make the new GIF. Do not pass the GIF itself as an edit input: only its first frame would reach the image model.
 
 ## Prompt augmentation
 
@@ -195,7 +212,8 @@ Avoid: <negative constraints>
 Notes:
 - `Asset type` and `Input images` are prompt scaffolding, not dedicated CLI flags.
 - `Scene/backdrop` refers to the visual setting. It is not the same as the fallback CLI `background` parameter, which controls output transparency behavior.
-- Fallback-only execution notes such as `Quality:`, `Input fidelity:`, masks, output format, and output paths belong in the CLI path only. Do not treat them as built-in `imagegen` tool arguments.
+- Fallback-only execution notes such as `Input fidelity:`, masks, output format, and output paths belong in the CLI path only. Do not treat them as built-in `imagegen` tool arguments.
+- Size, quality and GIF output are the built-in tool's own `size`, `quality` and `gif` arguments. Set them on the call; do not write them into the prompt.
 
 Augmentation rules:
 - Keep it short.
@@ -236,7 +254,7 @@ Constraints: change only the background; keep the product and its edges unchange
 - Iterate with single-change follow-ups.
 - If the prompt is generic, add only the extra detail that will materially help.
 - If the prompt is already detailed, normalize it instead of expanding it.
-- For CLI fallback only, see `references/cli.md` and `references/image-api.md` for model, `quality`, `input_fidelity`, masks, output format, and output-path guidance.
+- For CLI fallback only, see `references/cli.md` and `references/image-api.md` for model, CLI `quality`, `input_fidelity`, masks, output format, and output-path guidance.
 - For transparent images, ask built-in `imagegen` for actual transparency and preserve its alpha.
 
 More principles shared by both modes: `references/prompting.md`.
@@ -247,7 +265,7 @@ Asset-type templates (website assets, game assets, wireframes, logo) are consoli
 
 ## gpt-image-2 guidance for CLI fallback
 
-The fallback CLI defaults to `gpt-image-2`.
+The fallback CLI defaults to `gpt-image-2`. The built-in tool uses `gpt-image-2.6-sunburst`, falls back to `gpt-image-2` when the backend does not take it, and checks the same size rules before it sends.
 
 - Use `gpt-image-2` for new CLI/API workflows unless the user confirms a different model.
 - CLI `gpt-image-2` does not support `background=transparent`; ask before using `gpt-image-1.5` unless the user explicitly requested that model.
