@@ -391,6 +391,20 @@ pub struct AgentRun {
     /// [`runtime`](Self::runtime). Cleared the moment the host answers, and
     /// never `Some` beside [`retry`](Self::retry) (`docs/offline.md`).
     pub offline: Option<crate::app::OfflineInfo>,
+    /// Its background summary, while its thread writes one
+    /// (`docs/background-compaction.md` *Subagents*): the job, where the
+    /// transcript stood when it started — the marker keeps what was
+    /// recorded since — and whether the run waits for it at its ceiling.
+    compaction: Option<AgentCompactionJob>,
+}
+
+/// A subagent's background summary as its transcript tracks it
+/// ([`AgentRun::compaction`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AgentCompactionJob {
+    id: u64,
+    start: usize,
+    waiting: bool,
 }
 
 impl AgentRun {
@@ -481,6 +495,7 @@ impl AgentRun {
             command_elapsed: None,
             retry: None,
             offline: None,
+            compaction: None,
         }
     }
 
@@ -844,12 +859,31 @@ impl AgentRun {
                     self.history.push(HistoryItem::Tool(front));
                 }
             }
-            // A subagent's loop carries no compaction slot yet
-            // (docs/background-compaction.md *Failures and edges*), so these
-            // never arrive here; were one to, there is nothing to snapshot.
-            StreamEvent::CompactionStart { .. }
-            | StreamEvent::CompactionWaiting { .. }
-            | StreamEvent::CompactionSwap { .. } => {}
+            // Its own background compaction (docs/background-compaction.md
+            // *Subagents*). The start lands after everything recorded before
+            // it — its thread sent it at a round top, behind the round's
+            // results — so the transcript's length here is where the summary
+            // ends, the lead's snapshot one level down.
+            StreamEvent::CompactionStart { id } => {
+                self.compaction = Some(AgentCompactionJob {
+                    id: *id,
+                    start: self.history.len(),
+                    waiting: false,
+                });
+            }
+            StreamEvent::CompactionWaiting { id } => {
+                if let Some(job) = self.compaction.as_mut().filter(|job| job.id == *id) {
+                    job.waiting = true;
+                }
+            }
+            StreamEvent::CompactionLanded { id, summary, secs } => {
+                self.land_compaction(*id, summary, *secs);
+            }
+            // Billed, so its ledger has it — and only that: the request was
+            // the summarizer's, not the agent's.
+            StreamEvent::CompactionUsage(usage) => self.usage.record(usage),
+            // The lead's swap, which no subagent's stream carries.
+            StreamEvent::CompactionSwap { .. } => {}
             StreamEvent::Usage(usage) => {
                 // One frame ends one round: this is where the round's
                 // `Thought for …` cells trade their token estimate for
@@ -882,6 +916,8 @@ impl AgentRun {
                 self.result = self.flush_segment();
                 self.tool_queue.clear();
                 self.drafts.clear();
+                // Its thread stopped whatever summary was still out.
+                self.compaction = None;
                 self.status = AgentStatus::Done;
                 // The gauge folds in what joined after the last usage frame —
                 // the reply — or, with no frame this turn (the dummy, a
@@ -923,6 +959,7 @@ impl AgentRun {
                 self.flush_segment();
                 self.resolve_tools(message);
                 self.drafts.clear();
+                self.compaction = None;
                 self.error = Some(message.clone());
                 self.status = AgentStatus::Failed;
                 return true;
@@ -1268,6 +1305,52 @@ impl AgentRun {
         self.round_reasoning.clear();
         self.user_messages.clear();
         self.drafts.clear();
+        self.compaction = None;
+    }
+
+    /// The verb its session view's status line wears in place of its own:
+    /// `Compacting…` while its run waits for its background summary at its
+    /// ceiling (`docs/background-compaction.md` *Subagents*), the main
+    /// line's [`crate::app::App::live_verb`] one level down.
+    #[must_use]
+    pub fn live_verb(&self) -> Option<&'static str> {
+        self.compaction
+            .filter(|job| job.waiting)
+            .map(|_| crate::app::COMPACT_VERB)
+    }
+
+    /// Summary `id` was spliced into the agent's own list: append its
+    /// marker — what was recorded since its start kept, everything before
+    /// it summarized — and re-read the gauge over the compacted transcript,
+    /// the lead's `land_background_compaction` one level down. The newest
+    /// usage frame described the list the splice replaced, so it goes.
+    fn land_compaction(&mut self, id: u64, summary: &str, secs: u64) {
+        let len = self.history.len();
+        let start = self
+            .compaction
+            .take()
+            .filter(|job| job.id == id)
+            .map_or(len, |job| job.start.min(len));
+        let before = self.context_used;
+        self.history
+            .push(HistoryItem::Compaction(crate::app::Compaction {
+                summary: summary.to_string(),
+                timestamp: String::new(),
+                before,
+                after: 0,
+                auto: true,
+                secs,
+                kept: len - start,
+                background: true,
+            }));
+        let (estimate, _) = self.estimate_context();
+        self.context_meter.rebase(estimate);
+        self.context_used = self.context_meter.reading(estimate);
+        self.last_usage = None;
+        let after = self.context_used;
+        if let Some(HistoryItem::Compaction(marker)) = self.history.last_mut() {
+            marker.after = after;
+        }
     }
 
     /// The tree row's activity: what the agent is doing — or, between tool
@@ -4129,6 +4212,133 @@ mod tests {
                 as u64,
             "counted by the one rule the main gauge counts with"
         );
+    }
+
+    // --- its own background compaction (docs/background-compaction.md *Subagents*) ---
+
+    /// One finished `read` round on `run`, its file `output`.
+    fn read_round(run: &mut AgentRun, n: usize, output: &str) {
+        run.apply(&StreamEvent::ToolStart {
+            name: "read".into(),
+            args: format!("/src/{n}.rs"),
+            detail: None,
+            arguments: None,
+        });
+        run.apply(&StreamEvent::ToolEnd {
+            output: output.to_string(),
+            ok: true,
+            truncated: false,
+            run: crate::stream::ToolRun::default(),
+        });
+    }
+
+    #[test]
+    fn a_subagent_summary_lands_as_a_marker_keeping_what_ran_meanwhile() {
+        // Its start is noted where it lands — every item before it is in the
+        // transcript, the stream being FIFO — and the landing appends the
+        // marker that keeps what was recorded since: the shape its thread
+        // spliced its own list into, for the view, the gauge and Ctrl+D.
+        let mut run = AgentRun::new(
+            "a1",
+            "d",
+            GENERAL_PURPOSE,
+            "Port the payments module",
+            false,
+        );
+        let big = "fn payments() {}\n".repeat(4_000);
+        read_round(&mut run, 0, &big);
+        // The provider counts what the transcript holds and its system
+        // prompt and tools beside it.
+        let (estimate, _) = run.estimate_context();
+        run.apply(&StreamEvent::Usage(TokenUsage {
+            input: estimate + 8_000,
+            output: 300,
+            ..TokenUsage::default()
+        }));
+        run.apply(&StreamEvent::CompactionStart { id: 0 });
+        let start = run.history.len();
+        read_round(&mut run, 1, "fn f1() {}");
+        let before = run.context_used();
+        run.apply(&StreamEvent::CompactionLanded {
+            id: 0,
+            summary: "Read 0.rs.".into(),
+            secs: 31,
+        });
+        let Some(HistoryItem::Compaction(marker)) = run.history.last() else {
+            panic!("a marker: {:?}", run.history.last());
+        };
+        assert_eq!(
+            marker.kept,
+            run.history.len() - 1 - start,
+            "the round since the start"
+        );
+        assert!(marker.background && marker.auto, "{marker:?}");
+        assert_eq!((marker.summary.as_str(), marker.secs), ("Read 0.rs.", 31));
+        assert_eq!(marker.before, before);
+        assert_eq!(marker.after, run.context_used());
+        assert!(run.context_used() < before, "the gauge drops");
+        assert_eq!(
+            run.last_usage, None,
+            "the newest frame described the list the splice replaced"
+        );
+        let ctx = crate::context::context_messages(&run.history);
+        assert!(ctx.iter().any(|m| m.text.contains("Read 0.rs.")), "{ctx:?}");
+        assert!(
+            ctx.iter().any(|m| m.text == "fn f1() {}"),
+            "the round since the start stays: {ctx:?}"
+        );
+        assert!(
+            !ctx.iter().any(|m| m.text == big),
+            "the one before it is summarized"
+        );
+    }
+
+    #[test]
+    fn a_subagent_summarys_usage_is_billed_but_moves_neither_its_gauge_nor_its_tally() {
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        let frame = TokenUsage {
+            input: 5_000,
+            output: 200,
+            ..TokenUsage::default()
+        };
+        run.apply(&StreamEvent::Usage(frame));
+        let (gauge, tally) = (run.context_used(), run.tokens);
+        run.apply(&StreamEvent::CompactionUsage(TokenUsage {
+            input: 9_000,
+            output: 400,
+            ..TokenUsage::default()
+        }));
+        assert_eq!(run.context_used(), gauge);
+        assert_eq!(run.tokens, tally);
+        assert_eq!(run.last_usage, Some(frame), "its last request is its own");
+        assert_eq!(
+            (run.usage.requests, run.usage.input, run.usage.output),
+            (2, 14_000, 600),
+            "both requests were billed"
+        );
+    }
+
+    #[test]
+    fn a_subagent_waiting_for_its_summary_wears_the_compacting_verb() {
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&StreamEvent::CompactionStart { id: 0 });
+        assert_eq!(
+            run.live_verb(),
+            None,
+            "a summary being written changes nothing"
+        );
+        run.apply(&StreamEvent::CompactionWaiting { id: 0 });
+        assert_eq!(run.live_verb(), Some(crate::app::COMPACT_VERB));
+        run.apply(&StreamEvent::CompactionLanded {
+            id: 0,
+            summary: "s".into(),
+            secs: 1,
+        });
+        assert_eq!(run.live_verb(), None, "landed, it works on");
+        run.apply(&StreamEvent::CompactionStart { id: 1 });
+        run.apply(&StreamEvent::CompactionWaiting { id: 1 });
+        run.apply(&StreamEvent::StreamDone);
+        assert_eq!(run.live_verb(), None, "a run that ended waits for nothing");
     }
 
     #[test]

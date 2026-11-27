@@ -136,7 +136,9 @@ fn dummy_ai_emits_all_chunks_and_tool_calls_then_done() {
             StreamEvent::Usage(_) => panic!("the dummy never reports usage"),
             StreamEvent::CompactionStart { .. }
             | StreamEvent::CompactionWaiting { .. }
-            | StreamEvent::CompactionSwap { .. } => panic!("the default demo never compacts"),
+            | StreamEvent::CompactionSwap { .. }
+            | StreamEvent::CompactionLanded { .. }
+            | StreamEvent::CompactionUsage(_) => panic!("the default demo never compacts"),
             StreamEvent::Permission(_) => {
                 panic!("no gate attached — the dummy never asks")
             }

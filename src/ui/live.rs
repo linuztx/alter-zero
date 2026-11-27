@@ -479,9 +479,11 @@ pub(super) fn strip_lines(
         // in if the status somehow went while `has_status` said otherwise,
         // so the count still matches `strip_rows`' STATUS_ROWS.
         let line = if let Some(run) = app.viewed_agent() {
+            // `Compacting…` while its run waits for its summary at its
+            // ceiling (docs/background-compaction.md *Subagents*).
             Some(styled_status_line(
                 &agent_view_status(run),
-                None,
+                run.live_verb(),
                 app.spinner(),
                 width,
             ))

@@ -173,6 +173,9 @@ pub struct CompactionSlot {
 #[derive(Debug, Default)]
 struct SlotState {
     window: Option<u64>,
+    /// The window a subagent pinned to another model compacts against
+    /// ([`CompactionSlot::agent_window`]).
+    pinned_window: Option<u64>,
     job: Job,
     failures: u32,
     cycle_start: u64,
@@ -214,6 +217,30 @@ impl CompactionSlot {
     #[must_use]
     pub fn window(&self) -> Option<u64> {
         self.state()?.window
+    }
+
+    /// The boundary, at every loop bottom: the window a subagent pinned to
+    /// another model compacts against — the override's, the only window
+    /// this session knows for a model it never listed — or `None` with
+    /// compaction off (`docs/background-compaction.md` *Subagents*).
+    pub fn configure_pinned(&self, window: Option<u64>) {
+        if let Some(mut state) = self.state() {
+            state.pinned_window = window.filter(|&window| window > 0);
+        }
+    }
+
+    /// The window a subagent compacts against, read at its every round top:
+    /// the session's for a type that `inherits` the model, else the pinned
+    /// one's — the gauge's rule (`docs/agent-context-gauge.md`). `None`
+    /// compacts nothing.
+    #[must_use]
+    pub fn agent_window(&self, inherits: bool) -> Option<u64> {
+        let state = self.state()?;
+        if inherits {
+            state.window
+        } else {
+            state.pinned_window
+        }
     }
 
     /// The background job.
@@ -1117,6 +1144,25 @@ mod tests {
             !slot.holds_idle_starts(),
             "a landing under the ceiling lifts it"
         );
+    }
+
+    #[test]
+    fn a_subagent_compacts_against_the_window_of_the_model_it_runs_on() {
+        // An inheriting type runs on the session's model, so on the session's
+        // window; a pinned one on a model whose window this session never
+        // learned — only the override names one (docs/agent-context-gauge.md,
+        // docs/background-compaction.md *Subagents*).
+        let slot = CompactionSlot::new();
+        assert_eq!(slot.agent_window(true), None, "off until configured");
+        assert_eq!(slot.agent_window(false), None);
+        slot.configure(Some(200_000));
+        slot.configure_pinned(Some(64_000));
+        assert_eq!(slot.agent_window(true), Some(200_000));
+        assert_eq!(slot.agent_window(false), Some(64_000));
+        slot.configure_pinned(Some(0));
+        assert_eq!(slot.agent_window(false), None, "no window is no compaction");
+        slot.configure(None);
+        assert_eq!(slot.agent_window(true), None, "Auto compact off");
     }
 
     #[test]

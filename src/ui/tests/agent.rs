@@ -974,6 +974,40 @@ fn an_agent_views_status_carries_its_lost_connection() {
 }
 
 #[test]
+fn an_agent_views_status_line_wears_compacting_while_its_run_waits_for_its_summary() {
+    // Its run waits at its ceiling for the summary its thread is writing
+    // (docs/background-compaction.md *Subagents*): the view's line says so,
+    // as the main turn's does.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Port payments", false)]);
+    app.apply_agent_event("a1", &crate::stream::StreamEvent::CompactionStart { id: 0 });
+    app.open_agent_view("a1");
+    let status_row = |app: &App| {
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        render_live(area, &mut buf, app);
+        (0..24)
+            .map(|y| row(&buf, y, 80))
+            .find(|r| r.contains("esc to interrupt"))
+            .expect("the agent's status line")
+    };
+    assert!(
+        !status_row(&app).contains("Compacting…"),
+        "written, not waited for"
+    );
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::CompactionWaiting { id: 0 },
+    );
+    assert!(
+        status_row(&app).contains("Compacting…"),
+        "{}",
+        status_row(&app)
+    );
+}
+
+#[test]
 fn an_agent_views_strip_shows_every_waiting_sibling_of_a_parallel_batch() {
     // The main strip renders a parallel batch as the running call over each
     // dim `⎿ Waiting…` sibling, blank-separated (docs/parallel-tools.md).

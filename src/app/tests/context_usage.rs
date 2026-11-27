@@ -444,11 +444,15 @@ fn inside_an_agent_view_the_page_is_the_agents_window() {
         tokens(&app, Category::Messages),
         count_tokens("What is the weather in Warsaw?")
     );
-    // Its own window — and no headroom, since a subagent never compacts.
+    // Its own window, and the headroom it compacts at: a subagent compacts
+    // against its own window too (docs/background-compaction.md *Subagents*).
     assert_eq!(app.context_usage_window(), Some(100_000));
-    assert_eq!(app.context_usage_threshold(), None);
+    assert_eq!(
+        app.context_usage_threshold(),
+        Some(crate::compaction::ceiling(100_000))
+    );
     assert!(
-        !app.context_usage_rows()
+        app.context_usage_rows()
             .contains(&ContextUsageRow::AutoCompact)
     );
     // Leaving the view, the next refresh counts the lead's window again.
@@ -569,6 +573,27 @@ fn a_subagents_frames_feed_its_own_ledger_and_the_sessions() {
         None,
         "the lead's own last request is its own"
     );
+}
+
+#[test]
+fn a_subagents_summary_is_spend_since_launch_and_nothing_else() {
+    // Its background summary was billed (docs/background-compaction.md
+    // *Subagents*): the session's ledger and the agent's own have it, and
+    // neither the agent's last request nor the lead's moves.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    let frame = TokenUsage {
+        input: 9_000,
+        output: 400,
+        ..TokenUsage::default()
+    };
+    app.apply_agent_event("a1", &StreamEvent::CompactionUsage(frame));
+    let run = app.agent("a1").expect("a1 is on the roster");
+    assert_eq!(run.last_usage, None);
+    assert_eq!((run.usage.requests, run.usage.input), (1, 9_000));
+    assert_eq!(app.usage_since_launch().input, 9_000);
+    assert_eq!(app.last_usage(), None);
 }
 
 // ===== counted in the provider's tokens (docs/token-estimate.md) =====

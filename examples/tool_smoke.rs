@@ -106,7 +106,9 @@ fn main() {
             // hands its backend no slot, so none is ever sent.
             StreamEvent::CompactionStart { .. }
             | StreamEvent::CompactionWaiting { .. }
-            | StreamEvent::CompactionSwap { .. } => {}
+            | StreamEvent::CompactionSwap { .. }
+            | StreamEvent::CompactionLanded { .. }
+            | StreamEvent::CompactionUsage(_) => {}
             // A task tool call: cell-less in the TUI; the harness just logs it.
             StreamEvent::TaskCall {
                 name, args, output, ..

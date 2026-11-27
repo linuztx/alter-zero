@@ -99,24 +99,46 @@ fn truncate_middle_to_tokens(text: &str, max_tokens: usize) -> String {
 /// [`Role::User`] messages collect (tool records, shell transcripts, notices,
 /// and earlier compaction markers all drop — codex's `collect_user_messages`).
 fn budgeted_user_texts(items: &[HistoryItem], budget: usize) -> Vec<String> {
+    budget_texts(
+        items.iter().filter_map(|item| match item {
+            HistoryItem::Message(message) if message.role == Role::User => {
+                Some(message.text.as_str())
+            }
+            _ => None,
+        }),
+        budget,
+    )
+}
+
+/// The user texts a compaction keeps of `texts`, given oldest first — the
+/// budget walk [`budgeted_user_texts`] runs over a history, at the same
+/// budget, over a **subagent's** wire messages, which are texts rather than
+/// history items (`docs/background-compaction.md` *Subagents*).
+pub(crate) fn kept_user_texts<'a>(
+    texts: impl IntoIterator<Item = &'a str, IntoIter: DoubleEndedIterator>,
+) -> Vec<String> {
+    budget_texts(texts, COMPACT_USER_MESSAGE_MAX_TOKENS)
+}
+
+/// The walk itself: newest→oldest keeping whole texts while they fit `budget`
+/// approx tokens, middle-truncating the first that overflows to what is left,
+/// then back to chronological order.
+fn budget_texts<'a>(
+    texts: impl IntoIterator<Item = &'a str, IntoIter: DoubleEndedIterator>,
+    budget: usize,
+) -> Vec<String> {
     let mut selected = Vec::new();
     let mut remaining = budget;
-    for item in items.iter().rev() {
-        let HistoryItem::Message(message) = item else {
-            continue;
-        };
-        if message.role != Role::User {
-            continue;
-        }
+    for text in texts.into_iter().rev() {
         if remaining == 0 {
             break;
         }
-        let tokens = approx_token_count(&message.text);
+        let tokens = approx_token_count(text);
         if tokens <= remaining {
-            selected.push(message.text.clone());
+            selected.push(text.to_string());
             remaining -= tokens;
         } else {
-            selected.push(truncate_middle_to_tokens(&message.text, remaining));
+            selected.push(truncate_middle_to_tokens(text, remaining));
             break;
         }
     }
@@ -127,7 +149,7 @@ fn budgeted_user_texts(items: &[HistoryItem], budget: usize) -> Vec<String> {
 /// The compacted context's bridge message: [`SUMMARY_PREFIX`], a newline, and
 /// the marker's summary — codex's `format!("{SUMMARY_PREFIX}\n{summary}")`,
 /// with its "(no summary available)" fallback when the model streamed nothing.
-fn summary_bridge(summary: &str) -> String {
+pub(crate) fn summary_bridge(summary: &str) -> String {
     let body = if summary.is_empty() {
         "(no summary available)"
     } else {
@@ -2541,6 +2563,20 @@ mod tests {
             message(Role::User, "efgh"), // 1 token
         ];
         assert_eq!(budgeted_user_texts(&items, 2), vec!["abcd", "efgh"]);
+    }
+
+    #[test]
+    fn the_kept_user_texts_are_the_budget_walk_over_plain_texts() {
+        // A subagent's list is wire messages, not history items: the same
+        // walk over its user texts, at the same 20k budget
+        // (docs/background-compaction.md *Subagents*).
+        let texts = ["oldest", "abcd", "efgh"];
+        assert_eq!(kept_user_texts(texts), vec!["oldest", "abcd", "efgh"]);
+        let big = "x".repeat(COMPACT_USER_MESSAGE_MAX_TOKENS * APPROX_BYTES_PER_TOKEN);
+        let kept = kept_user_texts([big.as_str(), "abcd"]);
+        assert_eq!(kept.len(), 2, "the newest whole, the one before it cut");
+        assert!(kept[0].contains("tokens truncated…"), "{:?}", kept[0]);
+        assert_eq!(kept[1], "abcd");
     }
 
     #[test]

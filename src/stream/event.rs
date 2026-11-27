@@ -597,6 +597,18 @@ pub enum StreamEvent {
     /// re-derived from history, which the turn continues on
     /// (`docs/background-compaction.md` *The lifecycle*).
     CompactionSwap { id: u64 },
+    /// A **subagent's** summary `id` was spliced into its own message list
+    /// at its ceiling (`docs/background-compaction.md` *Subagents*): its
+    /// transcript records the marker — everything since its
+    /// [`Self::CompactionStart`] kept verbatim — and its session view the
+    /// `Context compacted` cell. Only a subagent's stream carries it: the
+    /// lead's swap is the boundary's to make.
+    CompactionLanded { id: u64, summary: String, secs: u64 },
+    /// A usage frame of a **subagent's** background summary: billed, so it
+    /// joins the since-launch ledger and the rollout's `usage` lines as a
+    /// compaction's — never the agent's gauge or its last request, the
+    /// request being the summarizer's.
+    CompactionUsage(TokenUsage),
     /// A `write`/`edit`/`bash` call is **waiting on the user's approval**
     /// (`docs/permissions.md`). Sent by the backend thread just before it
     /// blocks on the [`crate::permission::PermissionGate`]; the loop raises
@@ -664,6 +676,8 @@ impl StreamEvent {
             | Self::CompactionStart { .. }
             | Self::CompactionWaiting { .. }
             | Self::CompactionSwap { .. }
+            | Self::CompactionLanded { .. }
+            | Self::CompactionUsage(_)
             | Self::Permission(_)
             | Self::AskUser(_)
             | Self::Error(_)

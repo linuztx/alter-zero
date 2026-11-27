@@ -534,6 +534,10 @@ impl Session<'_> {
                 self.on_compaction_swap(id, committing, width);
                 false
             }
+            // A subagent's own compaction, which only its stream carries
+            // (docs/background-compaction.md *Subagents*): the lead's swap is
+            // the one above.
+            StreamEvent::CompactionLanded { .. } | StreamEvent::CompactionUsage(_) => false,
             StreamEvent::Usage(usage) => {
                 // The round's real usage frame: snap the live tally from the
                 // app-side estimate to the provider's own accounting (cache

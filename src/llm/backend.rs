@@ -178,9 +178,11 @@ pub struct LlmBackend {
     /// Background compaction's slot (`docs/background-compaction.md`): at the
     /// top of every round the turn checks its context against the start line
     /// and the ceiling, starting a summary, swapping a held one in, or waiting
-    /// for one. `None` — a subagent, the one-off `/compact` backend, a
-    /// backend nobody configured — never compacts mid-turn. The boundary
-    /// attaches its own on every rebuild, like the steer queue.
+    /// for one. `None` — the one-off `/compact` backend, a backend nobody
+    /// configured — never compacts mid-turn. The boundary attaches its own on
+    /// every rebuild, like the steer queue. A subagent reads only its windows
+    /// from it: its summary is its own thread's (`docs/background-compaction.md`
+    /// *Subagents*).
     compaction: Option<CompactionSlot>,
     /// The user's lifecycle hooks (`docs/hooks.md`): consulted before and
     /// after every tool call, and in the user's stead at the permission gate.
@@ -1462,6 +1464,10 @@ struct SubagentConfig {
     /// them exactly as the lead's do — and its briefing names them
     /// (`docs/secrets.md`).
     secrets: Option<crate::secrets::SecretRegistry>,
+    /// Background compaction's slot, for the window a subagent compacts
+    /// against (`docs/background-compaction.md` *Subagents*) — read, never
+    /// written: a subagent's summary is its own thread's.
+    compaction: Option<CompactionSlot>,
 }
 
 impl LlmBackend {
@@ -1487,6 +1493,7 @@ impl LlmBackend {
             max_tool_calls: self.max_tool_calls,
             hooks: Arc::clone(&self.hooks),
             secrets: self.secrets.clone(),
+            compaction: self.compaction.clone(),
         }
     }
 }
@@ -1933,6 +1940,13 @@ fn spawn_subagent_run(
         .as_ref()
         .map_or(crate::subagents::AgentTools::All, |def| def.tools.clone());
     let specs = subagent_tool_specs(skills.is_some(), imagegen.is_some(), mcp.as_ref(), &allowed);
+    // What its tool schemas add to every request beside the messages — the
+    // compaction measure counts it beside a list it estimates whole
+    // (docs/background-compaction.md *The lines on the gauge*).
+    let tools_overhead = specs
+        .iter()
+        .map(|spec| u64::try_from(crate::tokens::estimate(&spec.to_string())).unwrap_or(u64::MAX))
+        .fold(0, u64::saturating_add);
     // A definition may pin its own model (`model: kimi-k3`): same provider,
     // base and key, and the session's thinking mode / vision verdict dropped
     // — both describe the model being replaced, not this one.
@@ -1944,6 +1958,16 @@ fn spawn_subagent_run(
         .as_ref()
         .and_then(|def| def.model.named())
         .map_or(config.vision, |_| None);
+    // The agent's background summary (docs/background-compaction.md
+    // *Subagents*): written by the model the agent runs on, offered no
+    // tools, against the window of that model — the session's for a type
+    // that inherits it, the override's for a pinned one.
+    let summary_client = client.clone().with_tools(Vec::new());
+    let inherits = definition
+        .as_ref()
+        .and_then(|def| def.model.named())
+        .is_none();
+    let compaction = config.compaction.clone();
     let client = client.with_tools(specs);
     let detach = config.detach_helper.clone();
     let background = config.background.clone();
@@ -2054,18 +2078,66 @@ fn spawn_subagent_run(
         let executor = executor;
         let inputs_registry = registry.clone();
         let inputs_id = id.clone();
-        let mut loaded_skills = skills
-            .as_ref()
-            .map(|registry| {
-                super::skill::LoadedSkills::from_messages(registry, &messages, secrets.as_ref())
-            })
-            .unwrap_or_default();
+        // A cell rather than a plain local: the round closure re-seeds it
+        // after a splice, when the skills whose bodies left the list must be
+        // loadable again (docs/skills.md) — the lead's rule.
+        let loaded_skills = std::cell::RefCell::new(
+            skills
+                .as_ref()
+                .map(|registry| {
+                    super::skill::LoadedSkills::from_messages(registry, &messages, secrets.as_ref())
+                })
+                .unwrap_or_default(),
+        );
+        // The context's size at each round top, and the agent's own
+        // background compaction (docs/background-compaction.md *Subagents*).
+        let mut meter = PromptMeter::from_gauge(0, tools_overhead);
+        let mut agent_compaction = super::compaction::AgentCompaction::for_list(&messages);
+        let mut start_summary =
+            |input: Vec<ChatMessage>| spawn_agent_summary(&summary_client, input, max_retries);
+        let mut pause = || thread::sleep(crate::compaction::POLL_INTERVAL);
         agent::run_agent(
             &tx2,
             &cancel,
             max_tool_calls,
             &mut messages,
-            |msgs| stream_round(&client, msgs, &tx2, &cancel, max_retries),
+            |msgs| {
+                // Past its start line a summary of the agent's own list is
+                // written beside it; at its ceiling the held one takes the
+                // head's place and the round is asked again, on the list it
+                // leaves.
+                if let Some(window) = compaction
+                    .as_ref()
+                    .and_then(|slot| slot.agent_window(inherits))
+                {
+                    let used = meter.used(msgs);
+                    if let Some(rebuilt) = agent_compaction.round_top(
+                        msgs,
+                        super::compaction::Measure { used, window },
+                        &tx2,
+                        &cancel,
+                        &mut start_summary,
+                        &mut pause,
+                    ) {
+                        if let Some(registry) = &skills {
+                            *loaded_skills.borrow_mut() = super::skill::LoadedSkills::from_messages(
+                                registry,
+                                &rebuilt,
+                                secrets.as_ref(),
+                            );
+                        }
+                        meter.reset();
+                        return agent::RoundOutcome::Compacted(rebuilt);
+                    }
+                }
+                let sent = msgs.len();
+                let (outcome, usage) =
+                    stream_round_measured(&client, msgs, &tx2, &cancel, max_retries);
+                if let Some(usage) = usage {
+                    meter.measured(usage.input, sent);
+                }
+                outcome
+            },
             |call, on_output| {
                 // The agent companions are the lead's alone — never offered
                 // here, and a hallucinated call is declined recoverably, like
@@ -2106,7 +2178,7 @@ fn spawn_subagent_run(
                         {
                             return super::skill::run_skill_tool(
                                 registry,
-                                &mut loaded_skills,
+                                &mut loaded_skills.borrow_mut(),
                                 call,
                             );
                         }
@@ -2191,6 +2263,9 @@ fn spawn_subagent_run(
                     .map(|session| session.command)
             },
         );
+        // A summary that finished is billed, one still being written stopped:
+        // the run is over, and nothing will swap either in.
+        agent_compaction.finish(&tx2);
         drop(tx2);
         let (final_text, outcome, terminal) = forwarder.join().unwrap_or_default();
         let outcome = match outcome {
@@ -2230,6 +2305,74 @@ fn spawn_subagent_run(
             spawn_subagent_run(&respawn_config, registry, id, agent_type, messages, cancel);
         }
     });
+}
+
+/// Write a subagent's background summary of `input` (its
+/// [`summarizer_input`](super::compaction::summarizer_input)) on a thread of
+/// its own (`docs/background-compaction.md` *Subagents*): one tools-free run
+/// of the agent loop on `client` — so an empty or cut-off summary is asked
+/// to go on, as the lead's compaction turn is — folded event by event into
+/// the summary, its usage and how long it took, which fill the returned
+/// job's cell. The job's token stops it.
+fn spawn_agent_summary(
+    client: &OpenAiClient,
+    mut input: Vec<ChatMessage>,
+    max_retries: u32,
+) -> super::compaction::SummaryJob {
+    let job = super::compaction::SummaryJob::default();
+    let cell = Arc::clone(&job.cell);
+    let cancel = job.cancel.clone();
+    let client = client.clone();
+    thread::spawn(move || {
+        let started = std::time::Instant::now();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<StreamEvent>();
+        agent::run_agent(
+            &tx,
+            &cancel,
+            0,
+            &mut input,
+            |msgs| stream_round(&client, msgs, &tx, &cancel, max_retries),
+            // Offered no tools, it runs none: a call it makes anyway is
+            // declined, and the loop asks again.
+            |_, _| tools::ToolOutcome::error("the summarizer runs no tools"),
+            Vec::new,
+            |calls| {
+                calls
+                    .iter()
+                    .map(|call| {
+                        (
+                            call.id.clone(),
+                            "the summarizer launches no agents".to_string(),
+                        )
+                    })
+                    .collect()
+            },
+            |_, _| crate::permission::Approval::Allow,
+            &NoHooks,
+            &|_| None,
+        );
+        drop(tx);
+        let mut stream = crate::compaction::SummaryStream::default();
+        let mut outcome = None;
+        while let Ok(event) = rx.try_recv() {
+            if let Some(done) = stream.push(event) {
+                outcome = Some(done);
+                break;
+            }
+        }
+        let (_, usage) = stream.into_parts();
+        let outcome = outcome
+            .filter(|_| !cancel.is_cancelled())
+            .unwrap_or_else(|| Err("the summary was stopped".to_string()));
+        if let Ok(mut cell) = cell.lock() {
+            *cell = Some(super::compaction::WrittenSummary {
+                outcome,
+                usage,
+                secs: started.elapsed().as_secs(),
+            });
+        }
+    });
+    job
 }
 
 /// Stream one round of the conversation: one HTTP request (with the existing

@@ -203,6 +203,14 @@ impl Session<'_> {
             self.let_go_of_compaction();
         }
         self.compaction.configure(self.app.compaction_window());
+        // A subagent pinned to another model compacts against the only
+        // window this session knows for it, the override's — and only while
+        // the lead would compact (docs/background-compaction.md *Subagents*).
+        self.compaction.configure_pinned(
+            self.app
+                .compaction_window()
+                .and(self.models.agent_context_window(false)),
+        );
         // Read off the history, never kept beside it: the context the last
         // marker left, or 0.
         self.compaction

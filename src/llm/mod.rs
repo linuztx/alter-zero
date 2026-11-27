@@ -29,6 +29,7 @@ pub mod classifier;
 pub mod claude;
 pub mod cline;
 pub mod cloud_code;
+pub mod compaction;
 pub mod config;
 pub mod copilot;
 pub mod exec;

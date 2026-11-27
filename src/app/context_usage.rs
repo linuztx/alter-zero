@@ -165,15 +165,16 @@ impl App {
     }
 
     /// The token count at which the conversation on screen compacts itself,
-    /// when it does: the main session's, while the `/settings` **Auto
-    /// compact** knob is on and its window is known. A subagent never
-    /// compacts (`docs/compact.md`).
+    /// when it does: the ceiling of its own window — the main session's, or
+    /// inside an agent session view the agent's, which compacts against its
+    /// own (`docs/background-compaction.md` *Subagents*) — while the
+    /// `/settings` **Auto compact** knob is on and that window is known.
     #[must_use]
     pub fn context_usage_threshold(&self) -> Option<u64> {
-        if self.viewed_agent().is_some() || !self.settings.auto_compact {
+        if !self.settings.auto_compact {
             return None;
         }
-        self.context_window.map(auto_compact_threshold)
+        self.context_usage_window().map(auto_compact_threshold)
     }
 
     /// The estimate of the main session's tool schemas — what rides every
