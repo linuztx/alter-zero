@@ -176,13 +176,6 @@ impl App {
         self.context_window.map(auto_compact_threshold)
     }
 
-    /// Inject the tools the main session's next request offers (from
-    /// `ReplySource::tool_definitions`, pulled at every loop bottom). The
-    /// same set in a new handle is no change, so the boundary can pull
-    /// freely; a different one moves the page's signature, and the context
-    /// gauge re-reads the whole context with the new set's estimate in it —
-    /// every request carries the schemas, the first one included
-    /// (`docs/token-estimate.md`).
     /// The estimate of the main session's tool schemas — what rides every
     /// request beside the messages, which background compaction's measure
     /// counts beside a list it estimates whole
@@ -192,6 +185,13 @@ impl App {
         self.tools_estimate
     }
 
+    /// Inject the tools the main session's next request offers (from
+    /// `ReplySource::tool_definitions`, pulled at every loop bottom). The
+    /// same set in a new handle is no change, so the boundary can pull
+    /// freely; a different one moves the page's signature, and the context
+    /// gauge re-reads the whole context with the new set's estimate in it —
+    /// every request carries the schemas, the first one included
+    /// (`docs/token-estimate.md`).
     pub fn set_tool_definitions(&mut self, tools: Arc<[ToolDefinition]>) {
         if !Arc::ptr_eq(&self.tool_definitions, &tools) && *self.tool_definitions != *tools {
             self.tools_estimate = tools
