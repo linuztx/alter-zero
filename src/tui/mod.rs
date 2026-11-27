@@ -364,6 +364,9 @@ pub(crate) struct Session<'t> {
     /// The compact hooks' reports from the background summary, held for the
     /// cells above its `Context compacted` line when it lands.
     compaction_hooks: Vec<(String, alter_zero::hooks::HookReport)>,
+    /// The conversation epoch the slot was last kept for: a new one lets go
+    /// of the slot's whole cycle (`App::history_epoch`).
+    compaction_epoch: u64,
     /// The tool-permission gate and this project's saved rules
     /// (`docs/permissions.md`).
     permissions: PermissionStore,

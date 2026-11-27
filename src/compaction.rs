@@ -44,6 +44,13 @@ pub const PRECOMPUTE_LEAD: u64 = 60_000;
 /// every round.
 pub const MAX_FAILURES: u32 = 2;
 
+/// Landings past the ceiling a turn takes before it compacts no more. The
+/// first is refolded — summarized again, the verbatim tail included, which a
+/// tail of huge reads needs — and the second shows that what rides every
+/// request alone, the system prompt and the tool schemas, passes the ceiling:
+/// summarizing again would only land there once more, for ever.
+pub const MAX_PAST_LANDINGS: u32 = 2;
+
 /// How long a waiting turn sleeps between looks at the slot.
 pub const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
@@ -82,6 +89,19 @@ pub const fn start_line(ceiling: u64, cycle_start: u64) -> u64 {
         PRECOMPUTE_LEAD
     };
     ceiling - lead
+}
+
+/// What the boundary hands a turn as it starts: the footer gauge — the
+/// context the turn's first request carries, calibrated, the tool schemas
+/// counted — and the tool schemas' own estimate, what rides every request
+/// beside the messages (`docs/background-compaction.md` *The lines on the
+/// gauge*).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Baseline {
+    /// The footer gauge, in tokens; 0 for none known.
+    pub used: u64,
+    /// The tool schemas' estimate, in tokens.
+    pub overhead: u64,
 }
 
 /// Where the session's one background summary stands.
@@ -161,9 +181,13 @@ struct SlotState {
     /// A summary was swapped in and no round top has measured the context it
     /// left yet.
     landed_unmeasured: bool,
-    /// A summary swapped in this turn left the context at or past the
-    /// ceiling: none is started again until the next turn.
-    futile: bool,
+    /// Whether the last landing left the context at or past the ceiling, by
+    /// the gauge's count or the turn's own.
+    last_landing_past: bool,
+    /// This turn's landings that did ([`MAX_PAST_LANDINGS`]).
+    past_landings: u32,
+    /// The gauge the boundary handed the next turn to start.
+    baseline: Baseline,
 }
 
 impl CompactionSlot {
@@ -255,7 +279,10 @@ impl CompactionSlot {
             state.failures = 0;
             state.cycle_start = after;
             state.landed_unmeasured = true;
-            state.futile = state.window.is_some_and(|window| after >= ceiling(window));
+            state.last_landing_past = state.window.is_some_and(|window| after >= ceiling(window));
+            if state.last_landing_past {
+                state.past_landings += 1;
+            }
         }
     }
 
@@ -269,34 +296,83 @@ impl CompactionSlot {
             state.cycle_start = 0;
             state.answer = None;
             state.landed_unmeasured = false;
-            state.futile = false;
+            state.last_landing_past = false;
+            state.past_landings = 0;
         }
     }
 
-    /// Whether a compaction this turn already left the context at or past
-    /// the ceiling, so no summary is started until the next turn.
+    /// Whether this turn's compactions could not bring the context under the
+    /// ceiling, a refold included ([`MAX_PAST_LANDINGS`]), so no summary is
+    /// started until the next turn.
     #[must_use]
     pub fn futile(&self) -> bool {
-        self.state().is_some_and(|state| state.futile)
+        self.state()
+            .is_some_and(|state| state.past_landings >= MAX_PAST_LANDINGS)
     }
 
-    /// A turn began: whatever the last one found futile, it may compact — a
-    /// swap no round top has measured yet is still measured at its first.
-    pub fn turn_started(&self) {
+    /// Whether a summary started between turns is held off: the last landing
+    /// left the context at or past the ceiling, and with no turn waiting on
+    /// it a summary started there could only land there again — the next
+    /// turn refolds instead — or this turn is spent.
+    #[must_use]
+    pub fn holds_idle_starts(&self) -> bool {
+        self.state().is_some_and(|state| {
+            state.last_landing_past || state.past_landings >= MAX_PAST_LANDINGS
+        })
+    }
+
+    /// The boundary, just before a turn starts: the gauge it starts from.
+    pub fn set_baseline(&self, baseline: Baseline) {
         if let Some(mut state) = self.state() {
-            state.futile = false;
+            state.baseline = baseline;
         }
+    }
+
+    /// A turn began: whatever the last one could not compact, it may — a
+    /// swap no round top has measured yet is still measured at its first.
+    /// Returns the gauge the turn was handed, which is read once.
+    pub fn turn_started(&self) -> Baseline {
+        let Some(mut state) = self.state() else {
+            return Baseline::default();
+        };
+        state.past_landings = 0;
+        std::mem::take(&mut state.baseline)
     }
 
     /// The first round top after a swap measures the context it left by the
-    /// turn's own count: at or past the ceiling, the compaction could not
-    /// help, and another summary now would only land in the same place.
+    /// turn's own count: at or past the ceiling the landing could not help,
+    /// counted once whichever count said so.
     fn measure_landing(&self, used: u64) {
         if let Some(mut state) = self.state()
             && std::mem::take(&mut state.landed_unmeasured)
+            && !state.last_landing_past
             && state.window.is_some_and(|window| used >= ceiling(window))
         {
-            state.futile = true;
+            state.last_landing_past = true;
+            state.past_landings += 1;
+        }
+    }
+
+    /// The context's size right after the last compaction, as the boundary
+    /// reads it off the history — 0 for a conversation with none.
+    pub fn set_cycle_start(&self, cycle_start: u64) {
+        if let Some(mut state) = self.state() {
+            state.cycle_start = cycle_start;
+        }
+    }
+
+    /// The loop bottom, with no turn in flight: let go of a job the loop
+    /// holds no record of — its start dropped with the channel an Esc or a
+    /// `/clear` swapped, so no worker writes it and nothing else would ever
+    /// free the slot. Its `known` job, if any, is kept; the cycle is not
+    /// touched, the history being the same.
+    pub fn drop_unknown(&self, known: Option<u64>) {
+        if let Some(mut state) = self.state()
+            && let Job::Running(id) | Job::Ready(id) = state.job
+            && known != Some(id)
+        {
+            state.job = Job::None;
+            state.answer = None;
         }
     }
 
@@ -338,15 +414,20 @@ pub fn round_top(
     cancel: &CancelToken,
     pause: &mut dyn FnMut(),
 ) -> Option<Vec<ContextMessage>> {
+    // A turn an Esc stopped may still reach a round top on its way out:
+    // what it would start, nobody would hear of.
+    if cancel.is_cancelled() {
+        return None;
+    }
     slot.measure_landing(used);
     let mut announced = None;
     loop {
         let window = slot.window()?;
-        // A swap this turn that left the context past its ceiling starts
-        // nothing more until the next turn, as a cycle's failures do
-        // (`docs/background-compaction.md` *Failures and edges*): the
-        // system prompt and tools alone fill a small window, or the tail kept
-        // verbatim is that large, and summarizing again would loop.
+        // Compactions this turn that could not bring the context under its
+        // ceiling, a refold included, start nothing more until the next turn,
+        // as a cycle's failures do (`docs/background-compaction.md`
+        // *Failures and edges*): what rides every request alone fills the
+        // window, and summarizing again would loop.
         let failures = if slot.futile() {
             MAX_FAILURES
         } else {
@@ -620,6 +701,82 @@ mod tests {
     }
 
     #[test]
+    fn the_cycle_start_the_boundary_reads_off_the_history_moves_the_start_line() {
+        let slot = configured();
+        slot.set_cycle_start(90_000);
+        assert_eq!(slot.cycle_start(), 90_000);
+        let (tx, mut rx) = channel();
+        // 170k less half the 80k the cycle began with: 130k.
+        round_top(&slot, 125_000, &tx, &CancelToken::new(), &mut || {});
+        assert!(drained(&mut rx).is_empty(), "below the cycle's start line");
+        round_top(&slot, 131_000, &tx, &CancelToken::new(), &mut || {});
+        assert!(
+            matches!(
+                drained(&mut rx).as_slice(),
+                [StreamEvent::CompactionStart { .. }]
+            ),
+            "past it"
+        );
+    }
+
+    #[test]
+    fn a_turn_reads_the_gauge_it_was_handed_once() {
+        let slot = configured();
+        let baseline = Baseline {
+            used: 150_000,
+            overhead: 8_000,
+        };
+        slot.set_baseline(baseline);
+        assert_eq!(slot.turn_started(), baseline);
+        assert_eq!(
+            slot.turn_started(),
+            Baseline::default(),
+            "a turn nobody handed one measures by the estimate"
+        );
+    }
+
+    #[test]
+    fn a_job_the_loop_never_heard_of_is_let_go() {
+        // Its start was dropped with the channel an Esc or a /clear swapped:
+        // no worker writes it, and nothing else would ever free the slot.
+        let slot = configured();
+        let id = slot.begin().expect("nothing running");
+        slot.drop_unknown(None);
+        assert_eq!(slot.job(), Job::None);
+        assert!(
+            slot.begin().is_some_and(|next| next != id),
+            "the slot is free again"
+        );
+    }
+
+    #[test]
+    fn the_loop_keeps_the_job_it_knows() {
+        let slot = configured();
+        let id = slot.begin().expect("nothing running");
+        slot.drop_unknown(Some(id));
+        assert_eq!(slot.job(), Job::Running(id));
+        slot.ready(id);
+        slot.drop_unknown(Some(id));
+        assert_eq!(slot.job(), Job::Ready(id));
+    }
+
+    #[test]
+    fn a_cancelled_turn_starts_no_summary() {
+        // A turn an Esc stopped may still reach a round top on its way out:
+        // what it would start, nobody would hear of.
+        let slot = configured();
+        let (tx, mut rx) = channel();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let swapped = round_top(&slot, 175_000, &tx, &cancel, &mut || {
+            panic!("nothing to wait for")
+        });
+        assert_eq!(swapped, None);
+        assert_eq!(slot.job(), Job::None);
+        assert!(drained(&mut rx).is_empty());
+    }
+
+    #[test]
     fn a_forgotten_job_ignores_its_late_news() {
         // The history moved (/clear, a backtrack): the job is dropped, and a
         // worker that finishes afterwards changes nothing.
@@ -830,36 +987,69 @@ mod tests {
         slot.landed(id, after);
     }
 
-    #[test]
-    fn a_landing_past_the_ceiling_starts_nothing_more_this_turn() {
-        // The system prompt and tools alone fill a small window, or the tail
-        // kept verbatim is that large: another summary now would land in the
-        // same place, so the turn goes on uncompacted rather than loop.
-        let slot = configured();
-        swapped_in(&slot, 180_000);
+    /// The job a refold started at the last round top, written and swapped
+    /// in at `after`.
+    fn refold_landed(slot: &CompactionSlot, after: u64) {
+        let Job::Running(id) = slot.job() else {
+            panic!("a refold is running: {:?}", slot.job());
+        };
+        slot.ready(id);
+        slot.landed(id, after);
+    }
+
+    /// One round top at `used` whose waits end as an Esc would: what it sent.
+    fn round_top_once(slot: &CompactionSlot, used: u64) -> Vec<StreamEvent> {
         let (tx, mut rx) = channel();
-        for used in [180_000, 185_000, 199_000] {
-            let cancel = CancelToken::new();
-            let swapped = round_top(&slot, used, &tx, &cancel, &mut || cancel.cancel());
-            assert_eq!(swapped, None);
-        }
-        assert!(drained(&mut rx).is_empty(), "no summary started");
-        assert!(slot.futile());
+        let cancel = CancelToken::new();
+        round_top(slot, used, &tx, &cancel, &mut || cancel.cancel());
+        drained(&mut rx)
+    }
+
+    fn starts(events: &[StreamEvent]) -> bool {
+        matches!(events.first(), Some(StreamEvent::CompactionStart { .. }))
     }
 
     #[test]
-    fn the_turns_own_measure_after_a_swap_can_find_it_futile_too() {
-        // The gauge's calibrated count put the swap under the ceiling, the
-        // turn's own count of its rebuilt list over it: either says another
-        // summary now would only land there again.
+    fn a_swap_past_the_ceiling_is_refolded_once() {
+        // A tail of huge reads kept verbatim leaves the swap past the
+        // ceiling: summarizing everything once more, the tail included,
+        // brings it down, so the turn starts that summary and waits for it.
+        let slot = configured();
+        swapped_in(&slot, 180_000);
+        assert!(
+            !slot.futile(),
+            "one landing past the ceiling is not the end"
+        );
+        let events = round_top_once(&slot, 185_000);
+        assert!(starts(&events), "{events:?}");
+    }
+
+    #[test]
+    fn a_refold_that_lands_past_the_ceiling_spends_the_turn() {
+        // The system prompt and the tool schemas alone fill a small window:
+        // another summary would land where this one did, so the turn goes on
+        // uncompacted rather than loop.
+        let slot = configured();
+        swapped_in(&slot, 180_000);
+        round_top_once(&slot, 185_000);
+        refold_landed(&slot, 181_000);
+        assert!(slot.futile());
+        for used in [181_000, 190_000, 199_000] {
+            assert!(round_top_once(&slot, used).is_empty(), "no summary started");
+        }
+    }
+
+    #[test]
+    fn the_turns_own_measure_after_a_swap_counts_too() {
+        // The gauge's calibrated count put each swap under the ceiling, the
+        // turn's own count of its rebuilt list over it: either says the
+        // landing could not help.
         let slot = configured();
         swapped_in(&slot, 120_000);
-        assert!(!slot.futile());
-        let (tx, mut rx) = channel();
-        let cancel = CancelToken::new();
-        let swapped = round_top(&slot, 175_000, &tx, &cancel, &mut || cancel.cancel());
-        assert_eq!(swapped, None);
-        assert!(drained(&mut rx).is_empty(), "no summary started");
+        let events = round_top_once(&slot, 175_000);
+        assert!(starts(&events), "the refold: {events:?}");
+        refold_landed(&slot, 120_000);
+        assert!(round_top_once(&slot, 176_000).is_empty(), "spent");
         assert!(slot.futile());
     }
 
@@ -890,47 +1080,54 @@ mod tests {
     fn a_new_turn_may_compact_again() {
         let slot = configured();
         swapped_in(&slot, 180_000);
-        let (tx, mut rx) = channel();
-        let cancel = CancelToken::new();
-        round_top(&slot, 180_000, &tx, &cancel, &mut || cancel.cancel());
+        round_top_once(&slot, 185_000);
+        refold_landed(&slot, 181_000);
         assert!(slot.futile());
-        assert!(drained(&mut rx).is_empty());
         slot.turn_started();
         assert!(!slot.futile());
         // Still past the ceiling, with the next message on top: the next turn
         // starts a summary and waits for it — until an Esc ends the wait.
-        let cancel = CancelToken::new();
-        round_top(&slot, 185_000, &tx, &cancel, &mut || cancel.cancel());
-        assert!(
-            matches!(
-                drained(&mut rx).first(),
-                Some(StreamEvent::CompactionStart { .. })
-            ),
-            "the next turn tries again"
-        );
+        let events = round_top_once(&slot, 185_000);
+        assert!(starts(&events), "the next turn tries again: {events:?}");
     }
 
     #[test]
     fn a_new_turn_still_measures_a_swap_no_round_top_saw() {
-        // Landed between turns: the turn that follows measures it at its
-        // first round top, whatever the turn's start cleared.
+        // Landed between turns: the turn that follows counts it at its first
+        // round top, so its own refold landing past the ceiling spends it.
         let slot = configured();
         swapped_in(&slot, 120_000);
         slot.turn_started();
-        let (tx, mut rx) = channel();
-        let cancel = CancelToken::new();
-        round_top(&slot, 176_000, &tx, &cancel, &mut || cancel.cancel());
-        assert!(drained(&mut rx).is_empty());
-        assert!(slot.futile());
+        let events = round_top_once(&slot, 176_000);
+        assert!(starts(&events), "the refold: {events:?}");
+        refold_landed(&slot, 180_000);
+        assert!(slot.futile(), "the landing between turns counted");
+    }
+
+    #[test]
+    fn between_turns_nothing_starts_after_a_landing_past_the_ceiling() {
+        // No turn waits on a summary there, so one started at idle after a
+        // landing past the ceiling could only land there again; the next
+        // turn refolds instead.
+        let slot = configured();
+        swapped_in(&slot, 180_000);
+        assert!(slot.holds_idle_starts());
+        swapped_in(&slot, 90_000);
+        assert!(
+            !slot.holds_idle_starts(),
+            "a landing under the ceiling lifts it"
+        );
     }
 
     #[test]
     fn forgetting_a_conversation_forgets_its_futility() {
         let slot = configured();
         swapped_in(&slot, 180_000);
-        assert!(slot.futile());
+        round_top_once(&slot, 185_000);
+        refold_landed(&slot, 181_000);
+        assert!(slot.futile() && slot.holds_idle_starts());
         slot.forget();
-        assert!(!slot.futile());
+        assert!(!slot.futile() && !slot.holds_idle_starts());
     }
 
     // ── The summarizer's stream (docs/background-compaction.md *The lifecycle*)

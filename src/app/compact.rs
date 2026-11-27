@@ -269,6 +269,28 @@ impl App {
         }
     }
 
+    /// The context's size right after the last compaction in the history —
+    /// background compaction's cycle start (`docs/background-compaction.md`
+    /// *The lines on the gauge*) — or 0 for a conversation with none.
+    #[must_use]
+    pub fn compaction_cycle_start(&self) -> u64 {
+        self.history
+            .iter()
+            .rev()
+            .find_map(|item| match item {
+                HistoryItem::Compaction(compaction) => Some(compaction.after),
+                _ => None,
+            })
+            .unwrap_or(0)
+    }
+
+    /// The conversation's epoch: bumped when it is replaced or rewound (a
+    /// `/clear`, a `/resume` load, a backtrack) and by nothing else.
+    #[must_use]
+    pub const fn history_epoch(&self) -> u64 {
+        self.history_epoch
+    }
+
     /// Whether a background compaction may start or land **between turns**:
     /// no turn in flight (a running one compacts at its own round tops) and a
     /// conversation to summarize.

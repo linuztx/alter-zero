@@ -183,6 +183,15 @@ impl App {
     /// gauge re-reads the whole context with the new set's estimate in it —
     /// every request carries the schemas, the first one included
     /// (`docs/token-estimate.md`).
+    /// The estimate of the main session's tool schemas — what rides every
+    /// request beside the messages, which background compaction's measure
+    /// counts beside a list it estimates whole
+    /// (`docs/background-compaction.md`).
+    #[must_use]
+    pub const fn tools_estimate(&self) -> u64 {
+        self.tools_estimate
+    }
+
     pub fn set_tool_definitions(&mut self, tools: Arc<[ToolDefinition]>) {
         if !Arc::ptr_eq(&self.tool_definitions, &tools) && *self.tool_definitions != *tools {
             self.tools_estimate = tools

@@ -417,6 +417,26 @@ fn the_cell_measures_the_context_the_swap_replaced() {
 }
 
 #[test]
+fn the_cycle_starts_where_the_last_compaction_left_the_context() {
+    // Read off the history rather than kept beside it, so a /clear, a
+    // /resume or a rewind can never leave another conversation's cycle in
+    // place.
+    let mut app = App::new();
+    app.set_context_window(Some(200_000));
+    app.record_user_message("port the payments module");
+    assert_eq!(app.compaction_cycle_start(), 0, "no compaction yet");
+    app.begin_background_compaction(1);
+    app.background_compaction_written(1, "ported stripe.rs".into(), 4);
+    let marker = app.land_background_compaction(1).expect("it lands");
+    app.record_user_message("and the ledger");
+    assert_eq!(app.compaction_cycle_start(), marker.after);
+    let epoch = app.history_epoch();
+    app.clear_conversation();
+    assert_eq!(app.compaction_cycle_start(), 0, "a new conversation");
+    assert_ne!(app.history_epoch(), epoch);
+}
+
+#[test]
 fn news_of_another_job_changes_nothing() {
     let mut app = App::new();
     app.record_user_message("port the payments module");

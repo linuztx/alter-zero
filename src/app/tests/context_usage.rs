@@ -15,6 +15,19 @@ fn tool(name: &str, size: usize) -> ToolDefinition {
     }
 }
 
+#[test]
+fn the_tool_schemas_estimate_is_what_rides_every_request_beside_the_messages() {
+    // Handed to a turn with the gauge, so the compaction measure counts the
+    // schemas beside a list it estimates whole (docs/background-compaction.md).
+    let mut app = App::new();
+    assert_eq!(app.tools_estimate(), 0);
+    app.set_tool_definitions(Arc::from(vec![tool("bash", 4_000)]));
+    let one = app.tools_estimate();
+    assert!(one > 0);
+    app.set_tool_definitions(Arc::from(vec![tool("bash", 4_000), tool("read", 2_000)]));
+    assert!(app.tools_estimate() > one);
+}
+
 /// An app with a system prompt, a tool set and a short conversation.
 fn session() -> App {
     let mut app = App::new();

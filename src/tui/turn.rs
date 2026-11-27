@@ -309,6 +309,15 @@ impl Session<'_> {
         images: Vec<PathBuf>,
         context: Vec<context::ContextMessage>,
     ) {
+        // The gauge the turn's first round top measures from, and what the
+        // tool schemas add to a list it estimates whole
+        // (docs/background-compaction.md *The lines on the gauge*).
+        self.app.sync_context_used();
+        self.compaction
+            .set_baseline(alter_zero::compaction::Baseline {
+                used: self.app.context_used(),
+                overhead: self.app.tools_estimate(),
+            });
         let cancel = CancelToken::new();
         let handle =
             self.models

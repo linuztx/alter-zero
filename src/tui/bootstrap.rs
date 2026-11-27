@@ -715,6 +715,7 @@ impl<'t> Session<'t> {
             compaction_rx,
             compaction_worker: None,
             compaction_hooks: Vec::new(),
+            compaction_epoch: 0,
             permissions,
             ask,
             task_registry,

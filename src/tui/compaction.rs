@@ -5,7 +5,7 @@
 //! bottom's tick.
 //!
 //! The pure halves live elsewhere: the policy and the slot the turn shares in
-//! `alter_zero::compaction`, the job's state and its anchored marker on `App`
+//! `alter_zero::compaction`, the job's state and its marker on `App`
 //! (`app/compact.rs`). This module is their I/O — a one-off backend spawned,
 //! a worker's answer taken in, the `Context compacted` cell committed.
 
@@ -159,7 +159,7 @@ impl Session<'_> {
 
     /// The running turn reached its ceiling with summary `id` held
     /// (`StreamEvent::CompactionSwap`) and waits for the answer: land it —
-    /// the anchored marker appended, the compact hooks' cells and the
+    /// its marker appended, the compact hooks' cells and the
     /// `● Context compacted · … · background` cell committed in place — and
     /// hand the turn the context re-derived from history exactly as the next
     /// turn's start would, so the list it goes on with is the list that turn
@@ -194,13 +194,33 @@ impl Session<'_> {
     /// headless run starts one only while it waits on its subagents, the
     /// boundary a follow-up turn comes out of.
     pub(crate) fn tick_background_compaction(&mut self, idle_start: bool) {
+        // A conversation replaced or rewound (`/clear`, a `/resume`, a
+        // backtrack) starts its compaction afresh: no job, no failures, no
+        // futility of the last one's — whether or not a summary was held.
+        let epoch = self.app.history_epoch();
+        if epoch != self.compaction_epoch {
+            self.compaction_epoch = epoch;
+            self.let_go_of_compaction();
+        }
         self.compaction.configure(self.app.compaction_window());
+        // Read off the history, never kept beside it: the context the last
+        // marker left, or 0.
+        self.compaction
+            .set_cycle_start(self.app.compaction_cycle_start());
         if self.app.background_compaction().is_some()
             && (self.app.background_compaction_stale() || self.compaction.window().is_none())
         {
             self.let_go_of_compaction();
         }
-        if self.inflight.is_some() || !self.app.can_compact_idle() {
+        if self.inflight.is_some() {
+            return;
+        }
+        // No turn in flight, so no start can still be on its way: a job the
+        // slot holds that this side never heard of had its start dropped
+        // with the channel an Esc or a `/clear` swapped, and is let go.
+        self.compaction
+            .drop_unknown(self.app.background_compaction().map(|job| job.id));
+        if !self.app.can_compact_idle() {
             return;
         }
         // No turn is waiting any more: the next one wears its own verb until
@@ -229,12 +249,12 @@ impl Session<'_> {
         };
         let line =
             compaction::start_line(compaction::ceiling(window), self.compaction.cycle_start());
-        // Two failed summaries this cycle, or a swap that left the context
-        // past its ceiling: summarizing again now would only land in the same
-        // place, so nothing starts until the next turn.
+        // Two failed summaries this cycle, or a landing that left the context
+        // past its ceiling: with no turn waiting on it, a summary started
+        // here could only land there again, so the next turn refolds instead.
         if self.app.context_used() < line
             || self.compaction.failures() >= compaction::MAX_FAILURES
-            || self.compaction.futile()
+            || self.compaction.holds_idle_starts()
         {
             return;
         }

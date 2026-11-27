@@ -896,10 +896,12 @@ impl ReplySource for LlmBackend {
         let steer = self.steer.clone();
         thread::spawn(move || {
             // A new turn may compact again, whatever the last one found
-            // futile (docs/background-compaction.md *Failures and edges*).
-            if let Some(slot) = &compaction {
-                slot.turn_started();
-            }
+            // futile (docs/background-compaction.md *Failures and edges*),
+            // and its first round top measures from the gauge it was handed.
+            let baseline = compaction
+                .as_ref()
+                .map(crate::compaction::CompactionSlot::turn_started)
+                .unwrap_or_default();
             // Encoding the attachments reads files — done here on the backend
             // thread so a large image never stalls the event loop. A known
             // non-vision model gets omission notes instead of parts
@@ -972,8 +974,10 @@ impl ReplySource for LlmBackend {
                     })
                     .unwrap_or_default(),
             );
-            // The context's size at each round top, for the compaction step.
-            let mut meter = PromptMeter::default();
+            // The context's size at each round top, for the compaction step:
+            // the gauge until the first usage frame, then the provider's count
+            // (docs/background-compaction.md *The lines on the gauge*).
+            let mut meter = PromptMeter::from_gauge(baseline.used, baseline.overhead);
             let mut executor = RealToolExecutor::new()
                 .with_vision(vision)
                 .with_imagegen(imagegen);
@@ -2346,34 +2350,60 @@ fn stream_round_measured(
 /// The context's size at a round top, as background compaction decides on it
 /// (`docs/background-compaction.md` *The lines on the gauge*): the provider's
 /// prompt count for the turn's latest request plus the estimate of every
-/// message appended since — the footer gauge's rule — or, before the turn has
-/// a count of its own (its first round, or the first after a swap), the
-/// estimate of the whole list.
+/// message appended since — the footer gauge's rule. Before the turn has a
+/// count of its own, the footer gauge it started from stands in for one: it
+/// counts what the first request carries, calibrated and with the tool
+/// schemas, where the bare estimate of the list counts neither. After a swap
+/// the list is estimated whole, the tool schemas' estimate beside it.
 #[derive(Debug, Default, Clone, Copy)]
 struct PromptMeter {
     /// The latest request's prompt tokens, and how many messages it carried.
     measured: Option<(u64, usize)>,
+    /// The footer gauge the turn started from, until the first round top
+    /// reads it — or a usage frame makes it moot.
+    gauge: Option<u64>,
+    /// The tool schemas' estimate: what rides every request beside the
+    /// messages.
+    overhead: u64,
 }
 
 impl PromptMeter {
+    /// A meter for a turn that started with the footer gauge at `gauge`
+    /// tokens (0 for none known), `overhead` of them the tool schemas.
+    const fn from_gauge(gauge: u64, overhead: u64) -> Self {
+        Self {
+            measured: None,
+            gauge: if gauge > 0 { Some(gauge) } else { None },
+            overhead,
+        }
+    }
+
     /// The provider counted `input` prompt tokens for a request of `sent`
     /// messages.
     const fn measured(&mut self, input: u64, sent: usize) {
         self.measured = Some((input, sent));
+        self.gauge = None;
     }
 
-    /// The list was replaced: the last count describes one that is gone.
+    /// The list was replaced: the last count, and the gauge the turn started
+    /// from, describe one that is gone.
     const fn reset(&mut self) {
         self.measured = None;
+        self.gauge = None;
     }
 
     /// The context `messages` stands at.
-    fn used(&self, messages: &[ChatMessage]) -> u64 {
+    fn used(&mut self, messages: &[ChatMessage]) -> u64 {
+        if self.measured.is_none()
+            && let Some(gauge) = self.gauge.take()
+        {
+            self.measured = Some((gauge, messages.len()));
+        }
         match self.measured {
             Some((input, sent)) => {
                 input.saturating_add(estimate_wire(messages.get(sent..).unwrap_or_default()))
             }
-            None => estimate_wire(messages),
+            None => self.overhead.saturating_add(estimate_wire(messages)),
         }
     }
 }
@@ -2544,6 +2574,45 @@ mod tests {
             r#"{"path":"src/ledger.rs","content":"pub struct Ledger { entries: Vec<Entry> }"}"#,
         )];
         assert!(PromptMeter::default().used(&[call]) > 10);
+    }
+
+    #[test]
+    fn the_first_round_top_reads_the_gauge_the_turn_started_from() {
+        // The gauge counts what the first request carries, calibrated and
+        // with the tool schemas, where the bare estimate of the list counts
+        // neither; what joins after it is estimated on top.
+        let msgs = vec![
+            ChatMessage::new("system", "be terse"),
+            ChatMessage::user("port the payments module"),
+        ];
+        let mut meter = PromptMeter::from_gauge(150_000, 8_000);
+        assert_eq!(meter.used(&msgs), 150_000);
+        let mut grown = msgs.clone();
+        grown.push(ChatMessage::new("assistant", "reading the module"));
+        assert_eq!(meter.used(&grown), 150_000 + wire_estimate(&grown[2..]));
+    }
+
+    #[test]
+    fn a_usage_frame_outranks_the_gauge() {
+        let msgs = vec![
+            ChatMessage::new("system", "be terse"),
+            ChatMessage::user("port the payments module"),
+            ChatMessage::new("assistant", "reading the module"),
+        ];
+        let mut meter = PromptMeter::from_gauge(150_000, 8_000);
+        meter.measured(152_000, 2);
+        assert_eq!(meter.used(&msgs), 152_000 + wire_estimate(&msgs[2..]));
+    }
+
+    #[test]
+    fn after_a_swap_the_tool_schemas_are_counted_beside_the_list() {
+        // The gauge described the list a swap replaced, so it is never read
+        // again; what rides every request beside the messages still counts.
+        let mut meter = PromptMeter::from_gauge(150_000, 8_000);
+        meter.used(&[ChatMessage::user("the long conversation")]);
+        meter.reset();
+        let msgs = vec![ChatMessage::user("the compacted window")];
+        assert_eq!(meter.used(&msgs), 8_000 + wire_estimate(&msgs));
     }
 
     #[test]
