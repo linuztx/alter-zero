@@ -61,8 +61,10 @@ Three small pieces, each the main session's own rule one level down:
   the conversation **on screen**: the viewed agent's `context_used` against
   `App::agent_context_window` inside a session view, the main pair otherwise,
   and `None` (no gauge) when that window is unknown.
-  `context_used`/`context_window` stay background compaction's inputs:
-  compaction is a fact about the lead's conversation whatever is on screen.
+  `context_used`/`context_window` stay the lead's background compaction's
+  inputs whatever is on screen; a subagent compacts on its own thread,
+  against the window this rule gives it and by its own measure
+  (`docs/background-compaction.md` *Subagents*).
 - **Whose window, whose model.** A definition may pin `model:`
   (`docs/subagents.md`), and a pinned model has a window this session never
   learned — the listing is read for the *selected* model only. So

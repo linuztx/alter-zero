@@ -274,8 +274,9 @@ allowlisted set its launch builds — kept by the backend until the type or
 its allowlist moves, since the page asks at every loop bottom), its briefing
 (`App::agent_system_reminder`) and its transcript — against the window of the
 model it runs on, with its own last request and a **This agent** ledger in
-place of the session's. A subagent never auto-compacts, so its bar has no
-hatched headroom.
+place of the session's. A subagent compacts against its own window
+(`docs/background-compaction.md` *Subagents*), so its bar's hatched headroom
+starts at its own ceiling.
 
 ## Keys
 

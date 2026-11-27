@@ -299,8 +299,10 @@ again (`docs/agent-tools.md` *A resume is news when it starts*).
   runs on, and that model's name when its definition pins one
   (`App::context_gauge` / `App::viewed_agent_model`, fed by
   `ReplySource::agent_model` and `ModelSession::agent_context_window` through
-  `sync_agent_view_context`); the lead's pair, which alone drives auto-compact,
-  is back with the main view. Overlay returns and
+  `sync_agent_view_context`); the lead's pair, which drives the lead's
+  compaction, is back with the main view — the agent compacts on its own
+  thread against the same window (`docs/background-compaction.md`
+  *Subagents*). Overlay returns and
   resizes repaint the agent view (`tui::view::Session::repaint_active_view`).
 
 ## Rendering (`ui`)

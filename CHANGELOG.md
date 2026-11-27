@@ -33,6 +33,12 @@ release heading when a version is cut.
     size of the context at the moment it was replaced. A failed summary
     shows an error toast, and after two failures none is tried again until
     a compaction lands.
+  - Subagents compact the same way. A subagent that outgrew its model's
+    context window used to end on the provider's error (and on Ollama
+    silently lost its task). Now it summarizes its own conversation in the
+    background, swaps the summary in at its own ceiling and finishes. Its
+    session view shows the `Compacting…` wait and the `Context compacted`
+    line like the main one does.
   - **Auto compact** in `/settings` still turns all of it off, and `/compact`
     by hand works as before.
 - **The compaction summary is written from the conversation alone.**

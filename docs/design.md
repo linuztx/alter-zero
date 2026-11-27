@@ -347,8 +347,9 @@ which Ctrl+V reads the clipboard from.
   Phase 50; with the model's context window known the footer carries a
   `{used}/{window} ({pct}%)` gauge and a running turn **compacts in the
   background** — a summary written while the agent works, swapped in at the
-  ceiling (the window less 15%), the cell tagged `· background` —
-  `docs/background-compaction.md`, Phases 51, 171 and 172), and `/context` →
+  ceiling (the window less 15%), the cell tagged `· background`, and a
+  subagent the same on its own thread —
+  `docs/background-compaction.md`, Phases 51, 171, 172 and 173), and `/context` →
   `OpenContextUsage` idle or mid-turn (the read-only page that breaks the
   window down by what fills it and reports the provider's tokens in/out and
   cache hit, kept live by the boundary — see `docs/context-usage.md`,

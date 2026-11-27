@@ -253,16 +253,82 @@ when the skipped item is in the short tail itself.
 - **Rate limits**: the summary is a second request on the same provider while
   the turn makes its own; its retries back off on the same budget.
 - **Headless** (`-p`) runs the same loop, so a long `-p` task compacts too.
-- **Subagents** run their own loops over their own transcripts and do not
-  compact yet — they never did. The round-top step is written for any
-  `run_agent` loop; wiring a subagent's slot to its `AgentRun` is the next
-  step.
+- **Subagents** compact too, on their own threads — the next section.
+
+## Subagents
+
+A subagent runs its own loop over its own context, and an `explore` agent
+reading a codebase is the workload that fills a window fastest. Without
+compaction one that outgrew its window ended on the provider's error, and on
+Ollama, which drops a too-long prompt from the front without a word, it lost
+its system prompt and its task. It now compacts by the same lines and the
+same lifecycle as the lead, one level down
+(`src/llm/compaction.rs`, `AgentCompaction`).
+
+**Where it runs.** The lead hands its swap to the boundary because its
+conversation of record is its history, from which the boundary re-derives
+the list the turn goes on with. A subagent's conversation of record is its
+own message list — what its thread sends every round, and what the registry
+stores for a chat continuation — and only its thread holds it. So the whole
+job runs there: the round top decides with the lead's `decide`, a summary
+starts on a thread of its own (`spawn_agent_summary`, a tools-free run of
+the agent loop, so an empty or cut-off summary is asked to go on, folded by
+`SummaryStream`), and at the ceiling the agent **splices its own list**.
+Nothing is derived twice, so nothing can drift: the list the agent goes on
+with is the list the registry stores.
+
+**The window** is the one its session view gauges against
+(`docs/agent-context-gauge.md`): the session's for a type that inherits the
+model, and for a type pinned to another model only the
+`ALTER_ZERO_CONTEXT_WINDOW` override, since the listing is read for the
+selected model alone. The boundary configures both on the shared slot at
+every loop bottom (`CompactionSlot::configure_pinned`, `agent_window`), off
+with **Auto compact** like the lead's, and the agent reads its own at every
+round top. Its measure is the lead's `PromptMeter`: the provider's count of
+its last request plus the estimate of what joined since, its tool schemas
+beside a list it estimates whole.
+
+**What the summarizer reads** is the lead's rule over the agent's list
+(`summarizer_input`): its own system prompt, the conversation, the compact
+prompt — never the agent's system prompt, never a `<system-reminder>` (its
+briefing, a hook's added context).
+
+**The splice** (`spliced`) keeps the agent's system prompt and its briefing,
+then the user's texts the 20k budget keeps — its task and the messages the
+user typed into its session; not a `[system]` note the app spoke, a reminder
+or an earlier bridge, the lead's typed-only rule read off the wire
+(`context::kept_user_texts`) — then the summary's bridge, then every message
+from the summary's start on verbatim. A continuation over a list a summary
+was spliced into resumes its cycle at its first round top
+(`AgentCompaction::for_list`), so a list compacted moments ago is not
+summarized again at once.
+
+**What its transcript records.** The agent's thread tells its own stream,
+so every event lands in order with everything else the agent did:
+`CompactionStart` (the transcript notes its length there, the lead's
+snapshot one level down), `CompactionWaiting` (its session view's status
+line wears `Compacting…`), `CompactionLanded` — the marker, keeping what was
+recorded since the start, so the session view commits the `● Context
+compacted · … · background` cell in place and the agent's gauge and Ctrl+D
+derive the compacted shape — and `CompactionUsage`, the summary's frames:
+billed, into the session's and the agent's ledgers and the rollout's `usage`
+lines under the agent with `compact`, never its gauge or last request.
+
+**Failures and edges** are the lead's: two failed summaries stop starts
+until one lands, a landing past the ceiling is summarized once more and a
+second spends the run, a cancelled run starts nothing and stops waiting, and
+a run that ends mid-summary stops its summary's thread (billing it if it had
+finished). A subagent's summary runs no compact hooks: `PreCompact` and
+`PostCompact` are the lead's conversation's events.
 
 ## What the user sees
 
 - While a summary is being written: a dim row under the status line,
   `⎿ Compacting in the background · 12s`; once written, `⎿ Summary ready ·
   swaps in at 85%`. The spinner keeps its verb — the agent is still working.
+- Inside a subagent's session view, the same for that agent: `Compacting…`
+  while it waits, the cell in its transcript, its gauge dropping, and on its
+  `/context` page the hatched reserve at its own ceiling.
 - At the swap: the `● Context compacted · 170k → 82k tokens · 47s ·
   background` cell, in place in the transcript, and the gauge drops. Its
   `before` is the context at the swap — the turn kept working while the
@@ -273,7 +339,11 @@ when the skipped item is in the short tail itself.
 
 - `src/compaction.rs` — the pure policy: `ceiling`, `start_line`, the
   decision at a round top, and the `CompactionSlot` the turn and the boundary
-  share (the `SteerQueue` shape).
+  share (the `SteerQueue` shape), the subagents' windows on it.
+- `src/llm/compaction.rs` — a subagent's: `summarizer_input`, `spliced` and
+  `AgentCompaction`; its thread's half in `src/llm/backend.rs`
+  (`spawn_subagent_run`, `spawn_agent_summary`); its transcript's in
+  `src/agents.rs` (`AgentRun::apply`, `live_verb`).
 - `src/context.rs` — `conversation_messages` (the summarizer's input) and the
   `kept` derivation; `src/session.rs` — the record's new fields.
 - `src/llm/backend.rs` — the round-top step in the `round` closure.
@@ -291,7 +361,8 @@ when the skipped item is in the short tail itself.
   `171-midturncompact.sh` (inside a running turn, against a stub provider:
   the start, the wait, the swap, the verbatim tail, the cell in place) and
   `172-backgroundcompact.sh` (a summary that lands while the turn reads on, one
-  that lands at idle on its own, and one a `/clear` lets go of).
+  that lands at idle on its own, and one a `/clear` lets go of) and
+  `173-agentcompact.sh` (a subagent's, watched from its session view).
 - `tests/headless.rs` — `a_long_turn_is_compacted_in_the_background_as_it_runs`:
   the request the swap built is the one the next turn derives, message for
-  message.
+  message; `a_subagent_that_outgrows_its_window_compacts_and_finishes`.

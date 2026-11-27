@@ -3220,9 +3220,17 @@ that leaves the context still past its ceiling is summarized once more, the
 tail included, and a second stops them for the rest of the turn
 (`MAX_PAST_LANDINGS`, `CompactionSlot::futile` — the old trigger's one
 attempt per turn, without which a window the system prompt and tools alone
-fill compacts for ever), subagents do not compact yet, and Phases 51, 171
-and 172 drive it between and inside turns, `tests/headless.rs` holding the
-swapped request to the one the next turn derives) in
+fill compacts for ever), and **a subagent compacts the same way on its own
+thread** — its conversation of record being its own message list, which its
+thread **splices** at its ceiling (`llm::compaction::AgentCompaction`, the
+summary on a tools-free run of the agent loop beside it, its window the
+gauge's rule read off the slot, `CompactionSlot::configure_pinned`/
+`agent_window`), its transcript recording the marker from
+`StreamEvent::CompactionLanded` and the summary's billing from
+`CompactionUsage` — and Phases 51, 171, 172 and 173 drive it between and
+inside turns and in a subagent's session view, `tests/headless.rs` holding
+the swapped request to the one the next turn derives and a subagent past its
+window to finishing) in
 `docs/compact.md`; and
 the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
 `ALTER_ZERO_*` environment variables — plus a hard-coded `retry::MAX_RETRIES`,
