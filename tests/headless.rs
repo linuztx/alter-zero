@@ -482,16 +482,19 @@ fn serve(mut stream: TcpStream, log: &Mutex<Vec<String>>) {
             r#"{"object":"list","data":[{"id":"stub-model"}]}"#.to_string(),
         )
     } else {
-        let dropped = {
+        let (dropped, grown) = {
             let mut log = log.lock().expect("the log");
             log.push(body.clone());
-            dropped_deltas(&body, &log)
+            (dropped_deltas(&body, &log), grow_reply(&body, &log))
         };
         if let Some(deltas) = dropped {
             drop_mid_reply(&mut stream, deltas);
             return;
         }
-        ("text/event-stream", chat_reply(&body))
+        (
+            "text/event-stream",
+            grown.unwrap_or_else(|| chat_reply(&body)),
+        )
     };
     let response = format!(
         "HTTP/1.1 200 OK\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
@@ -560,6 +563,54 @@ fn continues_a_cut_summary(body: &str) -> bool {
         })
         .unwrap_or_default();
     !offers_tools && last == alter_zero::llm::agent::CUT_OFF_NOTE
+}
+
+/// What a prompt says to make the stand-in's model keep reading: each round
+/// of the turn calls `bash` for [`GROW_WORDS`] words of output, until its
+/// request carries the summary ([`STAND_IN_SUMMARY`]) — or [`GROW_ROUNDS`]
+/// rounds have run, the bound on a conversation never compacted — and then
+/// answers `Done.` (docs/background-compaction.md).
+const GROW: &str = "HEADLESS_GROW";
+const GROW_ROUNDS: usize = 30;
+const GROW_WORDS: usize = 5_000;
+/// What the stand-in answers every summary request with.
+const STAND_IN_SUMMARY: &str = "The user ran a command.";
+
+/// The stand-in model's round in a [`GROW`] conversation, or `None` for any
+/// other request. The rounds are counted over every request the stand-in
+/// saw, since a compaction takes the earlier ones out of the request.
+fn grow_reply(body: &str, log: &[String]) -> Option<String> {
+    if !body.contains(GROW) || !offers_tools(body) {
+        return None;
+    }
+    let round = log
+        .iter()
+        .filter(|chat| chat.contains(GROW) && offers_tools(chat))
+        .count();
+    let frames = if round <= GROW_ROUNDS && !body.contains(STAND_IN_SUMMARY) {
+        let command = format!("echo round {round}; printf 'grow %.0s' $(seq 1 {GROW_WORDS})");
+        vec![
+            serde_json::json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 0, "id": format!("call_{round}"), "type": "function",
+                "function": {
+                    "name": "bash",
+                    "arguments": serde_json::json!({"command": command}).to_string(),
+                },
+            }]}}]}),
+            serde_json::json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+        ]
+    } else {
+        vec![
+            serde_json::json!({"choices": [{"delta": {"content": "Done."}}]}),
+            serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        ]
+    };
+    let mut sse: String = frames
+        .iter()
+        .map(|frame| format!("data: {frame}\n\n"))
+        .collect();
+    sse.push_str("data: [DONE]\n\n");
+    Some(sse)
 }
 
 /// What a prompt says to make the stand-in delegate, or start a command
@@ -658,7 +709,7 @@ fn chat_reply(body: &str) -> String {
         ]
     } else if !offers_tools {
         vec![
-            serde_json::json!({"choices": [{"delta": {"content": "The user ran a command."}}]}),
+            serde_json::json!({"choices": [{"delta": {"content": STAND_IN_SUMMARY}}]}),
             serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
         ]
     } else if last["role"] == "tool" || said.contains(GENERATED_NOTE) {
@@ -1025,6 +1076,143 @@ fn a_retry_in_a_summarys_second_round_keeps_its_first() {
     for summary in summaries {
         assert_eq!(summary, format!("{SUMMARY_HEAD}{SUMMARY_TAIL}"));
     }
+}
+
+/// Whether a logged chat request offers the model any tools — a summary
+/// request never does.
+fn offers_tools(body: &str) -> bool {
+    let request: serde_json::Value = serde_json::from_str(body).expect("a JSON request");
+    request["tools"]
+        .as_array()
+        .is_some_and(|tools| !tools.is_empty())
+}
+
+/// A chat request's messages as the wire carried them, minus the cache
+/// breakpoints a request marks on whichever messages are newest.
+fn wire_messages(body: &str) -> Vec<serde_json::Value> {
+    fn strip(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                map.remove("cache_control");
+                map.values_mut().for_each(strip);
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    let mut request: serde_json::Value = serde_json::from_str(body).expect("a JSON request");
+    strip(&mut request);
+    request["messages"].as_array().cloned().unwrap_or_default()
+}
+
+/// A turn that reads its way past the start line gets a summary written
+/// beside it and swapped in at a round top, the rounds since the summary
+/// started kept as they were and no round waiting on it — and the next turn
+/// opens on the very request the swap built, the marker's derivation
+/// rebuilding it message for message (docs/background-compaction.md).
+#[test]
+fn a_long_turn_is_compacted_in_the_background_as_it_runs() {
+    let world = World::new("background-compaction");
+    let stand_in = StandIn::start();
+    let run = |args: &[&str]| {
+        let mut command = world.command(args);
+        stand_in.configure(&world, &mut command);
+        command
+            .env("ALTER_ZERO_CONTEXT_WINDOW", "60000")
+            .stdin(Stdio::null())
+            .output()
+            .expect("the binary runs")
+    };
+    let first = run(&[
+        "-p",
+        "--permission-mode",
+        "master",
+        &format!("{GROW} read the logs"),
+    ]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    assert!(stdout(&first).contains("Done."), "{}", stdout(&first));
+    let chats = stand_in.chat_requests();
+    let shape: Vec<&str> = chats
+        .iter()
+        .map(
+            |chat| match (offers_tools(chat), chat.contains(STAND_IN_SUMMARY)) {
+                (false, _) => "summary",
+                (true, false) => "round",
+                (true, true) => "swapped",
+            },
+        )
+        .collect();
+    // One summary, written while the rounds went on: rounds ran after it was
+    // asked for and before it was swapped in, and the first request that
+    // carries it is the one that ended the turn.
+    let summary = shape
+        .iter()
+        .position(|kind| *kind == "summary")
+        .unwrap_or_else(|| panic!("no summary was written: {shape:?}"));
+    assert_eq!(
+        shape.iter().filter(|kind| **kind == "summary").count(),
+        1,
+        "{shape:?}"
+    );
+    assert_eq!(shape.last(), Some(&"swapped"), "{shape:?}");
+    assert!(
+        shape[summary..].contains(&"round"),
+        "the agent went on while it was written: {shape:?}"
+    );
+    let turns: Vec<&String> = chats.iter().filter(|chat| offers_tools(chat)).collect();
+    let last = wire_messages(turns.last().expect("a swapped request"));
+    assert_eq!(last[0]["role"], "system");
+    assert!(
+        last.iter()
+            .any(|message| message["content"].to_string().contains(STAND_IN_SUMMARY)),
+        "{last:#?}"
+    );
+    let bridge = last
+        .iter()
+        .position(|message| message["content"].to_string().contains(STAND_IN_SUMMARY))
+        .expect("the summary bridge");
+    assert!(
+        last[bridge..]
+            .iter()
+            .any(|message| message["role"] == "tool"),
+        "the rounds since the summary started stay: {last:#?}"
+    );
+    let records = rollout(&world);
+    let marker = records
+        .iter()
+        .find(|record| record["type"] == "compaction")
+        .unwrap_or_else(|| panic!("no compaction recorded: {records:#?}"));
+    assert_eq!(marker["payload"]["background"], true, "{marker}");
+    assert!(
+        marker["payload"]["kept"]
+            .as_u64()
+            .is_some_and(|kept| kept > 0),
+        "{marker}"
+    );
+    // The next turn re-sends what the swap built, then the reply and the new
+    // message.
+    let second = run(&["-p", "-c", "--permission-mode", "master", "and now?"]);
+    assert!(second.status.success(), "{}", stderr(&second));
+    let chats = stand_in.chat_requests();
+    let next = chats[shape.len()..]
+        .iter()
+        .find(|chat| offers_tools(chat))
+        .expect("the next turn's request");
+    let next = wire_messages(next);
+    assert!(next.len() > last.len(), "{next:#?}");
+    // The system prompt names this process's scratchpad, so it is the one
+    // message that differs between two runs whatever compaction does.
+    let excerpt =
+        |value: &serde_json::Value| value.to_string().chars().take(600).collect::<String>();
+    for (index, (was, now)) in last.iter().zip(&next).enumerate().skip(1) {
+        assert!(
+            was == now,
+            "message {index} differs:\n{}\n---\n{}",
+            excerpt(was),
+            excerpt(now)
+        );
+    }
+    assert_eq!(next[last.len()]["role"], "assistant");
 }
 
 // ===== the system prompt flags (docs/system-prompt.md) =====
