@@ -576,16 +576,38 @@ const GROW_WORDS: usize = 5_000;
 /// What the stand-in answers every summary request with.
 const STAND_IN_SUMMARY: &str = "The user ran a command.";
 
+/// Whether a user message of a logged chat request says `needle` — what a
+/// conversation was asked, as opposed to an `agent` call's arguments that
+/// quote it.
+fn user_says(body: &str, needle: &str) -> bool {
+    let request: serde_json::Value = serde_json::from_str(body).expect("a JSON request");
+    request["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|message| message["role"] == "user")
+        .any(|message| match &message["content"] {
+            serde_json::Value::String(text) => text.contains(needle),
+            serde_json::Value::Array(parts) => parts
+                .iter()
+                .filter_map(|part| part["text"].as_str())
+                .any(|text| text.contains(needle)),
+            _ => false,
+        })
+}
+
 /// The stand-in model's round in a [`GROW`] conversation, or `None` for any
 /// other request. The rounds are counted over every request the stand-in
-/// saw, since a compaction takes the earlier ones out of the request.
+/// saw, since a compaction takes the earlier ones out of the request. A
+/// conversation is a `GROW` one when its user said so — the lead whose
+/// [`DELEGATE_GROW`] launched such an agent only quotes it in the call.
 fn grow_reply(body: &str, log: &[String]) -> Option<String> {
-    if !body.contains(GROW) || !offers_tools(body) {
+    if !user_says(body, GROW) || !offers_tools(body) {
         return None;
     }
     let round = log
         .iter()
-        .filter(|chat| chat.contains(GROW) && offers_tools(chat))
+        .filter(|chat| user_says(chat, GROW) && offers_tools(chat))
         .count();
     let frames = if round <= GROW_ROUNDS && !body.contains(STAND_IN_SUMMARY) {
         let command = format!("echo round {round}; printf 'grow %.0s' $(seq 1 {GROW_WORDS})");
@@ -618,6 +640,9 @@ fn grow_reply(body: &str, log: &[String]) -> Option<String> {
 /// Beside `DELEGATE`, `STALL` gives the subagent a task the stand-in never
 /// answers in time: an agent that never finishes.
 const DELEGATE: &str = "HEADLESS_DELEGATE";
+/// What a prompt says to make the stand-in delegate a [`GROW`] task: a
+/// subagent that reads its way past its own start line.
+const DELEGATE_GROW: &str = "HEADLESS_DELEGATE_GROW";
 const OUTLIVE: &str = "HEADLESS_OUTLIVE";
 const STALL: &str = "HEADLESS_STALL";
 /// What a prompt says to make the stand-in run a command that fails, and
@@ -730,6 +755,8 @@ fn chat_reply(body: &str) -> String {
     } else if said.contains(DELEGATE) {
         let task = if said.contains(STALL) {
             format!("{STALL} make the marker")
+        } else if said.contains(DELEGATE_GROW) {
+            format!("{GROW} read the logs")
         } else if said.contains(RECORD) {
             // A recorded conversation's subagent is recorded too.
             format!("{RECORD} make the marker")
@@ -1213,6 +1240,94 @@ fn a_long_turn_is_compacted_in_the_background_as_it_runs() {
         );
     }
     assert_eq!(next[last.len()]["role"], "assistant");
+}
+
+/// A subagent that reads its way past its start line gets a summary of its
+/// own list written beside it and spliced in at its ceiling, the rounds
+/// since the summary started kept as they were — and finishes, its answer
+/// reaching the lead (docs/background-compaction.md *Subagents*).
+#[test]
+fn a_subagent_that_outgrows_its_window_compacts_and_finishes() {
+    let world = World::new("agent-compaction");
+    let stand_in = StandIn::start();
+    let mut command = world.command(&[
+        "-p",
+        "--permission-mode",
+        "master",
+        "--output-format",
+        "stream-json",
+        &format!("{DELEGATE_GROW} port it"),
+    ]);
+    stand_in.configure(&world, &mut command);
+    let out = command
+        .env("ALTER_ZERO_CONTEXT_WINDOW", "60000")
+        .stdin(Stdio::null())
+        .output()
+        .expect("the binary runs");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let chats = stand_in.chat_requests();
+    let agent: Vec<&String> = chats.iter().filter(|chat| user_says(chat, GROW)).collect();
+    let shape: Vec<&str> = agent
+        .iter()
+        .map(
+            |chat| match (offers_tools(chat), chat.contains(STAND_IN_SUMMARY)) {
+                (false, _) => "summary",
+                (true, false) => "round",
+                (true, true) => "swapped",
+            },
+        )
+        .collect();
+    let summary = shape
+        .iter()
+        .position(|kind| *kind == "summary")
+        .unwrap_or_else(|| panic!("the agent wrote no summary: {shape:?}"));
+    assert_eq!(
+        shape.iter().filter(|kind| **kind == "summary").count(),
+        1,
+        "{shape:?}"
+    );
+    assert!(
+        shape[summary..].contains(&"round"),
+        "the agent went on while it was written: {shape:?}"
+    );
+    assert_eq!(shape.last(), Some(&"swapped"), "{shape:?}");
+    // The summarizer read the agent's conversation alone.
+    let written = agent[summary];
+    assert_eq!(
+        system_text(written).trim(),
+        alter_zero::context::COMPACT_SYSTEM_PROMPT.trim()
+    );
+    assert!(!written.contains("system-reminder"), "{written}");
+    // The swapped request: the agent's own system prompt, its task, the
+    // bridge, then the rounds since the summary started, verbatim.
+    let last = wire_messages(agent.last().expect("the swapped request"));
+    assert_eq!(last[0]["role"], "system");
+    assert_ne!(
+        system_text(agent.last().expect("swapped")).trim(),
+        alter_zero::context::COMPACT_SYSTEM_PROMPT.trim(),
+        "the agent's own system prompt, not the summarizer's"
+    );
+    let bridge = last
+        .iter()
+        .position(|message| message["content"].to_string().contains(STAND_IN_SUMMARY))
+        .expect("the summary bridge");
+    assert!(
+        last[..bridge]
+            .iter()
+            .any(|message| message["role"] == "user"
+                && message["content"].to_string().contains(GROW)),
+        "the task is kept ahead of the bridge: {last:#?}"
+    );
+    assert!(
+        last[bridge..]
+            .iter()
+            .any(|message| message["role"] == "tool"),
+        "the rounds since the summary started stay: {last:#?}"
+    );
+    // The lead heard the agent's answer and answered on it.
+    let events = events(&out);
+    let result = events.last().expect("a result");
+    assert_eq!(result["subtype"], "success", "{events:?}");
 }
 
 // ===== the system prompt flags (docs/system-prompt.md) =====
