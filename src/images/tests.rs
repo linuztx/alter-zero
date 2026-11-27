@@ -1613,3 +1613,204 @@ fn a_copy_older_than_its_picture_is_never_sent() {
         data_url_of("image/png", &replacement)
     );
 }
+
+// ===== a GIF goes up as a still (docs/images.md "A GIF goes up as a still") =====
+
+/// A GIF of `w`×`h` with one solid frame per colour, written by the `image`
+/// crate's own encoder at its fastest setting.
+fn animated_gif(w: u32, h: u32, colours: &[[u8; 3]]) -> Vec<u8> {
+    let mut out = Vec::new();
+    {
+        let mut encoder = image::codecs::gif::GifEncoder::new_with_speed(&mut out, 30);
+        encoder
+            .set_repeat(image::codecs::gif::Repeat::Infinite)
+            .unwrap();
+        for [r, g, b] in colours {
+            let frame = image::RgbaImage::from_pixel(w, h, image::Rgba([*r, *g, *b, 255]));
+            encoder
+                .encode_frame(image::Frame::from_parts(
+                    frame,
+                    0,
+                    0,
+                    image::Delay::from_numer_denom_ms(200, 1),
+                ))
+                .unwrap();
+        }
+    }
+    out
+}
+
+/// A 1×1 GIF of two frames, red then blue, that another encoder wrote: a
+/// looping NETSCAPE2.0 block, a graphic control block before each frame, and
+/// a second frame with a colour table of its own (from index 77).
+const TWO_FRAME_GIF: [u8; 107] = [
+    0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x81, 0x00, 0x00, 0xff, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0xff, 0x0b, 0x4e, 0x45, 0x54, 0x53,
+    0x43, 0x41, 0x50, 0x45, 0x32, 0x2e, 0x30, 0x03, 0x01, 0x00, 0x00, 0x00, 0x21, 0xf9, 0x04, 0x00,
+    0x14, 0x00, 0x00, 0x00, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x08, 0x04,
+    0x00, 0x01, 0x04, 0x04, 0x00, 0x21, 0xf9, 0x04, 0x01, 0x14, 0x00, 0x01, 0x00, 0x2c, 0x00, 0x00,
+    0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x81, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x08, 0x04, 0x00, 0x01, 0x04, 0x04, 0x00, 0x3b,
+];
+
+/// The top-left pixel of the PNG `bytes`.
+fn first_pixel(bytes: &[u8]) -> [u8; 4] {
+    image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
+        .expect("a PNG")
+        .to_rgba8()
+        .get_pixel(0, 0)
+        .0
+}
+
+#[test]
+fn a_gifs_frames_are_counted_from_its_blocks() {
+    let three = animated_gif(4, 3, &[[255, 0, 0], [0, 255, 0], [0, 0, 255]]);
+    assert_eq!(gif_frame_count(three.as_slice()), Some(3));
+    let one = animated_gif(4, 3, &[[9, 9, 9]]);
+    assert_eq!(gif_frame_count(one.as_slice()), Some(1));
+    // Another encoder's blocks: an application block, a graphic control
+    // block per frame, a frame with its own colour table.
+    assert_eq!(gif_frame_count(TWO_FRAME_GIF.as_slice()), Some(2));
+}
+
+#[test]
+fn what_is_not_a_gif_counts_no_frames() {
+    assert_eq!(gif_frame_count(encode_png(4, 3).as_slice()), None);
+    assert_eq!(gif_frame_count(&b""[..]), None);
+    assert_eq!(
+        gif_frame_count(&b"GIF89a\x01\x00"[..]),
+        None,
+        "cut in its header"
+    );
+    // A header, a colour table and an application block: no whole frame.
+    assert_eq!(gif_frame_count(&TWO_FRAME_GIF[..52]), None);
+}
+
+#[test]
+fn a_gif_cut_short_counts_the_frames_it_got_through() {
+    // No trailer.
+    assert_eq!(gif_frame_count(&TWO_FRAME_GIF[..106]), Some(2));
+    // Cut inside the second frame's colour table: the first is whole.
+    assert_eq!(gif_frame_count(&TWO_FRAME_GIF[..90]), Some(1));
+    // A block this reader does not know where the next one should be.
+    let mut odd = TWO_FRAME_GIF[..69].to_vec();
+    odd.push(0x99);
+    assert_eq!(gif_frame_count(odd.as_slice()), Some(1));
+}
+
+#[test]
+fn a_gif_goes_up_as_a_png_of_its_first_frame() {
+    let gif = animated_gif(4, 3, &[[255, 0, 0], [0, 0, 255]]);
+    let still = gif_still(&gif, None).expect("decodes");
+    assert_eq!(still.format, image::ImageFormat::Png);
+    assert_eq!(still.size, (4, 3));
+    assert_eq!(
+        first_pixel(&still.bytes),
+        [255, 0, 0, 255],
+        "the first frame"
+    );
+    let still = gif_still(&TWO_FRAME_GIF, None).expect("decodes");
+    assert_eq!(first_pixel(&still.bytes), [255, 0, 0, 255]);
+}
+
+#[test]
+fn a_gifs_still_is_shrunk_to_a_cap_and_never_grown() {
+    let gif = animated_gif(40, 20, &[[255, 0, 0], [0, 0, 255]]);
+    assert_eq!(gif_still(&gif, Some(10)).unwrap().size, (10, 5));
+    assert_eq!(gif_still(&gif, Some(100)).unwrap().size, (40, 20));
+}
+
+#[test]
+fn what_is_not_a_gif_has_no_still() {
+    assert!(gif_still(&encode_png(4, 3), None).is_none());
+    assert!(gif_still(b"GIF89a", None).is_none());
+}
+
+#[test]
+fn a_gif_attaches_as_a_png_of_its_first_frame_whatever_the_setting() {
+    // Providers take only still GIFs, and the conversation re-sends every
+    // picture it holds, so an animation sent as itself could fail every
+    // request from then on.
+    let _guard = policy_lock();
+    set_policy(ImagePolicy::default());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("anim.gif");
+    let gif = animated_gif(4, 3, &[[255, 0, 0], [0, 0, 255]]);
+    std::fs::write(&path, &gif).unwrap();
+    let still = gif_still(&gif, None).unwrap();
+    let url = attachment_data_url(&path).expect("encodes");
+    assert_eq!(&*url, data_url_of("image/png", &still.bytes));
+    // A restart's encoder sends the very same bytes, so the cached prefix
+    // of a resumed conversation holds.
+    clear_attachments();
+    assert_eq!(&*attachment_data_url(&path).unwrap(), &*url);
+    // **Auto-resize images** off: still never the animation.
+    set_policy(ImagePolicy {
+        auto_resize: false,
+        ..ImagePolicy::default()
+    });
+    clear_attachments();
+    assert_eq!(&*attachment_data_url(&path).unwrap(), &*url);
+    set_policy(ImagePolicy::default());
+    clear_attachments();
+}
+
+/// A one-frame GIF of `w`×`h` whose frame is noise over a 64-colour palette:
+/// few enough colours to need no quantising, and it compresses about as
+/// badly as a photo does, so a smaller still is smaller in bytes too.
+fn noise_gif(w: u32, h: u32) -> Vec<u8> {
+    let mut state = 0x2545_f491_u32;
+    let frame = image::RgbaImage::from_fn(w, h, |_, _| {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        let [r, g, b, _] = state.to_le_bytes();
+        image::Rgba([r & 0xC0, g & 0xC0, b & 0xC0, 255])
+    });
+    let mut out = Vec::new();
+    {
+        let mut encoder = image::codecs::gif::GifEncoder::new_with_speed(&mut out, 30);
+        encoder
+            .encode_frame(image::Frame::from_parts(
+                frame,
+                0,
+                0,
+                image::Delay::from_numer_denom_ms(200, 1),
+            ))
+            .unwrap();
+    }
+    out
+}
+
+#[test]
+fn a_gifs_still_is_held_to_the_attachment_cap() {
+    let _guard = policy_lock();
+    set_policy(ImagePolicy::default());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("1.gif");
+    let gif = noise_gif(600, 400);
+    std::fs::write(&path, &gif).unwrap();
+    let still = gif_still(&gif, None).unwrap();
+
+    // Within the cap: the still at its own size, no copy written.
+    let fitted = fitted_attachment_data_url(&path, still.bytes.len()).expect("encodes");
+    assert_eq!(fitted.sent, None);
+    assert_eq!(&*fitted.url, data_url_of("image/png", &still.bytes));
+    assert!(!dir.path().join(FITTED_DIR).exists());
+
+    // Past it: a smaller still, kept beside the GIF and sent again after a
+    // restart.
+    clear_attachments();
+    let cap = still.bytes.len() / 2;
+    let fitted = fitted_attachment_data_url(&path, cap).expect("a smaller still fits");
+    let (w, h) = fitted.sent.expect("sent smaller");
+    assert!(w < 600 && h < 400, "{w}x{h}");
+    let aspect = f64::from(w) / f64::from(h);
+    assert!((aspect - 1.5).abs() < 0.01, "the aspect is kept: {w}x{h}");
+    assert!(fitted.url.starts_with("data:image/png;base64,"));
+    assert!(payload_len(&fitted.url) <= cap);
+    assert!(dir.path().join(FITTED_DIR).join("1.gif.png").is_file());
+    clear_attachments();
+    assert_eq!(&*attachment_data_url(&path).unwrap(), &*fitted.url);
+    clear_attachments();
+}

@@ -338,6 +338,12 @@ fn encode_attachment(path: &Path) -> Option<AttachmentUrl> {
     if let Some((copy, mime)) = fitted_copy(path) {
         return stream_file(&copy, mime);
     }
+    // A GIF goes up as a still of its first frame, whatever its name says:
+    // providers take only still GIFs (`docs/images.md` *A GIF goes up as a
+    // still*).
+    if is_gif(path) {
+        return gif_still_url(path);
+    }
     let mime = attachment_mime(path);
     if let Some(format) = attachment_format(mime)
         && auto_resizing()
@@ -356,6 +362,26 @@ fn encode_attachment(path: &Path) -> Option<AttachmentUrl> {
         }
     }
     stream_file(path, mime)
+}
+
+/// Whether the file at `path` is a GIF, by its signature: the first six
+/// bytes, never the name.
+fn is_gif(path: &Path) -> bool {
+    let mut head = [0u8; 6];
+    std::fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut head))
+        .is_ok_and(|()| matches!(&head, b"GIF87a" | b"GIF89a"))
+}
+
+/// The still the GIF at `path` goes up as ([`super::gif_still`]), shrunk
+/// as **Auto-resize images** shrinks any large picture. Built from the
+/// file, so a restart's encoder sends the bytes this session sent.
+fn gif_still_url(path: &Path) -> Option<AttachmentUrl> {
+    let bytes = std::fs::read(path).ok()?;
+    let max = auto_resizing().then_some(AUTO_RESIZE_MAX_PIXELS);
+    let still = super::gif_still(&bytes, max)?;
+    drop(bytes);
+    Some(encode_bytes(&still.bytes, payload_mime(still.format)))
 }
 
 /// The folder beside a picture that holds the copy sent in its place when the
@@ -394,10 +420,13 @@ pub fn fitted_attachment_data_url(path: &Path, cap: usize) -> Option<FittedAttac
     // glibc keeps (`docs/memory.md`).
     let len = usize::try_from(std::fs::metadata(path).ok()?.len()).ok()?;
     let shrinks = auto_resizing() && needs_shrink(path, AUTO_RESIZE_MAX_PIXELS);
-    if !shrinks && len <= cap {
+    // A GIF's payload is its still, which the file's length says nothing
+    // about: measured as it is sent.
+    let still = is_gif(path);
+    if !shrinks && !still && len <= cap {
         return attachment_data_url(path).map(|url| FittedAttachment { url, sent: None });
     }
-    if shrinks {
+    if shrinks || still {
         // **Auto-resize images** makes a smaller payload first, as for any
         // large picture; past the cap even so, it is fitted below.
         let url = attachment_data_url(path)?;
@@ -412,10 +441,19 @@ pub fn fitted_attachment_data_url(path: &Path, cap: usize) -> Option<FittedAttac
     let format = reader.format()?;
     let (width, height) = reader.into_dimensions().ok()?;
     let longest = width.max(height);
+    // A GIF is read once for every size tried, and each copy is a still —
+    // never measured against the file, which holds every frame.
+    let gif = still.then(|| std::fs::read(path).ok()).flatten();
     let small = FITTED_EDGES
         .iter()
         .filter(|edge| **edge < longest)
-        .find_map(|edge| downscale_file_to(path, format, *edge).filter(|s| s.bytes.len() <= cap))?;
+        .find_map(|edge| {
+            match &gif {
+                Some(bytes) => super::gif_still(bytes, Some(*edge)),
+                None => downscale_file_to(path, format, *edge),
+            }
+            .filter(|s| s.bytes.len() <= cap)
+        })?;
     let copy = fitted_copy_path(path, small.format)?;
     write_copy(&copy, &small.bytes).ok()?;
     let url = remember_attachment(path, &small.bytes, payload_mime(small.format));

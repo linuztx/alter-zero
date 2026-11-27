@@ -4869,7 +4869,10 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   synthesizes the `Read {N} lines` corner; a `read` of an **image**
   (png/jpg/jpeg/gif/webp) instead returns the concise
   `Read image ({format}, {W}x{H}, {size})` fact line while the pixels ride
-  `ToolOutcome::image` as a base64 `data:` URL —
+  `ToolOutcome::image` as a base64 `data:` URL (a GIF — read, pasted or
+  generated — always as a PNG still of its first frame, `images::gif_still`,
+  the line naming an animation's frames, `docs/images.md` *A GIF goes up as
+  a still*) —
   `run_agent` attaches them after the round's tool results as a user-role parts
   message (tool-role content rejects image parts on most providers) and
   `context_messages` replays the same note on later turns from the output

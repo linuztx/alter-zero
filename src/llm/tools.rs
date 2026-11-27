@@ -2233,6 +2233,38 @@ pub fn format_read_image_resized(
     )
 }
 
+/// [`format_read_image`] for a GIF, which goes up as a still PNG of its
+/// first frame (`docs/images.md` *A GIF goes up as a still*): the file's own
+/// facts — an animation's frames among them — then what was sent, shrunk or
+/// not. The file's size stays the first on the line, the one the renderer
+/// draws the picture at ([`crate::images::read_image_size`]).
+#[must_use]
+pub fn format_read_gif(
+    width: u32,
+    height: u32,
+    frames: Option<u32>,
+    bytes: usize,
+    sent: (u32, u32),
+    sent_bytes: usize,
+) -> String {
+    let animated = frames.filter(|n| *n > 1);
+    let frames = animated
+        .map(|n| format!(", {n} frames"))
+        .unwrap_or_default();
+    let what = if animated.is_some() {
+        "its first frame "
+    } else {
+        ""
+    };
+    format!(
+        "{READ_IMAGE_HEAD}(GIF, {width}x{height}{frames}, {size}; sent {what}as a {sw}x{sh} PNG, {ssize})",
+        size = human_size(bytes),
+        sw = sent.0,
+        sh = sent.1,
+        ssize = human_size(sent_bytes),
+    )
+}
+
 /// Was this `read` output an image read ([`format_read_image`])? The context
 /// replay uses it to reconstruct the follow-up attachment message.
 #[must_use]
@@ -4049,6 +4081,38 @@ mod tests {
         assert!(kb.contains("240 KB"), "got {kb}");
         let mb = format_read_image("PNG", 1, 1, 2_621_440);
         assert!(mb.contains("2.5 MB"), "got {mb}");
+    }
+
+    #[test]
+    fn a_gif_reads_fact_line_names_its_frames_and_the_still_it_sent() {
+        // A GIF goes up as a still PNG of its first frame (docs/images.md
+        // "A GIF goes up as a still"): the file's facts first, an animation's
+        // frames among them, then what the model was sent.
+        let animated = format_read_gif(1024, 1024, Some(9), 1_800_000, (1024, 1024), 410_000);
+        assert_eq!(
+            animated,
+            "Read image (GIF, 1024x1024, 9 frames, 1.7 MB; sent its first frame as a \
+             1024x1024 PNG, 400 KB)"
+        );
+        let resized = format_read_gif(4000, 3000, Some(2), 3_000_000, (2000, 1500), 900_000);
+        assert!(
+            resized.ends_with("sent its first frame as a 2000x1500 PNG, 878 KB)"),
+            "{resized}"
+        );
+        // One frame is no animation: no frames named, no frame singled out.
+        let still = format_read_gif(64, 64, Some(1), 3000, (64, 64), 2000);
+        assert_eq!(
+            still,
+            "Read image (GIF, 64x64, 2 KB; sent as a 64x64 PNG, 1 KB)"
+        );
+        let unknown = format_read_gif(64, 64, None, 3000, (64, 64), 2000);
+        assert_eq!(unknown, still);
+        // The renderer draws the file, so the file's size stays the first
+        // one on the line.
+        for line in [&animated, &resized, &still] {
+            assert!(is_image_read_output(line), "{line}");
+        }
+        assert_eq!(crate::images::read_image_size(&resized), Some((4000, 3000)));
     }
 
     #[test]

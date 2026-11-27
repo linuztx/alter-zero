@@ -345,6 +345,13 @@ plots it just generated.
   base64s the file again (`docs/memory.md`); a since-deleted file degrades
   to the existing `[image unavailable: …]` text note instead of failing the
   turn.
+- **A GIF goes up as a still PNG of its first frame** (`exec::read_gif`, the
+  same `images::gif_still` the attachment encoder uses, so a later turn sends
+  the same bytes). Its fact line names the frames of an animation and what
+  was sent: `Read image (GIF, 480x270, 9 frames, 1.2 MB; sent its first frame
+  as a 480x270 PNG, 210 KB)` (`tools::format_read_gif`). The providers take
+  still GIFs only, and an animation one of them refused would fail every
+  later turn (`docs/images.md` *A GIF goes up as a still*).
 - **Size cap**: `READ_IMAGE_MAX_BYTES` (3.75 MB raw, so the base64 form stays
   under the strictest mainstream provider's 5 MB per-image limit — Claude
   Code's own bound). An oversized file fails with a recoverable "downscale or

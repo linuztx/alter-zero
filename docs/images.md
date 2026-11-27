@@ -176,6 +176,40 @@ only three:
 Either way the size is only half of it: a picture reserves rows only while
 its file is still there to draw from (*A picture whose file is gone*, above).
 
+### A GIF goes up as a still
+
+What the **model** is sent of a GIF is a PNG of its first frame, never the
+GIF itself, whichever way it arrived: a `read`, a Ctrl+V paste, a generated
+animation (`docs/imagegen.md`), a reference image an edit uploads. The
+providers' vision APIs take still GIFs only, and an animation one of them
+refuses would fail every later request, since the conversation re-sends every
+picture it holds.
+
+- **One still, two callers.** `images::gif_still` decodes the first frame (a
+  GIF decodes to it), shrinks it as **Auto-resize images** shrinks any
+  picture, and encodes it as PNG. It is never compared against the file,
+  whose other frames make the file no measure of the still. The `read` tool
+  calls it on the bytes it holds, and the attachment encoder on the file
+  (`encode_attachment`). So a later turn, a restart included, sends the very
+  bytes the read sent, and the cached prefix holds.
+- **The format is the content's.** The encoder knows a GIF by its six-byte
+  signature, never by its extension, so a GIF named `.png` goes up as a still
+  too.
+- **Held to the cap like any picture.** `images::fitted_attachment_data_url`
+  measures the still, not the file. A still past the cap is fitted down the
+  usual edges and kept as `.attachments/{name}.png` beside the GIF, which the
+  encoder prefers on every later turn.
+- **The animation is named, not sent.** `images::gif_frame_count` counts the
+  image descriptors by walking the file's blocks, with no pixel decoded and
+  a few kilobytes of buffer. A file cut short counts the frames it got
+  through. The fact lines name the count, so the model knows what it is
+  looking at a frame of: `Read image (GIF, 480x270, 9 frames, 1.2 MB; sent
+  its first frame as a 480x270 PNG, 210 KB)` (`tools::format_read_gif`). A
+  one-frame GIF names no frames: `…; sent as a 64x64 PNG, 2 KB)`.
+
+The screen draws the file itself, and a GIF decodes to its first frame
+there too. Nothing here animates.
+
 ## The geometry
 
 `images::image_budget` then `images::fit_cells`, both pure:
@@ -602,6 +636,8 @@ was a bad idea.
   `ALTER_ZERO_IMAGE_PROTOCOL=halfblocks` answers it.
 * The live **streaming preview** doesn't draw a picture: a `read` has no image
   until it resolves, and the committed cell is one frame away.
+* An animated **GIF** is drawn as its first frame, inline and in Ctrl+O. The
+  file keeps every frame; open it to watch it.
 
 ## Driving it by hand
 

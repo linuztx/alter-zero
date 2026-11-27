@@ -14,6 +14,15 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **A GIF reaches the model as a still.** A `read` of a GIF, or a pasted
+  GIF, was sent to the model as the GIF itself. The providers' vision APIs
+  document still GIFs only, and the conversation re-sends every picture it
+  holds, so an animation a provider refused would fail every request after
+  it. A GIF now goes up as a PNG of its first frame, shrunk under
+  **Auto-resize images** like any picture, and the `read` result names an
+  animation's frames: `Read image (GIF, 480x270, 9 frames, 1.2 MB; sent its
+  first frame as a 480x270 PNG, 210 KB)` (`docs/images.md`).
+
 - **Agent Zero API** now sends chat completions to `https://llm.agent-zero.ai/v1`.
   The model list still comes directly from Venice.
 

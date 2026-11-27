@@ -22,6 +22,8 @@
 //! - [`fitted`] — pure. A PNG decoded at the size it will be shown or sent,
 //!   streaming its rows through an area-average shrink so the source picture
 //!   is never held whole (`docs/memory.md`).
+//! - [`gif`] — pure. A GIF's frames counted from its blocks, for the fact
+//!   lines that name an animation sent to a model as a still.
 //! - [`store`] — the paint boundary. What this terminal can draw (from the
 //!   environment and `TIOCGWINSZ`, and — where those name nothing — the
 //!   terminal's own answer inside the cursor query's read, never a stdin
@@ -31,6 +33,7 @@
 pub mod attachment;
 pub mod fitted;
 pub mod geometry;
+pub mod gif;
 pub mod payload;
 pub mod registry;
 pub mod store;
@@ -49,9 +52,10 @@ pub use geometry::{
     IMAGE_ID_MAX, IMAGE_MAX_ROWS, IMAGE_WIDTH_CHOICES, carrier, carrier_parts, fit_cells,
     image_budget, image_cells,
 };
+pub use gif::gif_frame_count;
 pub use payload::{
     Downscaled, PAYLOAD_CACHE_MAX_BYTES, cache_eviction, cached_downscale, cached_payload_file,
-    downscale_file_to, downscale_for_model, downscale_for_model_at, downscale_to,
+    downscale_file_to, downscale_for_model, downscale_for_model_at, downscale_to, gif_still,
     payload_cache_key, payload_mime, set_payload_cache_dir,
 };
 pub use registry::{
