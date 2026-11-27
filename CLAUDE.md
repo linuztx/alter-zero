@@ -3189,17 +3189,22 @@ session view it is the viewed agent's own** — `AgentRun::context_used` /
 `App::context_gauge`, `docs/agent-context-gauge.md`) and the conversation
 **compacts in the background** — **`docs/background-compaction.md`**: past a
 start line (the ceiling less 60k, or half the room the cycle had) a running
-turn's round top sends `StreamEvent::CompactionStart` and goes on, the
-boundary snapshots `keep_from = history.len()` where the event lands (the
-channel is FIFO) and writes the summary on `compact_backend`'s tools-free
+turn's round top — measuring from the footer gauge it was spawned with
+until its first usage frame (`CompactionSlot::set_baseline`), the cycle start
+read off the last marker's `after` — sends `StreamEvent::CompactionStart` and
+goes on, the boundary notes the job's `start = history.len()` where the
+event lands (the channel is FIFO) and writes the summary on
+`compact_backend`'s tools-free
 one-off on a worker of its own (`tui::workers::spawn_background_compaction`,
 the stream folded by the pure `compaction::SummaryStream`), held until the
 **ceiling** (the window less the larger of 15% and 16k —
 `compaction::ceiling`, which `auto_compact_threshold` and the `/context`
 reserve read), where the round top sends `CompactionSwap` and the boundary
-appends the anchored marker (`Compaction::keep_from` — everything before it
-summarized, everything after it verbatim — and `background`, the cell's `·
-background`), commits the cell in place and answers through the shared
+appends the marker (`Compaction::kept` — the items recorded since the start,
+a count back from the marker so a rollout reader that skips a record ahead of
+them still keeps them, verbatim, everything before them summarized — and
+`background`, the cell's `· background`), commits the cell in place and
+answers through the shared
 `compaction::CompactionSlot` (the `SteerQueue` shape) with the context
 re-derived from history, which the turn rebuilds its list from
 (`RoundOutcome::Compacted`) — waiting (`CompactionWaiting`, the status verb
@@ -3207,13 +3212,17 @@ re-derived from history, which the turn rebuilds its list from
 bottom's `Session::tick_background_compaction` starts one past the start
 line and lands one held, so no compaction turn ever blocks a message; a job
 dies with its conversation's **epoch** (`App::history_epoch`, bumped by
-`/clear`, `/resume` and a backtrack — never the render generation) or an
-anchor cut back, two failures a cycle stop starts, a swap that leaves the
-context still past its ceiling stops them for the rest of the turn
-(`CompactionSlot::futile` — the old trigger's one attempt per turn, without
-which a window the system prompt and tools alone fill compacts for ever),
-subagents do not compact yet, and Phases 51 and 171 drive it between and
-inside turns) in
+`/clear`, `/resume` and a backtrack — never the render generation; the slot
+is let go of with it) or its start cut back, a job whose start an Esc's
+swapped channel dropped is let go of at the idle loop bottom
+(`CompactionSlot::drop_unknown`), two failures a cycle stop starts, a swap
+that leaves the context still past its ceiling is summarized once more, the
+tail included, and a second stops them for the rest of the turn
+(`MAX_PAST_LANDINGS`, `CompactionSlot::futile` — the old trigger's one
+attempt per turn, without which a window the system prompt and tools alone
+fill compacts for ever), subagents do not compact yet, and Phases 51, 171
+and 172 drive it between and inside turns, `tests/headless.rs` holding the
+swapped request to the one the next turn derives) in
 `docs/compact.md`; and
 the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
 `ALTER_ZERO_*` environment variables — plus a hard-coded `retry::MAX_RETRIES`,

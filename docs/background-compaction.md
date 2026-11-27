@@ -82,8 +82,10 @@ before):
   round's growth past it. It replaces codex's 90% (`auto_compact_threshold`,
   which the `/context` page's reserve also reads).
 - **The start line** — `ceiling − min(60k, (ceiling − cycle_start) / 2)`, where
-  `cycle_start` is the context's size right after the last compaction (0
-  before the first): 110k on a 200k window. Past it, a background summary
+  `cycle_start` is the context's size right after the last compaction — the
+  last marker's `after`, read off the history at every loop bottom, 0 for a
+  conversation with none, so a `/clear` or a `/resume` moves it with the
+  conversation: 110k on a 200k window. Past it, a background summary
   starts. The lead is fixed in tokens because a summary takes 30–60 s and what
   decides whether it lands in time is how fast the turn grows, not how big the
   window is (opencode's measurement: a few thousand tokens at the median, 25k
@@ -93,7 +95,14 @@ before):
 `used` is the provider's prompt count for the turn's latest request plus the
 token estimate of every message appended since — the footer gauge's rule
 (`docs/token-estimate.md`), kept by the turn itself so it is current at the
-round top it decides at.
+round top it decides at. Before the turn has a count of its own, the footer
+gauge it started from stands in for one (handed over by the boundary as the
+turn is spawned, `CompactionSlot::set_baseline`): it counts what the first
+request carries, calibrated and with the system prompt and the tool schemas,
+where the bare estimate of the list counts neither and read a turn opening
+near the start line as tens of thousands of tokens short of it. After a swap
+the rebuilt list has no count until its request answers, so it is estimated
+whole with the tool schemas' estimate beside it.
 
 ## The lifecycle
 
@@ -111,10 +120,11 @@ round top it decides at.
    its result, and the pending inputs of this round are already folded in. The
    turn sends `StreamEvent::CompactionStart { id }` and goes on to its request
    without waiting.
-2. **The boundary takes the snapshot** where the event lands: `keep_from =
-   history.len()`. The channel is FIFO, so every item the turn produced before
-   the event is in history — and nothing of the round about to start is. It
-   derives the summarizer's input from `history[..keep_from]` and starts the
+2. **The boundary takes the snapshot** where the event lands: the job's
+   `start = history.len()`. The channel is FIFO, so every item the turn
+   produced before the event is in history — and nothing of the round about to
+   start is. It derives the summarizer's input from `history[..start]` and
+   starts the
    summary on a worker of its own (`tui::workers::spawn_background_compaction`),
    a tools-free one-off backend streaming into a private channel; the result
    comes back on the loop's compaction channel. A real session never writes
@@ -128,13 +138,14 @@ round top it decides at.
    list.
 4. **Swap — at the first round top past the ceiling.** The turn sends
    `StreamEvent::CompactionSwap { id }` and waits for the boundary's answer.
-   The boundary appends `HistoryItem::Compaction { keep_from, background: true,
-   … }`, commits the `● Context compacted · 170k → 82k tokens · 47s ·
+   The boundary appends `HistoryItem::Compaction { kept, background: true, …
+   }` — `kept = history.len() − start`, what ran while the summary was written
+   — commits the `● Context compacted · 170k → 82k tokens · 47s ·
    background` cell, re-derives the context from history exactly as the next
    turn's start would, and hands it back through the slot. The turn rebuilds
    its message list from it — the system prompt unchanged, the reminder
    re-rendered, the kept user messages, the summary's bridge, and every item
-   since `keep_from` as it was recorded, provider call ids included — and
+   since the job's start as it was recorded, provider call ids included — and
    sends its request. The answer takes one loop iteration: milliseconds.
 5. **Wait — at the ceiling with the summary unwritten.** The turn sends
    `StreamEvent::CompactionWaiting` once (the status verb becomes the fixed
@@ -152,18 +163,24 @@ no index in the turn's own list has to be mapped onto history.
 
 `Compaction` gains:
 
-- **`keep_from: Option<usize>`** — the history index the verbatim tail starts
-  at. The derivation becomes: the kept user texts and the bridge for
-  `history[..keep_from]`, then `history[keep_from..]` derived normally (the
-  marker itself derives nothing). `None` is the old rule — everything before
-  the marker — so a rollout written before this parses and derives exactly as
-  it did. A `keep_from` past the marker is clamped to it.
+- **`kept: usize`** — how many items just before the marker its summary
+  leaves out: the ones recorded while it was written. The derivation becomes:
+  the kept user texts and the bridge for everything before those `kept`
+  items, then the `kept` items and everything after the marker derived
+  normally (the marker itself derives nothing). `0` is the old rule —
+  everything before the marker — so a rollout written before this parses and
+  derives exactly as it did. A count larger than the history before the
+  marker keeps all of it.
 - **`background: bool`** — the cell's `· background` tag in place of `· auto`.
 
-Both persist in the rollout's `compaction` record with serde defaults. History
-is append-only and the rollout writes one record per item, so the index means
-the same thing after a `/resume`; a backtrack that keeps the marker keeps every
-item before it.
+Both persist in the rollout's `compaction` record with serde defaults, left
+off the line at their defaults. The tail is a count back from the marker
+rather than an index into the history. Inside a session either would do —
+history is append-only, a backtrack only ever cuts a suffix, so a marker that
+survives one keeps its tail — but the rollout's reader skips a record type it
+does not know (an older build reading a newer file), and an item skipped
+anywhere in the long prefix would move an index, where it moves a count only
+when the skipped item is in the short tail itself.
 
 ## Between turns
 
@@ -195,21 +212,34 @@ item before it.
   `App::history_generation`, which also moves for changes that leave what
   was said alone — a re-render, an agent's entry updated in place, a failed
   attempt withdrawn — and forgetting a summary on those would throw away one
-  already paid for. A `/compact` by hand lets the job go for its own, as does
+  already paid for. The slot is let go of the moment the epoch moves, so
+  nothing of the last conversation's cycle — its failures, a landing past the
+  ceiling — carries into the next. A `/compact` by hand lets the job go for
+  its own, as does
   turning **Auto compact** off or a window becoming unknown. A `/model`
   switch keeps it: the summary is the conversation's whichever model wrote
   it, and the lines move with the new window.
+- **A start the loop never heard of** — an Esc swaps the reply channel, and a
+  `CompactionStart` still in it goes with it: the slot holds a running job no
+  worker writes, and nothing would ever free it. The idle loop bottom lets go
+  of a job the app has no record of (`CompactionSlot::drop_unknown`), and the
+  round top of a turn already cancelled starts nothing.
 - **A compaction that could not help** — one that leaves the context still
   at or past the ceiling, by the gauge's count or by the turn's own at its
-  next round top: the system prompt and tool schemas alone fill a small
-  window, or the tail kept verbatim is that large. Summarizing again at once
-  would land in the same place, and the next round top would start another,
-  for ever, so none is started for the rest of the turn
-  (`CompactionSlot::futile`); the turn goes on uncompacted, as before this
+  next round top. Once, that is a tail kept verbatim that is itself huge (a
+  few enormous reads while the summary was written), and summarizing again —
+  the tail included this time — brings the context down: the next round top
+  starts that summary at once and waits for it. Twice in a turn, what rides
+  every request alone — the system prompt and the tool schemas — passes the
+  ceiling, and summarizing again would land in the same place for ever, so
+  none is started for the rest of the turn (`MAX_PAST_LANDINGS`,
+  `CompactionSlot::futile`); the turn goes on uncompacted, as before this
   change, and the next turn tries again (`CompactionSlot::turn_started`,
-  called by the turn's own thread). Between turns the loop bottom starts
-  none while it holds. This is the old trigger's one attempt per turn, kept
-  for the case it existed for.
+  called by the turn's own thread). Between turns the loop bottom starts none
+  after a landing past the ceiling — with no turn waiting on it, it could only
+  land there again; the next turn refolds instead. This is the old trigger's
+  one attempt per turn, kept for the case it existed for, with the one retry
+  a huge tail needs.
 - **Billing**: a summary's usage frames join the since-launch ledger on the
   `/context` page, whatever became of it, and never the gauge or the last
   request, its request being the summarizer's. The rollout records each as a
@@ -245,7 +275,7 @@ item before it.
   decision at a round top, and the `CompactionSlot` the turn and the boundary
   share (the `SteerQueue` shape).
 - `src/context.rs` — `conversation_messages` (the summarizer's input) and the
-  `keep_from` derivation; `src/session.rs` — the record's new fields.
+  `kept` derivation; `src/session.rs` — the record's new fields.
 - `src/llm/backend.rs` — the round-top step in the `round` closure.
 - `src/stream/event.rs` — `CompactionStart`, `CompactionWaiting`,
   `CompactionSwap`.
@@ -257,6 +287,11 @@ item before it.
 - `src/ui/compaction_row.rs` — the row under the status line.
 - `prompts/compact_system.md` — the summarizer's system prompt.
 - `scripts/smoke/phases/051-autocompact.sh` (between turns),
-  `170-compactinput.sh` (what the summarizer reads) and
+  `170-compactinput.sh` (what the summarizer reads),
   `171-midturncompact.sh` (inside a running turn, against a stub provider:
-  the start, the wait, the swap, the verbatim tail, the cell in place).
+  the start, the wait, the swap, the verbatim tail, the cell in place) and
+  `172-backgroundcompact.sh` (a summary that lands while the turn reads on, one
+  that lands at idle on its own, and one a `/clear` lets go of).
+- `tests/headless.rs` — `a_long_turn_is_compacted_in_the_background_as_it_runs`:
+  the request the swap built is the one the next turn derives, message for
+  message.
