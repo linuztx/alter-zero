@@ -164,41 +164,6 @@ pub fn downscale_file_to(path: &Path, format: ImageFormat, max: u32) -> Option<D
     })
 }
 
-/// The GIF in `bytes` as a still: its first frame, re-encoded as PNG and
-/// shrunk to at most `max` on an edge when given — what a GIF goes up as,
-/// since providers take only still GIFs and an animation sent as itself
-/// could fail every request that re-sends it (`docs/images.md` *A GIF goes
-/// up as a still*). Never compared against the file, whose other frames make
-/// it no measure of the still. `None` when the bytes are not a GIF that
-/// decodes, or are past what a whole decode may hold.
-#[must_use]
-pub fn gif_still(bytes: &[u8], max: Option<u32>) -> Option<Downscaled> {
-    if bytes.len() > MAX_DECODE_BYTES {
-        return None;
-    }
-    // The header first: an absurd canvas is refused before a pixel of it is
-    // decoded, as every whole decode here is.
-    let px = image::ImageReader::with_format(Cursor::new(bytes), ImageFormat::Gif)
-        .into_dimensions()
-        .ok()?;
-    if !whole_decode_fits(px) {
-        return None;
-    }
-    // A GIF decodes to its first frame.
-    let first = image::load_from_memory_with_format(bytes, ImageFormat::Gif).ok()?;
-    let still = match max.and_then(|max| resize_target(px, max)) {
-        Some((width, height)) => first.thumbnail_exact(width, height),
-        None => first,
-    };
-    let size = (still.width(), still.height());
-    let (bytes, format) = encode(&still, ImageFormat::Gif)?;
-    Some(Downscaled {
-        bytes,
-        format,
-        size,
-    })
-}
-
 /// `bytes` decoded and shrunk to `target`. A PNG streams through the fitted
 /// decoder, which holds the target and one row rather than the whole
 /// picture; anything else — or a PNG the streaming decoder declines — is

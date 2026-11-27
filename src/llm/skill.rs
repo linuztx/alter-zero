@@ -1620,6 +1620,10 @@ mod tests {
             body.contains("`referenced_image_paths`"),
             "how an edit names its images"
         );
+        // The tool's own controls, taught where the model reads how to draw.
+        for control in ["`size`", "`quality`", "`gif`", "`frame_count`"] {
+            assert!(body.contains(control), "SKILL.md never names {control}");
+        }
         for (file, text) in std::iter::once(("SKILL.md", body)).chain(IMAGEGEN_FILES) {
             if !file.ends_with(".md") {
                 continue;

@@ -659,11 +659,12 @@ which Ctrl+V reads the clipboard from.
   `~/.alter-zero/generated_images/<session>/N.png` (`N.gif` for an
   animation), kilobytes whatever the image weighs. The cell names the file
   and draws it, and the picture rides the model's context and is replayed
-  like an image `read`, a GIF as its first frame. Every request names
-  GPT-Image-2.6 Sunburst, sent once more with `gpt-image-2` when the backend
-  refuses that model. The call takes a `size` and a `quality`, both `auto`
-  by default and checked before anything is sent, and a `gif` for a short
-  looping animation; it takes no model and no count.
+  like an image `read`, a GIF as its frames tiled on one PNG. Every request
+  names GPT-Image-2.6 Sunburst, or the model `ALTER_ZERO_IMAGEGEN_MODEL`
+  names for the run; the default is sent once more with `gpt-image-2` when
+  the backend refuses it. The call takes a `size` and a `quality`, both
+  `auto` by default and checked before anything is sent, and a `gif` for a
+  short looping animation; it takes no model and no count.
 - **A release reaches the built-ins it changed** (`docs/builtin-updates.md`):
   every launch syncs the built-in skills and agent types before the walks
   read them. A copy whose bytes `prompts/shipped.sha256` lists — every

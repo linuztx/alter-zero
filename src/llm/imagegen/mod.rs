@@ -36,11 +36,11 @@ pub const IMAGEGEN_TOOL_NAME: &str = "imagegen";
 /// The cell header's name: `● ImageGen(a red fox at dawn)`.
 pub const IMAGEGEN_TOOL_DISPLAY: &str = "ImageGen";
 
-/// The image model a request names: OpenAI's newest, GPT-Image-2.6
-/// Sunburst — the one of the pair made for finished work and consistent
-/// edits, and the Images API's own default for an edit (`docs/imagegen.md`
-/// *The model*). The tool takes no model; the call's `quality` is the speed
-/// control.
+/// The image model a request names unless [`IMAGEGEN_MODEL_ENV`] names
+/// another: OpenAI's newest, GPT-Image-2.6 Sunburst — the one of the pair
+/// made for finished work and consistent edits, and the Images API's own
+/// default for an edit (`docs/imagegen.md` *The model*). The tool takes no
+/// model; the call's `quality` is the speed control.
 pub const IMAGE_MODEL: &str = "gpt-image-2.6-sunburst";
 
 /// The model a request is sent again with when the backend refuses
@@ -48,6 +48,20 @@ pub const IMAGE_MODEL: &str = "gpt-image-2.6-sunburst";
 /// backend that does not take the newest yet still makes the image
 /// (`docs/imagegen.md` *The model*).
 pub const FALLBACK_IMAGE_MODEL: &str = "gpt-image-2";
+
+/// Names another image model for the run, never saved — `gpt-image-2.6-flare`,
+/// the faster of the pair (`docs/imagegen.md` *The model*).
+pub const IMAGEGEN_MODEL_ENV: &str = "ALTER_ZERO_IMAGEGEN_MODEL";
+
+/// The model a session's requests name: [`IMAGEGEN_MODEL_ENV`]'s value when
+/// it says anything, else [`IMAGE_MODEL`].
+#[must_use]
+pub fn image_model(env: Option<&str>) -> String {
+    env.map(str::trim)
+        .filter(|model| !model.is_empty())
+        .unwrap_or(IMAGE_MODEL)
+        .to_string()
+}
 
 /// What both edges of an exact `size` are multiples of.
 const SIZE_STEP: u32 = 16;
@@ -82,10 +96,11 @@ impl ImageSize {
     }
 
     /// Read a call's `size`: `auto` (in any case, or nothing at all), or
-    /// WIDTHxHEIGHT as the backend takes it — both edges multiples of 16, the
-    /// longer at most 3840 and at most three times the shorter, and no more
-    /// pixels than 3840x2160 has. Refused here, naming the rule, rather than
-    /// after a request the backend would refuse the same way.
+    /// WIDTHxHEIGHT — an `X` or a `×` read as the `x` — as the backend takes
+    /// it: both edges multiples of 16, the longer at most 3840 and at most
+    /// three times the shorter, and no more pixels than 3840x2160 has.
+    /// Refused here, naming the rule, rather than after a request the backend
+    /// would refuse the same way.
     fn parse(raw: &str) -> Result<Self, String> {
         let text = raw.trim();
         if text.is_empty() || text.eq_ignore_ascii_case("auto") {
@@ -93,7 +108,7 @@ impl ImageSize {
         }
         let shapeless =
             || format!("`size` is `auto` or WIDTHxHEIGHT, such as `1536x1024` — not `{text}`");
-        let (width, height) = text.split_once(['x', 'X']).ok_or_else(shapeless)?;
+        let (width, height) = text.split_once(['x', 'X', '×']).ok_or_else(shapeless)?;
         let edge = |edge: &str| edge.trim().parse::<u32>().ok().filter(|edge| *edge > 0);
         let (Some(width), Some(height)) = (edge(width), edge(height)) else {
             return Err(shapeless());
@@ -121,7 +136,8 @@ impl ImageSize {
         }
         if long > short * MAX_SIZE_RATIO {
             return Err(format!(
-                "`size` {width}x{height}: the long edge may be at most {MAX_SIZE_RATIO} times                  the short one"
+                "`size` {width}x{height}: the long edge may be at most {MAX_SIZE_RATIO} times \
+                 the short one"
             ));
         }
         if u64::from(width) * u64::from(height) > MAX_SIZE_PIXELS {
@@ -337,8 +353,7 @@ minute or two), saves it, shows it to the user and returns its path. Generate \
 directly, without asking for confirmation. For an edit or a style reference, \
 list the images in `referenced_image_paths`, looking at a local one with `read` \
 first; set `transparent_background` for a cutout. Set `gif` for a short looping \
-animation; to change one, reference a spritesheet of its frames, not the GIF \
-itself.";
+animation; to remake a GIF, reference it with `gif` set.";
 
 /// A call's arguments, checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -414,8 +429,9 @@ pub(crate) struct ImageRequest {
     pub prompt: String,
     pub transparent_background: bool,
     pub images: Vec<AttachmentUrl>,
-    /// [`IMAGE_MODEL`], or [`FALLBACK_IMAGE_MODEL`] once the backend refused it.
-    pub model: &'static str,
+    /// The session's model ([`image_model`]), or [`FALLBACK_IMAGE_MODEL`]
+    /// once the backend refused [`IMAGE_MODEL`].
+    pub model: String,
     pub size: ImageSize,
     pub quality: ImageQuality,
     pub gif: Option<GifOptions>,
@@ -448,7 +464,7 @@ impl crate::llm::body::BodySource for ImageRequest {
             #[serde(skip_serializing_if = "Vec::is_empty")]
             images: Vec<Reference<'a>>,
             background: &'static str,
-            model: &'static str,
+            model: &'a str,
             quality: &'static str,
             size: String,
             #[serde(skip_serializing_if = "Option::is_none")]
@@ -470,7 +486,7 @@ impl crate::llm::body::BodySource for ImageRequest {
             } else {
                 "opaque"
             },
-            model: self.model,
+            model: &self.model,
             quality: self.quality.wire(),
             size: self.size.wire(),
             output_format: self.gif.map(|_| "gif"),
@@ -548,6 +564,12 @@ pub enum Shown {
     /// Attached — as it is, or as a copy shrunk to this size because the
     /// picture itself is past the attachment cap.
     Attached(Option<(u32, u32)>),
+    /// A GIF of this many frames, attached as its frames tiled on one PNG,
+    /// since a GIF never goes up as itself (`images::gif`).
+    Tiled {
+        /// How many frames the GIF has.
+        frames: u32,
+    },
     /// Kept back from a model that cannot see images.
     Withheld,
     /// Not attachable: the saved file could not be read back, or no copy fit.
@@ -556,11 +578,11 @@ pub enum Shown {
 
 /// What the model reads for a generated image: the fact line, then the
 /// note on where generated images live and what to do with them, then what
-/// it can see of the picture — for an `animated` one, the still of its first
-/// frame (`docs/images.md` *A GIF goes up as a still*) — and, when the
-/// backend refused [`IMAGE_MODEL`], the `model` that made it.
+/// it can see of the picture — for a GIF, its frames tiled and how to remake
+/// it from them (`docs/images.md` *A GIF goes up as its frames*) — and, when
+/// the backend refused the model `asked` for, the model `used` instead.
 #[must_use]
-pub fn model_result(fact: &str, dir: &str, shown: Shown, animated: bool, model: &str) -> String {
+pub fn model_result(fact: &str, dir: &str, shown: Shown, asked: &str, used: &str) -> String {
     let mut text = format!(
         "{fact}\n\
          Generated images are saved to {dir} by default. If you need the image at another \
@@ -570,15 +592,12 @@ pub fn model_result(fact: &str, dir: &str, shown: Shown, animated: bool, model: 
          again in your reply as a Markdown image or a file link."
     );
     match shown {
-        Shown::Attached(None) if animated => text.push_str(
-            "\nThe picture attached for you is the GIF's first frame, as a still; the file \
-             itself is animated.",
-        ),
         Shown::Attached(None) => {}
-        Shown::Attached(Some((width, height))) if animated => text.push_str(&format!(
-            "\nThe picture attached for you is the GIF's first frame, as a still shrunk to \
-             {width}x{height} to fit the attachment limit; the file itself is animated and \
-             full size."
+        Shown::Tiled { frames } => text.push_str(&format!(
+            "\nThe picture attached for you is {}; the file itself is the animated GIF. To make a \
+             new GIF from this one, list it in `referenced_image_paths` and set `gif`: it goes up \
+             the same way.",
+            crate::images::tiled_frames(frames)
         )),
         Shown::Attached(Some((width, height))) => text.push_str(&format!(
             "\nThe picture attached for you is a copy shrunk to {width}x{height} to fit the \
@@ -593,9 +612,9 @@ pub fn model_result(fact: &str, dir: &str, shown: Shown, animated: bool, model: 
              complete.",
         ),
     }
-    if model != IMAGE_MODEL {
+    if used != asked {
         text.push_str(&format!(
-            "\nThis image was made with {model}: the image backend did not take {IMAGE_MODEL}."
+            "\nThis image was made with {used}: the image backend did not take {asked}."
         ));
     }
     text
@@ -756,6 +775,8 @@ pub struct ImagegenSetup {
     /// whose type may not call the tool is not briefed on it either — the
     /// tool and the listing travel together (`docs/subagents.md`).
     pub skill: Option<PathBuf>,
+    /// The image model every request names ([`image_model`]).
+    pub model: String,
 }
 
 /// Where one request goes and what it carries — the base URL and every
@@ -777,8 +798,7 @@ pub(crate) struct Saved {
     pub label: &'static str,
     /// The pixel size, from the file's header.
     pub size: (u32, u32),
-    /// A GIF's frames ([`crate::images::gif_frame_count`]); `None` for a
-    /// still.
+    /// A GIF's frames ([`crate::images::gif_info`]); `None` for a still.
     pub frames: Option<u32>,
     /// The file's size in bytes.
     pub bytes: u64,
@@ -940,7 +960,8 @@ fn save_answer(
     let frames = (format == image::ImageFormat::Gif)
         .then(|| std::fs::File::open(staging.path()).ok())
         .flatten()
-        .and_then(crate::images::gif_frame_count);
+        .and_then(crate::images::gif_info)
+        .map(|info| info.frames);
     let path = crate::clipboard::keep_numbered(staging, dir, ext).map_err(ImagegenError::Save)?;
     Ok(Saved {
         bytes: split.decoded,
@@ -1065,19 +1086,22 @@ fn refuses_model(status: u16, body: &str, model: &str) -> bool {
     error_message(body).contains(model)
 }
 
-/// Make the image with [`IMAGE_MODEL`] and, when the backend refuses that
-/// model by name (`refuses_model`), once more with [`FALLBACK_IMAGE_MODEL`],
-/// handing back the model that made it (`docs/imagegen.md` *The model*). Any
-/// other failure stands: another model would be refused the same way.
+/// Make the image with `model` and, when that is [`IMAGE_MODEL`] and the
+/// backend refuses it by name (`refuses_model`), once more with
+/// [`FALLBACK_IMAGE_MODEL`], handing back the model that made it
+/// (`docs/imagegen.md` *The model*). Any other failure stands — another model
+/// would be refused the same way — and so does a refusal of a model the run
+/// named, which is an answer about that model.
 fn with_model_fallback<T>(
-    mut attempt: impl FnMut(&'static str) -> Result<T, ImagegenError>,
-) -> Result<(T, &'static str), ImagegenError> {
-    match attempt(IMAGE_MODEL) {
-        Ok(made) => Ok((made, IMAGE_MODEL)),
+    model: &str,
+    mut attempt: impl FnMut(&str) -> Result<T, ImagegenError>,
+) -> Result<(T, String), ImagegenError> {
+    match attempt(model) {
+        Ok(made) => Ok((made, model.to_string())),
         Err(ImagegenError::Refused { status, body })
-            if refuses_model(status, &body, IMAGE_MODEL) =>
+            if model == IMAGE_MODEL && refuses_model(status, &body, model) =>
         {
-            attempt(FALLBACK_IMAGE_MODEL).map(|made| (made, FALLBACK_IMAGE_MODEL))
+            attempt(FALLBACK_IMAGE_MODEL).map(|made| (made, FALLBACK_IMAGE_MODEL.to_string()))
         }
         Err(error) => Err(error),
     }
@@ -1132,10 +1156,10 @@ const FREE_PLAN: &str =
 
 /// Check the images a call names and resolve each to an absolute path: a
 /// PNG, JPEG, WebP or GIF judged by its content, under the API's
-/// [`MAX_REFERENCE_BYTES`] — a GIF goes up as a still of its first frame, as
-/// every GIF sent anywhere does (`docs/images.md` *A GIF goes up as a
-/// still*). A relative path resolves against the working directory, the
-/// file tools' rule.
+/// [`MAX_REFERENCE_BYTES`] — a GIF goes up as its frames tiled on one PNG,
+/// the spritesheet a new GIF is made from, as every GIF sent anywhere does
+/// (`docs/images.md` *A GIF goes up as its frames*). A relative path
+/// resolves against the working directory, the file tools' rule.
 ///
 /// # Errors
 /// The first image that is missing, not a file, too large, or not one of
@@ -1201,11 +1225,17 @@ impl Attachment {
 
 /// The outcome for a saved image: the fact line on the cell, the fact and
 /// the note for the model — which says what it is looking at of an
-/// animation, and which model made the image when it was not
-/// [`IMAGE_MODEL`] — and the picture attached when there is one to attach,
-/// or, for a model that cannot see, the mark that has the agent loop send
-/// the note the replay sends in its place.
-fn finished(saved: &Saved, dir: &Path, attachment: Attachment, model: &str) -> ToolOutcome {
+/// animation, and which model made the image when it was not the one
+/// `asked` for — and the picture attached when there is one to attach, or,
+/// for a model that cannot see, the mark that has the agent loop send the
+/// note the replay sends in its place.
+fn finished(
+    saved: &Saved,
+    dir: &Path,
+    attachment: Attachment,
+    asked: &str,
+    used: &str,
+) -> ToolOutcome {
     let fact = format_generated(
         saved.label,
         saved.size,
@@ -1213,13 +1243,13 @@ fn finished(saved: &Saved, dir: &Path, attachment: Attachment, model: &str) -> T
         saved.bytes,
         &saved.path.to_string_lossy(),
     );
-    let shown = match &attachment {
-        Attachment::Attached(fitted) => Shown::Attached(fitted.sent),
-        Attachment::Withheld => Shown::Withheld,
-        Attachment::Unavailable => Shown::Unavailable,
+    let shown = match (&attachment, saved.frames) {
+        (Attachment::Attached(_), Some(frames)) if frames > 1 => Shown::Tiled { frames },
+        (Attachment::Attached(fitted), _) => Shown::Attached(fitted.sent),
+        (Attachment::Withheld, _) => Shown::Withheld,
+        (Attachment::Unavailable, _) => Shown::Unavailable,
     };
-    let animated = saved.frames.is_some_and(|frames| frames > 1);
-    let note = model_result(&fact, &dir.to_string_lossy(), shown, animated, model);
+    let note = model_result(&fact, &dir.to_string_lossy(), shown, asked, used);
     let outcome = ToolOutcome::ok(fact).with_context(note);
     match attachment {
         Attachment::Attached(fitted) => outcome.with_image(fitted.url),
@@ -1253,8 +1283,9 @@ pub(crate) fn run_imagegen(
     let dir = setup.dir.clone();
     let worker_dir = dir.clone();
     let worker_cancel = cancel.clone();
+    let model = setup.model.clone();
     let result = crate::llm::off_thread(
-        move || -> Result<(Saved, Attachment, &'static str), String> {
+        move || -> Result<(Saved, Attachment, String), String> {
             let target = resolve_target(&cfg)?;
             let images = references
                 .iter()
@@ -1268,14 +1299,14 @@ pub(crate) fn run_imagegen(
                 prompt: args.prompt,
                 transparent_background: args.transparent_background,
                 images,
-                model: IMAGE_MODEL,
+                model: model.clone(),
                 size: args.size,
                 quality: args.quality,
                 gif: args.gif,
             };
-            let (saved, model) = with_model_fallback(|model| {
+            let (saved, used) = with_model_fallback(&model, |model| {
                 let asked = ImageRequest {
-                    model,
+                    model: model.to_string(),
                     ..request.clone()
                 };
                 with_retries(RETRY_PAUSE, &worker_cancel, || {
@@ -1286,19 +1317,19 @@ pub(crate) fn run_imagegen(
             // Encoded here, on the worker the turn abandons on Esc: a picture
             // past the cap is decoded and shrunk.
             let attachment = Attachment::for_saved(&saved.path, vision);
-            Ok((saved, attachment, model))
+            Ok((saved, attachment, used))
         },
         cancel,
     );
     match result {
         None => unanswered(cancel),
         Some(Err(error)) => ToolOutcome::error(error),
-        Some(Ok((saved, attachment, model))) => {
+        Some(Ok((saved, attachment, used))) => {
             let shown = saved.path.to_string_lossy().into_owned();
             // The cell this call resolves draws the picture from the file
             // (`docs/images.md`).
             crate::images::remember_size(&shown, saved.size);
-            finished(&saved, &dir, attachment, model)
+            finished(&saved, &dir, attachment, &setup.model, &used)
         }
     }
 }
@@ -1417,11 +1448,10 @@ mod tests {
             description.contains("`transparent_background`"),
             "{description}"
         );
-        // A GIF is offered, with its one sharp edge: an animation is
-        // changed through a spritesheet of its frames, never by editing the
-        // GIF itself (docs/imagegen.md).
+        // A GIF is offered, and remade from a GIF passed with `gif` set: it
+        // goes up as the spritesheet of its frames (docs/imagegen.md).
         assert!(description.contains("`gif`"), "{description}");
-        assert!(description.contains("spritesheet"), "{description}");
+        assert!(!description.contains("not the GIF"), "{description}");
         // This app looks at a local image with `read`; another client's
         // `view_image`, code mode and image counts are not here.
         assert!(description.contains("`read`"), "{description}");
@@ -1500,6 +1530,10 @@ mod tests {
         );
         assert_eq!(parse_size("3840x2160"), Ok(ImageSize::Exact(3840, 2160)));
         assert_eq!(parse_size("2160x3840"), Ok(ImageSize::Exact(2160, 3840)));
+        // The sign a size is written with in prose reads as the `x`, and the
+        // wire still says `x`.
+        assert_eq!(parse_size("1536×1024"), Ok(ImageSize::Exact(1536, 1024)));
+        assert_eq!(parse_size("1536 × 1024").unwrap().wire(), "1536x1024");
         assert_eq!(ImageSize::Exact(1536, 1024).wire(), "1536x1024");
         assert_eq!(ImageSize::Auto.wire(), "auto");
     }
@@ -1527,7 +1561,10 @@ mod tests {
         let error = parse_size("4096x2048").unwrap_err();
         assert!(error.contains("3840"), "{error}");
         let error = parse_size("3840x1024").unwrap_err();
-        assert!(error.contains("3 times"), "{error}");
+        assert_eq!(
+            error,
+            "`size` 3840x1024: the long edge may be at most 3 times the short one"
+        );
         // Within every edge rule, past the pixel count 3840x2160 has.
         let error = parse_size("2896x2880").unwrap_err();
         assert!(error.contains("8,294,400"), "{error}");
@@ -1643,7 +1680,7 @@ mod tests {
             prompt: prompt.to_string(),
             transparent_background,
             images,
-            model: IMAGE_MODEL,
+            model: IMAGE_MODEL.to_string(),
             size: ImageSize::Auto,
             quality: ImageQuality::Auto,
             gif: None,
@@ -1754,28 +1791,28 @@ mod tests {
             body: r#"{"error": {"param": "model", "message": "unknown model"}}"#.to_string(),
         };
         let asked = std::cell::RefCell::new(Vec::new());
-        let made = with_model_fallback(|model| {
-            asked.borrow_mut().push(model);
+        let made = with_model_fallback(IMAGE_MODEL, |model| {
+            asked.borrow_mut().push(model.to_string());
             if model == IMAGE_MODEL {
                 Err(refused())
             } else {
                 Ok(7)
             }
         });
-        assert_eq!(made.unwrap(), (7, FALLBACK_IMAGE_MODEL));
+        assert_eq!(made.unwrap(), (7, FALLBACK_IMAGE_MODEL.to_string()));
         assert_eq!(*asked.borrow(), [IMAGE_MODEL, FALLBACK_IMAGE_MODEL]);
         // Made with the newest: asked once.
         asked.borrow_mut().clear();
-        let made = with_model_fallback(|model| {
-            asked.borrow_mut().push(model);
+        let made = with_model_fallback(IMAGE_MODEL, |model| {
+            asked.borrow_mut().push(model.to_string());
             Ok(1)
         });
-        assert_eq!(made.unwrap(), (1, IMAGE_MODEL));
+        assert_eq!(made.unwrap(), (1, IMAGE_MODEL.to_string()));
         assert_eq!(*asked.borrow(), [IMAGE_MODEL]);
         // Any other refusal stands: asking another model would not change it.
         asked.borrow_mut().clear();
-        let made: Result<((), _), _> = with_model_fallback(|model| {
-            asked.borrow_mut().push(model);
+        let made: Result<((), _), _> = with_model_fallback(IMAGE_MODEL, |model| {
+            asked.borrow_mut().push(model.to_string());
             Err(ImagegenError::Refused {
                 status: 400,
                 body: r#"{"error": {"param": "size", "message": "too small"}}"#.to_string(),
@@ -1783,6 +1820,27 @@ mod tests {
         });
         assert!(made.is_err());
         assert_eq!(*asked.borrow(), [IMAGE_MODEL]);
+        // A model the run named stands too: its refusal is the answer, never
+        // an image from a model nobody asked for.
+        asked.borrow_mut().clear();
+        let made: Result<((), _), _> = with_model_fallback("gpt-image-2.6-flare", |model| {
+            asked.borrow_mut().push(model.to_string());
+            Err(refused())
+        });
+        assert!(made.is_err());
+        assert_eq!(*asked.borrow(), ["gpt-image-2.6-flare"]);
+    }
+
+    #[test]
+    fn the_run_can_name_another_image_model() {
+        assert_eq!(image_model(None), IMAGE_MODEL);
+        for blank in ["", "  "] {
+            assert_eq!(image_model(Some(blank)), IMAGE_MODEL, "{blank:?}");
+        }
+        assert_eq!(
+            image_model(Some(" gpt-image-2.6-flare ")),
+            "gpt-image-2.6-flare"
+        );
     }
 
     #[test]
@@ -1858,32 +1916,34 @@ mod tests {
     #[test]
     fn the_model_reads_the_fact_and_the_note() {
         let fact = format_generated("PNG", (1024, 1024), None, 1_500_000, "/g/1.png");
-        let text = model_result(&fact, "/g", Shown::Attached(None), false, IMAGE_MODEL);
+        let text = model_result(&fact, "/g", Shown::Attached(None), IMAGE_MODEL, IMAGE_MODEL);
         assert!(text.starts_with(&fact), "{text}");
         assert!(text.contains("Generated images are saved to /g"), "{text}");
         assert!(text.contains("copy it"), "{text}");
         assert!(text.contains("leave the original in place"), "{text}");
         assert!(text.contains("already sees the image"), "{text}");
         assert!(!text.contains("cannot see"), "{text}");
-        assert!(!text.contains("first frame"), "{text}");
+        assert!(!text.contains("tiled"), "{text}");
         assert!(!text.contains(FALLBACK_IMAGE_MODEL), "{text}");
     }
 
     #[test]
-    fn a_model_looking_at_an_animation_is_told_it_sees_its_first_frame() {
+    fn a_model_looking_at_an_animation_reads_how_its_frames_are_shown_and_how_to_remake_it() {
         let fact = format_generated("GIF", (480, 270), Some(9), 1_200_000, "/g/1.gif");
-        let text = model_result(&fact, "/g", Shown::Attached(None), true, IMAGE_MODEL);
-        assert!(text.contains("first frame"), "{text}");
-        assert!(text.contains("animated"), "{text}");
         let text = model_result(
             &fact,
             "/g",
-            Shown::Attached(Some((240, 135))),
-            true,
+            Shown::Tiled { frames: 9 },
+            IMAGE_MODEL,
             IMAGE_MODEL,
         );
-        assert!(text.contains("first frame"), "{text}");
-        assert!(text.contains("240x135"), "{text}");
+        assert!(
+            text.contains("its 9 frames tiled left to right and top to bottom, 3 to a row"),
+            "{text}"
+        );
+        assert!(text.contains("the animated GIF"), "{text}");
+        assert!(text.contains("`referenced_image_paths`"), "{text}");
+        assert!(text.contains("set `gif`"), "{text}");
     }
 
     #[test]
@@ -1893,7 +1953,7 @@ mod tests {
             &fact,
             "/g",
             Shown::Attached(None),
-            false,
+            IMAGE_MODEL,
             FALLBACK_IMAGE_MODEL,
         );
         assert!(text.contains(FALLBACK_IMAGE_MODEL), "{text}");
@@ -1901,9 +1961,18 @@ mod tests {
     }
 
     #[test]
+    fn an_image_made_with_the_model_the_run_named_says_nothing_of_another() {
+        let fact = format_generated("PNG", (1024, 1024), None, 1_500_000, "/g/1.png");
+        let flare = "gpt-image-2.6-flare";
+        let text = model_result(&fact, "/g", Shown::Attached(None), flare, flare);
+        assert!(!text.contains("made with"), "{text}");
+        assert!(!text.contains(IMAGE_MODEL), "{text}");
+    }
+
+    #[test]
     fn a_model_that_cannot_see_is_told_the_picture_was_not_attached() {
         let fact = format_generated("PNG", (1024, 1024), None, 1_500_000, "/g/1.png");
-        let text = model_result(&fact, "/g", Shown::Withheld, false, IMAGE_MODEL);
+        let text = model_result(&fact, "/g", Shown::Withheld, IMAGE_MODEL, IMAGE_MODEL);
         assert!(text.contains("cannot see images"), "{text}");
     }
 
@@ -1914,7 +1983,7 @@ mod tests {
             &fact,
             "/g",
             Shown::Attached(Some((1536, 864))),
-            false,
+            IMAGE_MODEL,
             IMAGE_MODEL,
         );
         assert!(text.contains("1536x864"), "{text}");
@@ -1925,7 +1994,7 @@ mod tests {
     #[test]
     fn a_picture_that_could_not_be_attached_never_blames_the_model() {
         let fact = format_generated("PNG", (1024, 1024), None, 1_500_000, "/g/1.png");
-        let text = model_result(&fact, "/g", Shown::Unavailable, false, IMAGE_MODEL);
+        let text = model_result(&fact, "/g", Shown::Unavailable, IMAGE_MODEL, IMAGE_MODEL);
         assert!(!text.contains("cannot see images"), "{text}");
         assert!(text.contains("could not be attached"), "{text}");
     }
@@ -2167,9 +2236,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cancel = CancelToken::new();
         let base_request = generation("a lighthouse");
-        let (saved, model) = with_model_fallback(|model| {
+        let (saved, model) = with_model_fallback(IMAGE_MODEL, |model| {
             let asked = ImageRequest {
-                model,
+                model: model.to_string(),
                 ..base_request.clone()
             };
             request_image(&target(&base), &asked, dir.path(), &cancel)
@@ -2347,8 +2416,8 @@ mod tests {
             resolve_references(&[show(&png)]).unwrap(),
             std::slice::from_ref(&png)
         );
-        // A GIF is taken: the encoder sends its first frame as a still
-        // (docs/images.md "A GIF goes up as a still").
+        // A GIF is taken: the encoder sends its frames tiled on one PNG
+        // (docs/images.md "A GIF goes up as its frames").
         assert_eq!(
             resolve_references(&[show(&gif)]).unwrap(),
             std::slice::from_ref(&gif)
@@ -2394,7 +2463,13 @@ mod tests {
             url: url.clone(),
             sent: None,
         };
-        let outcome = finished(&saved(dir), dir, Attachment::Attached(fitted), IMAGE_MODEL);
+        let outcome = finished(
+            &saved(dir),
+            dir,
+            Attachment::Attached(fitted),
+            IMAGE_MODEL,
+            IMAGE_MODEL,
+        );
         assert!(outcome.ok);
         assert_eq!(
             outcome.output,
@@ -2409,7 +2484,13 @@ mod tests {
     #[test]
     fn a_model_that_cannot_see_gets_the_file_and_no_picture() {
         let dir = Path::new("/g");
-        let outcome = finished(&saved(dir), dir, Attachment::Withheld, IMAGE_MODEL);
+        let outcome = finished(
+            &saved(dir),
+            dir,
+            Attachment::Withheld,
+            IMAGE_MODEL,
+            IMAGE_MODEL,
+        );
         assert!(outcome.ok);
         assert_eq!(outcome.image, None);
         assert!(outcome.image_withheld, "the loop sends the replay's note");
@@ -2423,7 +2504,7 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_animation_finishes_with_its_frames_and_the_still_it_shows() {
+    fn a_saved_animation_finishes_with_its_frames_and_how_they_are_shown() {
         let dir = Path::new("/g");
         let animation = Saved {
             path: dir.join("1.gif"),
@@ -2436,13 +2517,23 @@ mod tests {
             url: AttachmentUrl::from("data:image/png;base64,Zm9v".to_string()),
             sent: None,
         };
-        let outcome = finished(&animation, dir, Attachment::Attached(fitted), IMAGE_MODEL);
+        let outcome = finished(
+            &animation,
+            dir,
+            Attachment::Attached(fitted),
+            IMAGE_MODEL,
+            IMAGE_MODEL,
+        );
         assert_eq!(
             outcome.output,
             "Generated image (GIF, 480x270, 9 frames, 1.1 MB) saved to /g/1.gif"
         );
         assert!(
-            outcome.context.as_deref().unwrap().contains("first frame"),
+            outcome
+                .context
+                .as_deref()
+                .unwrap()
+                .contains("its 9 frames tiled"),
             "{:?}",
             outcome.context
         );
@@ -2495,6 +2586,7 @@ mod tests {
             signin: ChatGptSignin::default(),
             dir: PathBuf::from("/nowhere"),
             skill: None,
+            model: IMAGE_MODEL.to_string(),
         }
     }
 

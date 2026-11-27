@@ -265,6 +265,17 @@ Scene/backdrop: neutral lighting reference only
 Constraints: seamless edges; no obvious focal elements; no text; no logos or trademarks; no watermark
 ```
 
+### Game assets example: looping GIF
+Call built-in `imagegen` with `gif: {"frame_count": 8, "frame_duration_ms": 120}`.
+```
+Use case: stylized-concept
+Asset type: animated game pickup
+Primary request: a spinning gold coin
+Style/medium: clean pixel-art sprite
+Composition/framing: centered coin; the same size and position in every frame
+Constraints: the coin turns one full revolution about its vertical axis; seamless loop, the last frame leads back into the first; plain dark background; no text; no watermark
+```
+
 ### Wireframe template
 ```
 Use case: ui-mockup

@@ -2233,35 +2233,22 @@ pub fn format_read_image_resized(
     )
 }
 
-/// [`format_read_image`] for a GIF, which goes up as a still PNG of its
-/// first frame (`docs/images.md` *A GIF goes up as a still*): the file's own
-/// facts — an animation's frames among them — then what was sent, shrunk or
-/// not. The file's size stays the first on the line, the one the renderer
-/// draws the picture at ([`crate::images::read_image_size`]).
+/// [`format_read_image`] for a GIF, which goes up as the still of its frames
+/// rather than as itself (`crate::images::gif`): a GIF that moves has its
+/// frames counted after its size and the still's layout named after what it
+/// weighs — `Read image (GIF, 512x512, 9 frames, 1.2 MB; sent as its 9 frames
+/// tiled left to right and top to bottom, 3 to a row)` — so the model knows
+/// what it is looking at. A GIF of one frame reads like any picture. The file's
+/// own `WxH` still comes first ([`crate::images::read_image_size`]).
 #[must_use]
-pub fn format_read_gif(
-    width: u32,
-    height: u32,
-    frames: Option<u32>,
-    bytes: usize,
-    sent: (u32, u32),
-    sent_bytes: usize,
-) -> String {
-    let animated = frames.filter(|n| *n > 1);
-    let frames = animated
-        .map(|n| format!(", {n} frames"))
-        .unwrap_or_default();
-    let what = if animated.is_some() {
-        "its first frame "
-    } else {
-        ""
-    };
+pub fn format_read_gif(width: u32, height: u32, frames: u32, bytes: usize) -> String {
+    if frames <= 1 {
+        return format_read_image("GIF", width, height, bytes);
+    }
     format!(
-        "{READ_IMAGE_HEAD}(GIF, {width}x{height}{frames}, {size}; sent {what}as a {sw}x{sh} PNG, {ssize})",
+        "{READ_IMAGE_HEAD}(GIF, {width}x{height}, {frames} frames, {size}; sent as {tiled})",
         size = human_size(bytes),
-        sw = sent.0,
-        sh = sent.1,
-        ssize = human_size(sent_bytes),
+        tiled = crate::images::tiled_frames(frames),
     )
 }
 
@@ -4084,35 +4071,24 @@ mod tests {
     }
 
     #[test]
-    fn a_gif_reads_fact_line_names_its_frames_and_the_still_it_sent() {
-        // A GIF goes up as a still PNG of its first frame (docs/images.md
-        // "A GIF goes up as a still"): the file's facts first, an animation's
-        // frames among them, then what the model was sent.
-        let animated = format_read_gif(1024, 1024, Some(9), 1_800_000, (1024, 1024), 410_000);
+    fn a_gif_reads_fact_line_names_its_frames_and_how_they_were_sent() {
+        // A GIF goes up as its frames tiled on one PNG (docs/images.md "A GIF
+        // goes up as its frames"): an animation's frames follow its size, and
+        // the layout the model is looking at follows its weight.
+        let animated = format_read_gif(512, 512, 9, 1_200_000);
         assert_eq!(
             animated,
-            "Read image (GIF, 1024x1024, 9 frames, 1.7 MB; sent its first frame as a \
-             1024x1024 PNG, 400 KB)"
+            "Read image (GIF, 512x512, 9 frames, 1.1 MB; sent as its 9 frames tiled left to \
+             right and top to bottom, 3 to a row)"
         );
-        let resized = format_read_gif(4000, 3000, Some(2), 3_000_000, (2000, 1500), 900_000);
-        assert!(
-            resized.ends_with("sent its first frame as a 2000x1500 PNG, 878 KB)"),
-            "{resized}"
-        );
-        // One frame is no animation: no frames named, no frame singled out.
-        let still = format_read_gif(64, 64, Some(1), 3000, (64, 64), 2000);
+        // One frame is no animation: it reads like any picture.
         assert_eq!(
-            still,
-            "Read image (GIF, 64x64, 2 KB; sent as a 64x64 PNG, 1 KB)"
+            format_read_gif(64, 64, 1, 3000),
+            "Read image (GIF, 64x64, 2 KB)"
         );
-        let unknown = format_read_gif(64, 64, None, 3000, (64, 64), 2000);
-        assert_eq!(unknown, still);
-        // The renderer draws the file, so the file's size stays the first
-        // one on the line.
-        for line in [&animated, &resized, &still] {
-            assert!(is_image_read_output(line), "{line}");
-        }
-        assert_eq!(crate::images::read_image_size(&resized), Some((4000, 3000)));
+        // The renderer draws the file, so its size stays the first on the line.
+        assert!(is_image_read_output(&animated));
+        assert_eq!(crate::images::read_image_size(&animated), Some((512, 512)));
     }
 
     #[test]

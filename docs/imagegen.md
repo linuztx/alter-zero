@@ -49,7 +49,7 @@ and saves an animation as one (*The model*, *The tool* and *A GIF* below).
 | When offered | ChatGPT auth **and** a provider that requires OpenAI auth, an image-capable model, not the Free plan | the ChatGPT Codex sign-in is stored, **whatever provider the session runs on**; a Free-plan account is refused when the call runs |
 | Edit inputs | `referenced_image_paths` or `num_last_images_to_include` | `referenced_image_paths` only: every picture in a conversation here has a file (a paste is saved, a `read` names its file, a generated image is saved) |
 | Saved to | `$CODEX_HOME/generated_images/<thread>/<call>.png` | `~/.alter-zero/generated_images/<session>/<N>.png` |
-| What the model sees | the picture | the picture, or a copy held to the attachment cap when the picture is past it |
+| What the model sees | the picture | the picture, or a copy held to the attachment cap when the picture is past it; a GIF as its frames tiled on one PNG (*A GIF*) |
 | Skill visibility | always | only while the tool is offered |
 | Switch | none | the `/settings` **Image generation** row, per directory |
 
@@ -85,9 +85,9 @@ the skill's, which is listed whenever the tool is offered. What stays is the
 capability and its sharp edges: one image per call, a minute or two, saved
 and shown with its path returned, no asking for confirmation, edits by
 `referenced_image_paths` after looking with `read`, `transparent_background`
-for a cutout, and `gif` for a short loop, which is changed through a
-spritesheet of its frames, never by passing the GIF itself. There is no code
-mode and no `num_last_images_to_include`.
+for a cutout, and `gif` for a short loop, a GIF referenced with `gif` set
+being remade from its own frames. There is no code mode and no
+`num_last_images_to_include`.
 
 `size` is `auto`, which lets the backend choose from the prompt, or
 `WIDTHxHEIGHT`. It is checked against the backend's grid before anything is
@@ -104,8 +104,9 @@ differs by model, such as the smallest size, is left to the backend, whose
 refusal the model reads like any other.
 
 `quality` is `auto`, `low`, `medium` or `high`, the four every GPT Image
-model takes. The `xhigh` and `max` the Images API lists for some models are
-not offered, since the model before (*The model*) refuses them.
+model takes. The `xhigh` and `max` the Images API lists are documented for
+its 2.5 models only, neither Images 2.6 model nor the model before (*The
+model*) among them, so they are not offered.
 
 Both are sent on every request, `auto` when not asked. There is no count:
 one call makes one image, and many assets are many calls, which the skill
@@ -124,10 +125,17 @@ Flare, for speed. Sunburst is the one named, and it is also the Images API's
 own default for an edit. The tool takes no model; `quality: "low"` is its
 speed control.
 
-A backend that does not take that model yet must not break the tool. So
-when the backend refuses the model itself, the same request goes once more
-with `gpt-image-2` (`FALLBACK_IMAGE_MODEL`, `with_model_fallback`). A refusal
-is of the model (`refuses_model`) when it is a 400, 404 or 422 and:
+`ALTER_ZERO_IMAGEGEN_MODEL` names another model for the run, such as
+`gpt-image-2.6-flare`. It is read once, at startup, into
+`ImagegenSetup::model` (`image_model`: a blank value names none), and never
+saved.
+
+A backend that does not take the default model yet must not break the tool.
+So when the backend refuses `IMAGE_MODEL` itself, the same request goes once
+more with `gpt-image-2` (`FALLBACK_IMAGE_MODEL`, `with_model_fallback`). A
+model the run named is never swapped: its refusal is what the model reads,
+since the user asked for that model and not for an image from another. A
+refusal is of the model (`refuses_model`) when it is a 400, 404 or 422 and:
 
 - its error's `param` is `model`. A `param` naming another field means the
   refusal is about that field, even when its message names the model;
@@ -166,20 +174,23 @@ when not asked:
   is worded like any other (*Errors the model reads*).
 - The answer is saved as `N.gif`: its format is read from its content, as
   every answer's is, and its frames are counted off its blocks without a
-  pixel decoded (`images::gif_frame_count`). The fact line names them:
-  `Generated image (GIF, 480x270, 9 frames, 1.1 MB) saved to …/1.gif`. A
+  pixel decoded (`images::gif_info`). The fact line names them:
+  `Generated image (GIF, 512x512, 9 frames, 1.1 MB) saved to …/1.gif`. A
   GIF of one frame names none.
-- The model is shown the first frame as a PNG still, never the GIF: the
-  providers' vision APIs take still GIFs only (`docs/images.md` *A GIF goes
-  up as a still*). Its note says what it is looking at: `The picture
-  attached for you is the GIF's first frame, as a still; the file itself is
-  animated.`
+- The model is shown the GIF's frames tiled on one PNG, never the GIF
+  itself: OpenAI's vision takes only a GIF that does not move, and Gemini's
+  none (`docs/images.md` *A GIF goes up as its frames*). Its note says what
+  it is looking at and how to change it: `The picture attached for you is
+  its 9 frames tiled left to right and top to bottom, 3 to a row; the file
+  itself is the animated GIF. To make a new GIF from this one, list it in
+  `referenced_image_paths` and set `gif`: it goes up the same way.`
 - The cell draws the first frame. While the call runs, its corner row says
   `Generating GIF… (12s)` (`asks_for_gif`, read off the call's arguments).
-- An animation is changed through a spritesheet: its frames laid out in a
-  grid with `bash`, referenced, and `gif` set. A GIF passed as a reference
-  is taken, but only its first frame reaches the image model, as with every
-  GIF sent anywhere.
+- An animation is changed by referencing it with `gif` set. It goes up as
+  that same tiled still, which is the spritesheet an image model draws a new
+  GIF from: equal cells in a regular grid, in order, so the model has no
+  tiling to do by hand. A spritesheet of its own, laid out with `bash`,
+  works the same way.
 
 ### The call
 
@@ -190,7 +201,8 @@ when not asked:
      give.
    - Each reference resolves against the working directory, the file tools'
      rule. It must be a PNG, JPEG, WebP or GIF, judged by its content, and
-     under the Images API's 50 MB limit. A GIF goes up as its first frame.
+     under the Images API's 50 MB limit. A GIF goes up as its frames tiled
+     (*A GIF*).
 2. **Credential.** The sign-in is read from a shared handle the boundary
    keeps current, so a `/login` mid-session reaches the next call without a
    rebuild (`ImagegenSetup`). The access token is minted through the same
@@ -397,8 +409,8 @@ app:
 - `agents/openai.yaml` and the icons are Codex's UI metadata and are not
   ported. The built-in seed carries text files only.
 - It teaches the tool's `size`, `quality` and `gif`, and how to change an
-  animation through a spritesheet of its frames (*Built-in size, quality and
-  GIF*, *GIF requests*).
+  animation: reference it with `gif` set (*Built-in size, quality and GIF*,
+  *GIF requests*).
 
 **Gating.** The skill is always seeded, so the built-in sync never retires it
 while signed out and re-seeds it on sign-in (`docs/builtin-updates.md`).
@@ -429,8 +441,9 @@ while the tool is not offered (`llm::skill::load_skills`):
   - the spec, the arguments (`size`, `quality` and `gif` among them), the
     bodies, the decoder, the scanner over split and escaped input, the fact
     line and the error wording;
-  - the model before: which refusals are of the model, and the second
-    request a stand-in that refuses the newest one answers;
+  - the model before: which refusals are of the model, the second request
+    a stand-in that refuses the newest one answers, and a model the run
+    named never swapped;
   - the HTTP half against a loopback stub (the `llm::usage` pattern): the
     URL, the headers, the body, the saved file, a 429 and a cancel.
 - **The replay and the picture:** `cargo test --lib context:: ui::`.
@@ -445,15 +458,19 @@ while the tool is not offered (`llm::skill::load_skills`):
   and headers, the saved file and the attachment on the next request; and
   signed out, or with the row off, nothing offered and nothing asked of
   ChatGPT.
-- **A GIF and the model before:** `cargo test --test headless animate
-  refuses`. The stand-in model asks for a two-frame GIF: the body, the
-  `.gif` saved, its frames on the fact line, and the PNG still the next
-  request carries. And a backend that refuses the newest model makes the
-  image on a second request, with `gpt-image-2`.
+- **A GIF and the models:** `cargo test --test headless animate refuses
+  the_run_can_name`. The stand-in model asks for a two-frame GIF: the body,
+  the `.gif` saved, its frames on the fact line, and the PNG of its frames
+  tiled that the next request carries. A backend that refuses the newest
+  model makes the image on a second request, with `gpt-image-2`. And
+  `ALTER_ZERO_IMAGEGEN_MODEL` names the model every request of the run asks
+  for.
 - **Memory:** `cargo test --test image_generation_memory` streams a
   multi-megabyte answer and holds the growth under 2 MB;
   `cargo test --test image_fit_memory` fits three pictures past the cap and
-  holds the growth to the copies' encodings plus 4 MB.
+  holds the growth to the copies' encodings plus 4 MB; and
+  `cargo test --test gif_still_memory` tiles three GIFs of nine 1024-pixel
+  frames and holds the growth to the stills' encodings plus 4 MB.
 - **On screen:** `smoke.sh` Phase 168 drives a turn end to end against a
   stand-in for the ChatGPT backend, with no network:
   - a ChatGPT Codex session asks for an image;

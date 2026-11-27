@@ -345,13 +345,14 @@ plots it just generated.
   base64s the file again (`docs/memory.md`); a since-deleted file degrades
   to the existing `[image unavailable: …]` text note instead of failing the
   turn.
-- **A GIF goes up as a still PNG of its first frame** (`exec::read_gif`, the
-  same `images::gif_still` the attachment encoder uses, so a later turn sends
-  the same bytes). Its fact line names the frames of an animation and what
-  was sent: `Read image (GIF, 480x270, 9 frames, 1.2 MB; sent its first frame
-  as a 480x270 PNG, 210 KB)` (`tools::format_read_gif`). The providers take
-  still GIFs only, and an animation one of them refused would fail every
-  later turn (`docs/images.md` *A GIF goes up as a still*).
+- **A GIF goes up as a PNG of its frames tiled** (`exec::read_gif`, which
+  attaches the attachment encoder's own still, so a later turn sends the same
+  bytes). Its fact line names the frames of an animation and how they were
+  laid out: `Read image (GIF, 512x512, 9 frames, 1.2 MB; sent as its 9
+  frames tiled left to right and top to bottom, 3 to a row)`
+  (`tools::format_read_gif`). OpenAI's vision takes only a GIF that does not
+  move and Gemini's none, and one GIF a provider refused would fail every
+  later turn (`docs/images.md` *A GIF goes up as its frames*).
 - **Size cap**: `READ_IMAGE_MAX_BYTES` (3.75 MB raw, so the base64 form stays
   under the strictest mainstream provider's 5 MB per-image limit — Claude
   Code's own bound). An oversized file fails with a recoverable "downscale or

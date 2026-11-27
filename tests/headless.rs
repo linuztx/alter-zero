@@ -1853,8 +1853,8 @@ fn tool_result(request: &str) -> String {
 #[test]
 fn a_chatgpt_sign_in_lets_another_providers_model_animate() {
     // The model asks for a GIF; the animation is kept whole, and what the
-    // model is shown of it is its first frame as a still (docs/imagegen.md,
-    // docs/images.md "A GIF goes up as a still").
+    // model is shown of it is its frames tiled on one PNG (docs/imagegen.md,
+    // docs/images.md "A GIF goes up as its frames").
     let world = World::new("animate");
     let chat = StandIn::start();
     let chatgpt = ChatGpt::start();
@@ -1895,7 +1895,10 @@ fn a_chatgpt_sign_in_lets_another_providers_model_animate() {
         result.starts_with("Generated image (GIF, 1x1, 2 frames, "),
         "{result}"
     );
-    assert!(result.contains("first frame"), "{result}");
+    assert!(
+        result.contains("its 2 frames tiled left to right and top to bottom, 2 to a row"),
+        "{result}"
+    );
     let second: serde_json::Value = serde_json::from_str(&chats[1]).expect("a JSON request");
     let attachment = second["messages"]
         .as_array()
@@ -1905,7 +1908,7 @@ fn a_chatgpt_sign_in_lets_another_providers_model_animate() {
         attachment["content"][1]["image_url"]["url"]
             .as_str()
             .is_some_and(|url| url.starts_with("data:image/png;base64,")),
-        "the model is shown a still, never the GIF: {attachment}"
+        "the model is shown a PNG of the frames, never the GIF: {attachment}"
     );
 }
 
@@ -1917,7 +1920,38 @@ fn a_backend_that_refuses_the_newest_model_still_draws_with_the_one_before() {
     let out = draw_run(&world, &chat, &chatgpt, true);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(stdout(&out).trim(), "Done.", "{}", stderr(&out));
-    let models: Vec<String> = chatgpt
+    assert_eq!(
+        image_models(&chatgpt),
+        ["gpt-image-2.6-sunburst", "gpt-image-2"]
+    );
+    assert_eq!(generated_pictures(&world).len(), 1);
+    let result = tool_result(&chat.chat_requests()[1]);
+    assert!(result.contains("made with gpt-image-2"), "{result}");
+}
+
+#[test]
+fn the_run_can_name_another_image_model() {
+    // `ALTER_ZERO_IMAGEGEN_MODEL` names the model every request of the run
+    // asks for, read once at startup and never saved (docs/imagegen.md
+    // "The model").
+    let world = World::new("flare");
+    let chat = StandIn::start();
+    let chatgpt = ChatGpt::start();
+    let out = draw_command(&world, &chat, &chatgpt, true)
+        .env("ALTER_ZERO_IMAGEGEN_MODEL", "gpt-image-2.6-flare")
+        .stdin(Stdio::null())
+        .output()
+        .expect("the binary runs");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), "Done.", "{}", stderr(&out));
+    assert_eq!(image_models(&chatgpt), ["gpt-image-2.6-flare"]);
+    let result = tool_result(&chat.chat_requests()[1]);
+    assert!(!result.contains("made with"), "{result}");
+}
+
+/// The model each of the stand-in's Images API requests named, in order.
+fn image_models(chatgpt: &ChatGpt) -> Vec<String> {
+    chatgpt
         .requests()
         .iter()
         .filter(|(head, _)| head.contains("/images/"))
@@ -1925,11 +1959,7 @@ fn a_backend_that_refuses_the_newest_model_still_draws_with_the_one_before() {
             let body: serde_json::Value = serde_json::from_str(body).expect("a JSON body");
             body["model"].as_str().expect("a model").to_string()
         })
-        .collect();
-    assert_eq!(models, ["gpt-image-2.6-sunburst", "gpt-image-2"]);
-    assert_eq!(generated_pictures(&world).len(), 1);
-    let result = tool_result(&chat.chat_requests()[1]);
-    assert!(result.contains("made with gpt-image-2"), "{result}");
+        .collect()
 }
 
 #[test]

@@ -22,29 +22,35 @@ release heading when a version is cut.
   - `gif` makes a short looping animation of 2 to 16 frames, each shown
     for 20 to 2000 ms; `{}` takes the defaults of 9 frames at 200 ms. It is
     saved as a `.gif`, the cell names its frames and says
-    `Generating GIF…` while it runs, and the model is shown the first frame
-    as a still.
+    `Generating GIF…` while it runs, and the model is shown its frames tiled
+    on one picture.
   - `size` is `auto` or WIDTHxHEIGHT, such as `1536x1024`, up to
     `3840x2160`. A size the backend would refuse is refused before the
     request goes out, naming the rule it breaks; edges off the 16-pixel
     grid come with the nearest size on it.
   - `quality` is `auto`, `low`, `medium` or `high`.
   - Both default to `auto`, which leaves the choice to the backend.
-  - A GIF can be a reference image, sent as its first frame.
+  - `ALTER_ZERO_IMAGEGEN_MODEL` names another image model for the run,
+    such as `gpt-image-2.6-flare` for speed. A model named this way is
+    never swapped for another when the backend refuses it.
+  - A GIF can be a reference image. With `gif` set it is remade from its
+    own frames, which go up tiled as the spritesheet a new GIF is drawn
+    from.
   - The built-in `imagegen` skill teaches the new controls, and how to
-    change an animation through a spritesheet of its frames
-    (`docs/imagegen.md`).
+    change an animation (`docs/imagegen.md`).
 
 ### Fixed
 
-- **A GIF reaches the model as a still.** A `read` of a GIF, or a pasted
-  GIF, was sent to the model as the GIF itself. The providers' vision APIs
-  document still GIFs only, and the conversation re-sends every picture it
-  holds, so an animation a provider refused would fail every request after
-  it. A GIF now goes up as a PNG of its first frame, shrunk under
-  **Auto-resize images** like any picture, and the `read` result names an
-  animation's frames: `Read image (GIF, 480x270, 9 frames, 1.2 MB; sent its
-  first frame as a 480x270 PNG, 210 KB)` (`docs/images.md`).
+- **A GIF reaches the model as its frames, tiled on one picture.** A
+  `read` of a GIF, or a pasted GIF, was sent to the model as the GIF
+  itself. OpenAI's vision takes only a GIF that does not move, Gemini's
+  takes none, and the conversation re-sends every picture it holds, so a
+  GIF a provider refused would fail every request after it. A GIF now goes
+  up as a PNG of its frames in a grid, left to right and top to bottom, at
+  most sixteen of them evenly spaced, so the model sees the motion. The
+  `read` result says how they are laid out: `Read image (GIF, 512x512, 9
+  frames, 1.2 MB; sent as its 9 frames tiled left to right and top to
+  bottom, 3 to a row)` (`docs/images.md`).
 
 - **Agent Zero API** now sends chat completions to `https://llm.agent-zero.ai/v1`.
   The model list still comes directly from Venice.

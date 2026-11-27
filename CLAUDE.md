@@ -3367,21 +3367,25 @@ every real backend is offered the **`imagegen`** tool, whatever provider the
 session runs on: Codex's client-side `image_gen.imagegen` as a plain function,
 `prompt` + `transparent_background` + `referenced_image_paths` (≤5; every
 picture here has a file, so Codex's `num_last_images_to_include` is not
-ported, and a GIF reference goes up as its first frame) + `size` (`auto`, or
+ported, and a GIF reference goes up as its frames tiled on one PNG, the
+spritesheet a new GIF is drawn from) + `size` (`auto`, or
 WIDTHxHEIGHT checked against the backend's grid before anything is sent:
 multiples of 16, an edge ≤3840, ≤3:1, ≤3840x2160's pixels, the nearest
 on-grid size offered) + `quality` (`auto`/`low`/`medium`/`high`) + `gif`
 (`{frame_count 2–16, frame_duration_ms 20–2000}`, `{}` or a bare `true` for
 the backend's 9 × 200 ms, sent as `output_format: "gif"` with the numbers
 beside it), and no model or count: every request names
-`gpt-image-2.6-sunburst` (`imagegen::IMAGE_MODEL`), sent once more as
-`gpt-image-2` when the backend refuses that model by name
+`gpt-image-2.6-sunburst` (`imagegen::IMAGE_MODEL`) unless
+`ALTER_ZERO_IMAGEGEN_MODEL` names another for the run (`imagegen::image_model`,
+read once at bootstrap into `ImagegenSetup::model`, never saved), the default
+sent once more as `gpt-image-2` when the backend refuses that model by name
 (`imagegen::refuses_model` — the error's `param`, a model-not-found code, or
 its words naming the model — through `with_model_fallback`, the model told
-which made the image), and a GIF answer is saved as `.gif`, its frames
-counted off its blocks (`images::gif_frame_count`) onto the fact line and
-shown to the model as its first frame (`docs/images.md` *A GIF goes up as a
-still*). The pure core is `src/llm/imagegen/` — the spec, the checked
+which made the image; a model the run named is never swapped), and a GIF
+answer is saved as `.gif`, its frames
+counted off its blocks (`images::gif_info`) onto the fact line and shown to
+the model tiled on one PNG (`docs/images.md` *A GIF goes up as its
+frames*). The pure core is `src/llm/imagegen/` — the spec, the checked
 arguments (unknown ones refused by name, inside `gif` too), the
 typed body (a `BodySource`, references as the session's shared
 `AttachmentUrl` encodings, an edit's body streamed), the fact line
@@ -4885,9 +4889,9 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   (png/jpg/jpeg/gif/webp) instead returns the concise
   `Read image ({format}, {W}x{H}, {size})` fact line while the pixels ride
   `ToolOutcome::image` as a base64 `data:` URL (a GIF — read, pasted or
-  generated — always as a PNG still of its first frame, `images::gif_still`,
-  the line naming an animation's frames, `docs/images.md` *A GIF goes up as
-  a still*) —
+  generated — always as a PNG of its frames tiled, at most sixteen evenly
+  spaced, `images::gif_still`, the line naming an animation's frames and how
+  they are laid out, `docs/images.md` *A GIF goes up as its frames*) —
   `run_agent` attaches them after the round's tool results as a user-role parts
   message (tool-role content rejects image parts on most providers) and
   `context_messages` replays the same note on later turns from the output

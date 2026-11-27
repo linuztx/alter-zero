@@ -176,39 +176,55 @@ only three:
 Either way the size is only half of it: a picture reserves rows only while
 its file is still there to draw from (*A picture whose file is gone*, above).
 
-### A GIF goes up as a still
+### A GIF goes up as its frames
 
-What the **model** is sent of a GIF is a PNG of its first frame, never the
-GIF itself, whichever way it arrived: a `read`, a Ctrl+V paste, a generated
-animation (`docs/imagegen.md`), a reference image an edit uploads. The
-providers' vision APIs take still GIFs only, and an animation one of them
-refuses would fail every later request, since the conversation re-sends every
-picture it holds.
+What the **model** is sent of a GIF is a still: one PNG of its frames
+tiled in a grid, never the GIF itself, whichever way it arrived — a `read`,
+a Ctrl+V paste, a generated animation (`docs/imagegen.md`), a reference
+image an edit uploads. OpenAI's vision takes only a GIF that does not move,
+Gemini's takes no GIF at all, and the conversation re-sends every picture it
+holds, so one GIF a provider refused would fail every request after it.
 
-- **One still, two callers.** `images::gif_still` decodes the first frame (a
-  GIF decodes to it), shrinks it as **Auto-resize images** shrinks any
-  picture, and encodes it as PNG. It is never compared against the file,
-  whose other frames make the file no measure of the still. The `read` tool
-  calls it on the bytes it holds, and the attachment encoder on the file
-  (`encode_attachment`). So a later turn, a restart included, sends the very
-  bytes the read sent, and the cached prefix holds.
+- **The frames, tiled.** `images::gif_still` lays them out left to right and
+  top to bottom in equal cells, in the squarest grid that holds them
+  (`images::sheet_grid`: two frames side by side, nine in a 3×3, sixteen in
+  a 4×4). A GIF of one frame is that frame. A longer one than
+  `images::SHEET_MAX_FRAMES` (16) is shown by sixteen of them, evenly spaced
+  from its first frame to its last (`images::sheet_frames`). The model sees
+  the motion rather than a moment of it, and the still is the spritesheet an
+  image model draws a new GIF from, so a GIF passed as an edit's reference
+  goes up the same way (`docs/imagegen.md` *A GIF*).
+- **Small, and fitted to the cap.** The sheet is drawn at most 1024 pixels
+  on its long side, never enlarging a frame (`images::sheet_cell`), then
+  redrawn at 768, 512 and 256 until its PNG is under the attachment cap
+  (`tools::READ_IMAGE_MAX_BYTES`). A GIF whose frames cannot be drawn sends
+  nothing in its place, never the GIF: a `read` of it fails with advice to
+  convert it, a generated one's note says the picture could not be
+  attached, and a pasted one is an `[image unavailable: …]` note in the
+  request.
+- **One frame decoded at a time.** Each frame is shrunk into its cell before
+  the next is read, so a still costs one decoded frame and the sheet whatever
+  the GIF's length, and what stays resident is the encoding the session keeps
+  (`tests/gif_still_memory.rs`, `docs/memory.md`).
+- **One still for every caller.** The attachment encoder makes it
+  (`encode_attachment`), and the `read` tool attaches what the encoder made.
+  So the turn that attached the GIF and every later one, a restart included,
+  send the very same bytes, and the cached prefix holds. No copy is kept on
+  disk: the still is deterministic.
 - **The format is the content's.** The encoder knows a GIF by its six-byte
-  signature, never by its extension, so a GIF named `.png` goes up as a still
-  too.
-- **Held to the cap like any picture.** `images::fitted_attachment_data_url`
-  measures the still, not the file. A still past the cap is fitted down the
-  usual edges and kept as `.attachments/{name}.png` beside the GIF, which the
-  encoder prefers on every later turn.
-- **The animation is named, not sent.** `images::gif_frame_count` counts the
-  image descriptors by walking the file's blocks, with no pixel decoded and
-  a few kilobytes of buffer. A file cut short counts the frames it got
-  through. The fact lines name the count, so the model knows what it is
-  looking at a frame of: `Read image (GIF, 480x270, 9 frames, 1.2 MB; sent
-  its first frame as a 480x270 PNG, 210 KB)` (`tools::format_read_gif`). A
-  one-frame GIF names no frames: `…; sent as a 64x64 PNG, 2 KB)`.
+  signature, never by its extension, so a GIF named `.png` goes up as its
+  frames too.
+- **The model is told what it sees.** `images::gif_info` reads the screen
+  size and counts the frames by walking the file's blocks, with no pixel
+  decoded; a file cut short counts the frames that finished. The fact line
+  says how the frames were laid out: `Read image (GIF, 512x512, 9 frames,
+  1.2 MB; sent as its 9 frames tiled left to right and top to bottom, 3 to a
+  row)` (`tools::format_read_gif`, its words `images::tiled_frames`). A
+  one-frame GIF reads like any other picture: `Read image (GIF, 64x64, 2
+  KB)`.
 
 The screen draws the file itself, and a GIF decodes to its first frame
-there too. Nothing here animates.
+there. Nothing here animates.
 
 ## The geometry
 
@@ -637,7 +653,8 @@ was a bad idea.
 * The live **streaming preview** doesn't draw a picture: a `read` has no image
   until it resolves, and the committed cell is one frame away.
 * An animated **GIF** is drawn as its first frame, inline and in Ctrl+O. The
-  file keeps every frame; open it to watch it.
+  file keeps every frame; open it to watch it. The model is sent all of them,
+  tiled (*A GIF goes up as its frames*).
 
 ## Driving it by hand
 

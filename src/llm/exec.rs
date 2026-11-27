@@ -1342,42 +1342,21 @@ fn read_image(path: &str, bytes: &[u8]) -> ToolOutcome {
     ToolOutcome::ok(text).with_image(url)
 }
 
-/// The GIF branch of `read`: a GIF goes up as a still PNG of its first
-/// frame, shrunk as **Auto-resize images** shrinks any picture — providers
-/// take only still GIFs, and the conversation re-sends the picture on every
-/// later turn (`docs/images.md` *A GIF goes up as a still*). The still is the
-/// one the attachment encoder builds from the file, so a later turn, a
-/// restart included, sends the very bytes this read did.
-fn read_gif(path: &str, bytes: &[u8], size: (u32, u32)) -> ToolOutcome {
-    const MB: f64 = 1024.0 * 1024.0;
-    let max = crate::images::auto_resizing().then_some(crate::images::AUTO_RESIZE_MAX_PIXELS);
-    let Some(still) = crate::images::gif_still(bytes, max) else {
-        return ToolOutcome::error(format!("could not decode {path} as an image"));
-    };
-    if still.bytes.len() > tools::READ_IMAGE_MAX_BYTES {
+/// A GIF `read`: it never goes up as itself — a provider may refuse one that
+/// moves, or any GIF, and every later turn would re-send the refusal — so its
+/// frames go up tiled on one PNG (`images::gif`), built by the encoder every
+/// later turn re-sends it through, and the fact line counts the frames and
+/// says how they are shown (`docs/images.md` *A GIF goes up as its frames*).
+fn read_gif(path: &str, bytes: &[u8], (width, height): (u32, u32)) -> ToolOutcome {
+    let frames = crate::images::gif_info(bytes).map_or(1, |info| info.frames);
+    let Some(url) = crate::images::attachment_data_url(Path::new(path)) else {
         return ToolOutcome::error(format!(
-            "image {path} is too large to attach ({:.1} MB as a still; the limit is {:.2} MB) — \
-             turn on Auto-resize images in /settings, or downscale it with a bash command first",
-            still.bytes.len() as f64 / MB,
-            tools::READ_IMAGE_MAX_BYTES as f64 / MB,
+            "could not draw {path}'s frames as a picture to attach — convert it to a PNG with \
+             a bash command first"
         ));
-    }
-    let frames = crate::images::gif_frame_count(bytes);
-    let url = crate::images::remember_attachment(
-        std::path::Path::new(path),
-        &still.bytes,
-        crate::images::payload_mime(still.format),
-    );
-    crate::images::remember_size(path, size);
-    let text = tools::format_read_gif(
-        size.0,
-        size.1,
-        frames,
-        bytes.len(),
-        still.size,
-        still.bytes.len(),
-    );
-    ToolOutcome::ok(text).with_image(url)
+    };
+    crate::images::remember_size(path, (width, height));
+    ToolOutcome::ok(tools::format_read_gif(width, height, frames, bytes.len())).with_image(url)
 }
 
 /// The `(MIME, display label)` for a sniffed format — `None` for anything a
@@ -1530,6 +1509,7 @@ mod tests {
             signin: crate::llm::imagegen::ChatGptSignin::default(),
             dir: std::path::PathBuf::from("/nowhere"),
             skill: None,
+            model: crate::llm::imagegen::IMAGE_MODEL.to_string(),
         };
         let outcome = RealToolExecutor::new().with_imagegen(Some(setup)).execute(
             &call(
@@ -1913,7 +1893,7 @@ os.write(1, b"\n")'"#;
     }
 
     /// A GIF of `w`×`h`, one solid frame per colour.
-    fn write_gif(path: &std::path::Path, w: u32, h: u32, colours: &[[u8; 3]]) -> Vec<u8> {
+    fn write_gif(path: &std::path::Path, w: u32, h: u32, colours: &[[u8; 3]]) {
         let mut out = Vec::new();
         {
             let mut encoder = image::codecs::gif::GifEncoder::new_with_speed(&mut out, 30);
@@ -1930,64 +1910,55 @@ os.write(1, b"\n")'"#;
             }
         }
         std::fs::write(path, &out).unwrap();
-        out
-    }
-
-    /// The `data:` URL of `bytes` under `mime`.
-    fn data_url(mime: &str, bytes: &[u8]) -> String {
-        let mut url = format!("data:{mime};base64,");
-        crate::clipboard::base64_encode_into(bytes, &mut url);
-        url
     }
 
     #[test]
-    fn read_of_an_animated_gif_sends_a_still_of_its_first_frame() {
-        // Providers take only still GIFs, and the conversation re-sends the
-        // picture on every later turn (docs/images.md "A GIF goes up as a
-        // still").
+    fn a_read_of_an_animated_gif_sends_its_frames_tiled_never_the_gif() {
+        // A provider may refuse a GIF that moves, or any GIF, and the
+        // conversation re-sends every picture on every turn: the frames go up
+        // tiled on one PNG, and the fact line says so (docs/images.md "A GIF
+        // goes up as its frames").
         let path = temp_path("read-image-animated.gif");
-        let gif = write_gif(&path, 3, 2, &[[220, 20, 20], [20, 20, 220]]);
+        write_gif(&path, 8, 8, &[[255, 0, 0], [0, 255, 0], [0, 0, 255]]);
         let out = exec("read", &format!(r#"{{"path":"{}"}}"#, path.display()));
-        std::fs::remove_file(&path).ok();
         assert!(out.ok, "got {}", out.output);
         assert!(
-            out.output.starts_with("Read image (GIF, 3x2, 2 frames, "),
-            "the file's facts, its frames among them: {}",
-            out.output
-        );
-        assert!(
-            out.output.contains("sent its first frame as a 3x2 PNG"),
+            out.output.starts_with("Read image (GIF, 8x8, 3 frames, "),
             "{}",
             out.output
         );
-        assert_eq!(crate::images::read_image_size(&out.output), Some((3, 2)));
-        let still = crate::images::gif_still(&gif, None).unwrap();
-        assert_eq!(
-            out.image.as_deref(),
-            Some(data_url("image/png", &still.bytes).as_str()),
-            "the very still the encoder sends on every later turn"
+        assert!(
+            out.output.ends_with(
+                "; sent as its 3 frames tiled left to right and top to bottom, 2 to a row)"
+            ),
+            "{}",
+            out.output
         );
+        assert_eq!(out.output.lines().count(), 1, "{}", out.output);
+        assert_eq!(crate::images::read_image_size(&out.output), Some((8, 8)));
+        let url = out.image.expect("attached");
+        assert!(url.starts_with("data:image/png;base64,"), "got {url}");
+        // The very encoding every later turn re-sends.
+        let later = crate::images::attachment_data_url(&path).expect("encodes");
+        std::fs::remove_file(&path).ok();
+        assert_eq!(&*url, &*later);
     }
 
     #[test]
-    fn read_of_a_one_frame_gif_sends_it_as_a_png() {
+    fn a_read_of_a_one_frame_gif_reads_like_any_picture_and_sends_a_png() {
         let path = temp_path("read-image-still.gif");
-        let gif = write_gif(&path, 3, 2, &[[220, 20, 20]]);
+        write_gif(&path, 4, 4, &[[9, 9, 9]]);
         let out = exec("read", &format!(r#"{{"path":"{}"}}"#, path.display()));
         std::fs::remove_file(&path).ok();
         assert!(out.ok, "got {}", out.output);
         assert!(
-            out.output.starts_with("Read image (GIF, 3x2, "),
+            out.output.starts_with("Read image (GIF, 4x4, "),
             "{}",
             out.output
         );
         assert!(!out.output.contains("frame"), "{}", out.output);
-        assert!(out.output.contains("sent as a 3x2 PNG"), "{}", out.output);
-        let still = crate::images::gif_still(&gif, None).unwrap();
-        assert_eq!(
-            out.image.as_deref(),
-            Some(data_url("image/png", &still.bytes).as_str())
-        );
+        let url = out.image.expect("attached");
+        assert!(url.starts_with("data:image/png;base64,"), "got {url}");
     }
 
     #[test]

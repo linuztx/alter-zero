@@ -2943,6 +2943,7 @@ mod tests {
             skill: Some(std::path::PathBuf::from(
                 "/home/me/.alter-zero/skills/imagegen",
             )),
+            model: super::super::imagegen::IMAGE_MODEL.to_string(),
         }
     }
 

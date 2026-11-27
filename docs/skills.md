@@ -424,8 +424,8 @@ drives the native **`imagegen`** tool, which makes images with
 `gpt-image-2.6-sunburst` through the ChatGPT Codex sign-in, whatever provider
 the session runs on (`docs/imagegen.md`). It covers:
 - when a bitmap is right and when SVG/CSS is;
-- the tool's `size`, `quality` and `gif`, and changing an animation through a
-  spritesheet of its frames;
+- the tool's `size`, `quality` and `gif`, and remaking an animation from its
+  own frames;
 - how to shape a prompt, and Codex's use-case taxonomy;
 - where a generated image belongs: copied into the project when the project
   uses it.

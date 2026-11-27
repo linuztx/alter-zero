@@ -59,6 +59,7 @@ Fallback-only docs/resources for CLI mode:
 - Generate a new image using one or more reference images for style, composition, or mood
 - Edit an existing image (inpainting, lighting or weather transformations, background replacement, object removal, compositing, transparent background)
 - Produce many assets or variants for one task
+- Make a short looping GIF (a blink, a wave, a spinner, a sprite's walk cycle, a flickering flame)
 
 ## When not to use
 - Extending or matching an existing SVG/vector icon set, logo system, or illustration library inside the repo
@@ -80,7 +81,7 @@ Intent:
 
 Built-in edit semantics:
 - Built-in edit mode takes each image to edit, or to use as a reference, by its absolute path in `referenced_image_paths` (at most 5). Every image in this conversation has a file: a pasted image's path, one you read, or one generated earlier.
-- A GIF in `referenced_image_paths` reaches the image model as its first frame only. To change an animation, see *GIF requests*.
+- A GIF in `referenced_image_paths` goes up as its frames tiled on one picture: the spritesheet a new GIF is made from. To change an animation, see *GIF requests*.
 - If you have not seen a local image yet, look at it with the `read` tool before editing it.
 - If a local file still needs masks or other explicit CLI-only parameters, use the explicit CLI fallback only when the user asks for it.
 - For edits, preserve invariants aggressively and save non-destructively by default.
@@ -132,10 +133,11 @@ The built-in `imagegen` tool takes three controls of its own. Leave each out unl
 ## GIF requests
 
 - Use `imagegen` only for simple GIFs of 2 to 16 frames: a waving mascot, a spinning icon, a blinking sign. For a longer or more complex animation, use other tools instead.
-- Describe the motion in the prompt: what moves, how far, and that the loop should run seamlessly.
+- Describe the motion in the prompt: what moves, how far, what stays still, and that the loop should run seamlessly (`references/prompting.md` *Animated GIFs*).
+- `size` is each frame's size; leave it `auto` unless the frames need one.
 - Leave `transparent_background` off for a GIF. The Images API documents transparent output for PNG and WebP only.
-- What you are shown of a GIF, generated or read, is its first frame as a still. The file keeps every frame, and the tool result says how many.
-- To edit a GIF, first inspect its frames. Then lay them out as a spritesheet with equal-sized cells in a regular grid (Pillow or ImageMagick from `bash` can do both). Pass that spritesheet through `referenced_image_paths` and set `gif` to make the new GIF. Do not pass the GIF itself as an edit input: only its first frame would reach the image model.
+- What you are shown of a GIF, generated or read, is its frames tiled on one picture, in order left to right and top to bottom; a GIF past 16 frames shows 16 of them, evenly spaced. The file keeps every frame, and the tool result says how many.
+- To change a GIF, pass it in `referenced_image_paths` with `gif` set: it goes up as those tiled frames, the spritesheet a new GIF is drawn from. A spritesheet of your own works the same way: equal-sized cells in a regular grid, in order.
 
 ## Prompt augmentation
 

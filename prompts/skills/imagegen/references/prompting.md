@@ -18,6 +18,7 @@ This file is about prompt structure, specificity, and iteration. The built-in to
 - [Input images and references](#input-images-and-references)
 - [Iterate deliberately](#iterate-deliberately)
 - [Transparent images](#transparent-images)
+- [Animated GIFs](#animated-gifs)
 - [Fallback-only execution controls](#fallback-only-execution-controls)
 - [Use-case tips](#use-case-tips)
 - [Where to find copy/paste recipes](#where-to-find-copypaste-recipes)
@@ -76,6 +77,13 @@ Do not add:
 
 ## Transparent images
 - Ask built-in `imagegen` for a genuinely transparent background and preserve its alpha.
+
+## Animated GIFs
+- Describe the motion, not only the scene: what moves, in which direction and how far, and what stays still (`the flame flickers and sways; the candle and the table stay still`).
+- Say how it loops: `seamless loop, the last frame leads back into the first` for a cycle, or a beginning and an end for a one-off.
+- Keep the subject, the framing and the lighting fixed across frames unless the change is the point; say so in `Constraints`.
+- Match the frame count to the motion: a blink or a pulse needs few frames, a walk cycle or a smooth turn more (`gif` takes 2 to 16).
+- A short frame duration makes fast motion, a long one a slow, deliberate one: 80 to 120 ms for a quick flicker, 200 ms (the default) for most loops, 400 ms and up for a slideshow-like change.
 
 ## Fallback-only execution controls
 - `input_fidelity`, explicit masks, output format, and output paths are fallback-only execution controls.
