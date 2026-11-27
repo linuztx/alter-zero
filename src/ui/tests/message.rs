@@ -481,7 +481,7 @@ fn the_compaction_cell_appends_the_token_shrink_and_auto_tag() {
         after: 2_100,
         auto: true,
         secs: 0,
-        keep_from: None,
+        kept: 0,
         background: false,
     };
     let text = plain(&compaction_lines(&compaction, 120)[0]);
@@ -499,7 +499,7 @@ fn a_manual_compaction_cell_shows_the_shrink_without_the_auto_tag() {
         after: 300,
         auto: false,
         secs: 0,
-        keep_from: None,
+        kept: 0,
         background: false,
     };
     let text = plain(&compaction_lines(&compaction, 120)[0]);
@@ -519,7 +519,7 @@ fn the_compaction_cell_appends_its_duration_between_the_shrink_and_the_auto_tag(
         after: 507,
         auto: true,
         secs: 36,
-        keep_from: None,
+        kept: 0,
         background: false,
     };
     let text = plain(&compaction_lines(&compaction, 120)[0]);
@@ -542,7 +542,7 @@ fn a_background_compaction_cell_says_so_in_place_of_auto() {
         after: 82_000,
         auto: true,
         secs: 47,
-        keep_from: Some(3),
+        kept: 3,
         background: true,
     };
     let text = plain(&compaction_lines(&compaction, 120)[0]);

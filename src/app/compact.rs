@@ -98,7 +98,7 @@ impl App {
             after: 0,
             auto: self.compact_auto,
             secs: elapsed_secs,
-            keep_from: None,
+            kept: 0,
             background: false,
         };
         self.history
@@ -309,7 +309,7 @@ impl App {
     pub fn begin_background_compaction(&mut self, id: u64) {
         self.background_compaction = Some(BackgroundCompaction {
             id,
-            keep_from: self.history.len(),
+            start: self.history.len(),
             epoch: self.history_epoch,
             summary: None,
             secs: 0,
@@ -339,7 +339,7 @@ impl App {
 
     /// Whether `job`'s coverage is no longer this conversation's.
     fn covers_gone(&self, job: &BackgroundCompaction) -> bool {
-        job.epoch != self.history_epoch || job.keep_from > self.history.len()
+        job.epoch != self.history_epoch || job.start > self.history.len()
     }
 
     /// Job `id`'s summary is written, in `secs`: hold it until it lands.
@@ -358,10 +358,10 @@ impl App {
         }
     }
 
-    /// Land job `id`: append its anchored marker
-    /// (`docs/background-compaction.md` *The marker*) — everything before
-    /// its anchor summarized, everything from there on verbatim — re-read the
-    /// gauge, and return the marker for the boundary's `● Context compacted
+    /// Land job `id`: append its marker (`docs/background-compaction.md`
+    /// *The marker*) — everything before the job's start summarized, the
+    /// items recorded since kept verbatim — re-read the gauge, and return the
+    /// marker for the boundary's `● Context compacted
     /// · … · background` cell. `None`, and nothing appended, for another job,
     /// a stale one or one not written yet.
     pub fn land_background_compaction(&mut self, id: u64) -> Option<Compaction> {
@@ -381,7 +381,7 @@ impl App {
             after: 0,
             auto: true,
             secs: job.secs,
-            keep_from: Some(job.keep_from),
+            kept: self.history.len() - job.start,
             background: true,
         };
         self.history
@@ -543,13 +543,13 @@ pub struct Compaction {
     /// ` · {elapsed}` clause ([`format_elapsed`]-humanized). 0 = unknown (an
     /// old rollout), hiding the clause.
     pub secs: u64,
-    /// Where the summary's coverage ends: the history index the verbatim
-    /// tail starts at. A background compaction is anchored where its summary
-    /// started, and the items recorded from there until the marker landed
-    /// stay verbatim; `None` (a manual or pre-background compaction) covers
-    /// everything before the marker. A value past the marker is the marker
-    /// (`docs/background-compaction.md` *The marker*).
-    pub keep_from: Option<usize>,
+    /// How many items just before the marker its summary leaves out — the
+    /// ones recorded while a background summary was being written, which
+    /// stay verbatim; 0 (a manual or pre-background compaction) covers
+    /// everything before the marker. A count back from the marker rather
+    /// than an index, so a resume that skips a record ahead of the tail
+    /// still keeps the tail (`docs/background-compaction.md` *The marker*).
+    pub kept: usize,
     /// Whether the summary was written in the background while the agent
     /// kept working — the cell's `· background` in place of `· auto`.
     pub background: bool,
@@ -562,8 +562,8 @@ pub struct BackgroundCompaction {
     /// The job's id in the turn's `compaction::CompactionSlot`.
     pub id: u64,
     /// Where the summary's coverage ends — the history's length when it
-    /// started; the marker's anchor.
-    pub keep_from: usize,
+    /// started. The marker keeps what was recorded from here on.
+    pub start: usize,
     /// The conversation's epoch when it started: a `/clear`, a `/resume` or
     /// a backtrack since makes the job stale.
     pub epoch: u64,

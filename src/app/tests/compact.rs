@@ -342,13 +342,13 @@ fn only_an_idle_conversation_compacts_between_turns() {
 }
 
 #[test]
-fn a_background_compaction_anchors_where_it_starts() {
+fn a_background_compaction_starts_at_the_history_so_far() {
     let mut app = App::new();
     app.record_user_message("port the payments module");
     app.begin_background_compaction(7);
     let job = app.background_compaction().expect("a job");
     assert_eq!(job.id, 7);
-    assert_eq!(job.keep_from, app.history.len(), "everything so far");
+    assert_eq!(job.start, app.history.len(), "everything so far");
     assert_eq!(job.summary, None, "still being written");
 }
 
@@ -369,17 +369,17 @@ fn a_written_summary_is_held_until_it_lands() {
 }
 
 #[test]
-fn landing_appends_an_anchored_background_marker() {
+fn landing_appends_a_background_marker_that_keeps_what_ran_meanwhile() {
     let mut app = App::new();
     app.set_context_window(Some(200_000));
     app.record_user_message("port the payments module");
-    let anchor = app.history.len();
     app.begin_background_compaction(1);
     // Recorded while the summary was being written: kept verbatim.
     app.record_user_message("and the ledger");
+    app.record_user_message("and the refunds");
     app.background_compaction_written(1, "ported stripe.rs".into(), 47);
     let marker = app.land_background_compaction(1).expect("it lands");
-    assert_eq!(marker.keep_from, Some(anchor));
+    assert_eq!(marker.kept, 2, "the two messages recorded meanwhile");
     assert!(marker.background && marker.auto, "{marker:?}");
     assert_eq!(marker.secs, 47);
     assert_eq!(marker.summary, "ported stripe.rs");
@@ -389,10 +389,14 @@ fn landing_appends_an_anchored_background_marker() {
     );
     assert!(app.background_compaction().is_none(), "the job is done");
     let ctx = crate::context::context_messages(&app.history);
-    let last = ctx.last().expect("a context");
+    let text: Vec<&str> = ctx.iter().map(|m| m.text.as_str()).collect();
+    let text = text.join("\n");
+    let bridge = text
+        .find(crate::context::SUMMARY_PREFIX)
+        .expect("the summary bridge");
     assert!(
-        last.text.ends_with("and the ledger"),
-        "the message after the anchor stays verbatim: {ctx:?}"
+        text[bridge..].contains("and the ledger") && text.ends_with("and the refunds"),
+        "what ran while it was written stays verbatim, after the bridge: {ctx:?}"
     );
 }
 

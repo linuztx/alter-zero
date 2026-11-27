@@ -505,11 +505,11 @@ struct CompactionRecord {
     /// `serde(default)`ed like the gauge counts, 0 meaning unknown.
     #[serde(default, skip_serializing_if = "is_zero")]
     secs: u64,
-    /// A background compaction's anchor: the history index its verbatim
-    /// tail starts at (`docs/background-compaction.md` *The marker*). Absent
-    /// is the old rule — everything before the marker.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    keep_from: Option<usize>,
+    /// How many items just before a background compaction's marker its
+    /// summary leaves out (`docs/background-compaction.md` *The marker*).
+    /// Absent is the old rule — everything before the marker.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    kept: u64,
     /// Written in the background — the cell's `· background` tag.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     background: bool,
@@ -844,7 +844,7 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             after: compaction.after,
             auto: compaction.auto,
             secs: compaction.secs,
-            keep_from: compaction.keep_from,
+            kept: u64::try_from(compaction.kept).unwrap_or(u64::MAX),
             background: compaction.background,
         }),
         // The recorder mirrors history append-only, so a background entry's
@@ -1194,7 +1194,7 @@ fn push_history_item(items: &mut Vec<HistoryItem>, record: ItemRecord) {
                 after: compaction.after,
                 auto: compaction.auto,
                 secs: compaction.secs,
-                keep_from: compaction.keep_from,
+                kept: usize::try_from(compaction.kept).unwrap_or(usize::MAX),
                 background: compaction.background,
             }));
         }
@@ -1542,7 +1542,7 @@ mod tests {
             after: 2_100,
             auto: true,
             secs: 36,
-            keep_from: Some(5),
+            kept: 5,
             background: true,
         });
         let line = item_line(&item, "t");
@@ -1550,8 +1550,9 @@ mod tests {
         assert_eq!(value["type"], "compaction");
         assert_eq!(value["payload"]["summary"], "we did the thing");
         assert_eq!(value["payload"]["secs"], 36);
-        // A background compaction's anchor and tag (docs/background-compaction.md).
-        assert_eq!(value["payload"]["keep_from"], 5);
+        // A background compaction's kept tail and tag
+        // (docs/background-compaction.md).
+        assert_eq!(value["payload"]["kept"], 5);
         assert_eq!(value["payload"]["background"], true);
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
         assert_eq!(parsed, vec![item]);
@@ -1787,14 +1788,14 @@ mod tests {
         assert_eq!((compaction.before, compaction.after), (0, 0));
         assert!(!compaction.auto);
         assert_eq!(compaction.secs, 0);
-        // …and from before background compaction: no anchor (the old rule,
-        // everything before the marker), no tag.
-        assert_eq!(compaction.keep_from, None);
+        // …and from before background compaction: nothing kept (the old
+        // rule, everything before the marker), no tag.
+        assert_eq!(compaction.kept, 0);
         assert!(!compaction.background);
     }
 
     #[test]
-    fn a_compaction_marker_without_an_anchor_keeps_its_line_shape() {
+    fn a_compaction_marker_that_kept_nothing_keeps_its_line_shape() {
         // The new fields stay off the wire at their defaults, so a manual
         // compaction's line is what it always was.
         let item = HistoryItem::Compaction(crate::app::Compaction {
@@ -1804,12 +1805,12 @@ mod tests {
             after: 0,
             auto: false,
             secs: 0,
-            keep_from: None,
+            kept: 0,
             background: false,
         });
         let value: serde_json::Value =
             serde_json::from_str(&item_line(&item, "t")).expect("valid JSON");
-        assert!(value["payload"].get("keep_from").is_none(), "{value}");
+        assert!(value["payload"].get("kept").is_none(), "{value}");
         assert!(value["payload"].get("background").is_none(), "{value}");
     }
 

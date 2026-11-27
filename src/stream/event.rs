@@ -592,7 +592,7 @@ pub enum StreamEvent {
     /// `Compacting…` verb until the swap (`docs/background-compaction.md`).
     CompactionWaiting { id: u64 },
     /// The turn is at its ceiling with summary `id` written and **waits for
-    /// the swap**: the loop appends the anchored marker, commits its cell and
+    /// the swap**: the loop appends the marker, commits its cell and
     /// answers on the [`crate::compaction::CompactionSlot`] with the context
     /// re-derived from history, which the turn continues on
     /// (`docs/background-compaction.md` *The lifecycle*).

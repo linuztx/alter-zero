@@ -651,11 +651,11 @@ fn derive_history_into(out: &mut Derived, history: &[HistoryItem]) {
         let HistoryItem::Compaction(compaction) = &history[cut] else {
             unreachable!("rposition matched a Compaction");
         };
-        // A background compaction covers only what came before its anchor;
-        // the items from there to the marker stay verbatim
-        // (docs/background-compaction.md *The marker*). No anchor, or one
-        // past the marker, is the marker itself: everything before it.
-        let keep_from = compaction.keep_from.map_or(cut, |anchor| anchor.min(cut));
+        // A background compaction leaves out the `kept` items just before
+        // its marker, which ran while it was written and stay verbatim
+        // (docs/background-compaction.md *The marker*); 0 is the old rule,
+        // everything before the marker.
+        let keep_from = cut - compaction.kept.min(cut);
         for text in budgeted_user_texts(&history[..keep_from], COMPACT_USER_MESSAGE_MAX_TOKENS) {
             push_user_text(out, text, vec![], TextOrigin::Typed);
         }
@@ -2307,14 +2307,15 @@ mod tests {
             after: 0,
             auto: false,
             secs: 0,
-            keep_from: None,
+            kept: 0,
             background: false,
         })
     }
 
-    /// A background compaction's marker: everything before `keep_from` is
-    /// what the summary covers, the items from there on stay verbatim.
-    fn anchored(summary: &str, keep_from: usize) -> HistoryItem {
+    /// A background compaction's marker: the `kept` items just before it ran
+    /// while its summary was written, and stay verbatim; everything before
+    /// them is what the summary covers.
+    fn background(summary: &str, kept: usize) -> HistoryItem {
         HistoryItem::Compaction(crate::app::Compaction {
             summary: summary.to_string(),
             timestamp: String::new(),
@@ -2322,22 +2323,22 @@ mod tests {
             after: 0,
             auto: true,
             secs: 0,
-            keep_from: Some(keep_from),
+            kept,
             background: true,
         })
     }
 
-    // ── The anchored marker (docs/background-compaction.md *The marker*) ──
+    // ── The marker's kept tail (docs/background-compaction.md *The marker*) ──
 
     #[test]
-    fn an_anchored_marker_keeps_the_items_after_its_anchor_verbatim() {
-        // The summary covers history[..2]; the round recorded after the
-        // anchor — and before the marker landed — derives as it was.
+    fn a_background_marker_keeps_the_items_just_before_it_verbatim() {
+        // The summary covers history[..2]; the round recorded while it was
+        // written — before the marker landed — derives as it was.
         let history = vec![
             message(Role::User, "port the module"),
             tool("read", "a.rs", "fn a() {}", ToolStatus::Ok, false),
             tool("read", "b.rs", "fn b() {}", ToolStatus::Ok, false),
-            anchored("read a.rs", 2),
+            background("read a.rs", 1),
             message(Role::Assistant, "done"),
         ];
         let ctx = context_messages(&history);
@@ -2353,36 +2354,66 @@ mod tests {
         assert_eq!(
             results,
             vec!["fn b() {}"],
-            "the round after the anchor stays, the one before it is summarized: {ctx:?}"
+            "the round while it was written stays, the one before it is summarized: {ctx:?}"
         );
         assert_eq!(ctx.last().map(|m| m.text.as_str()), Some("done"));
     }
 
     #[test]
-    fn an_anchor_past_its_marker_is_the_marker_itself() {
-        // Clamped: nothing after the marker can be covered by its summary.
-        let mut history = vec![
+    fn a_kept_tail_longer_than_the_history_keeps_everything_before_the_marker() {
+        // Clamped: the summary covers nothing, and every item before the
+        // marker stays — the bridge still leads them.
+        let history = vec![
             message(Role::User, "port the module"),
             tool("read", "a.rs", "fn a() {}", ToolStatus::Ok, false),
-            anchored("read a.rs", 99),
+            background("read a.rs", 99),
             message(Role::Assistant, "done"),
         ];
-        let clamped = context_messages(&history);
-        history[2] = compaction("read a.rs");
-        assert_eq!(clamped, context_messages(&history));
+        let ctx = context_messages(&history);
+        assert!(ctx[0].text.starts_with(SUMMARY_PREFIX), "{ctx:?}");
+        assert!(
+            ctx.iter().any(|m| m.text == "fn a() {}"),
+            "the whole history before the marker stays: {ctx:?}"
+        );
     }
 
     #[test]
-    fn an_anchor_at_its_marker_derives_as_the_old_rule() {
+    fn a_marker_that_kept_nothing_derives_as_the_old_rule() {
         let mut history = vec![
             message(Role::User, "port the module"),
             tool("read", "a.rs", "fn a() {}", ToolStatus::Ok, false),
-            anchored("read a.rs", 2),
+            background("read a.rs", 0),
             message(Role::Assistant, "done"),
         ];
-        let anchored_at_marker = context_messages(&history);
+        let kept_nothing = context_messages(&history);
         history[2] = compaction("read a.rs");
-        assert_eq!(anchored_at_marker, context_messages(&history));
+        assert_eq!(kept_nothing, context_messages(&history));
+    }
+
+    #[test]
+    fn the_kept_tail_survives_a_resume_that_lost_a_record_ahead_of_it() {
+        // An older build reading a newer rollout skips a record type it does
+        // not know: an item ahead of the tail is gone, and the tail — counted
+        // back from the marker — is still the items the summary left out.
+        let full = vec![
+            message(Role::User, "port the module"),
+            hook_note("a note an older reader skips"),
+            tool("read", "a.rs", "fn a() {}", ToolStatus::Ok, false),
+            tool("read", "b.rs", "fn b() {}", ToolStatus::Ok, false),
+            background("read a.rs", 1),
+            message(Role::Assistant, "done"),
+        ];
+        let mut resumed = full.clone();
+        resumed.remove(1);
+        let results = |history: &[HistoryItem]| -> Vec<String> {
+            context_messages(history)
+                .into_iter()
+                .filter(|m| m.role == ContextRole::Tool)
+                .map(|m| m.text)
+                .collect()
+        };
+        assert_eq!(results(&full), vec!["fn b() {}".to_string()]);
+        assert_eq!(results(&resumed), results(&full));
     }
 
     fn hook_note(text: &str) -> HistoryItem {
