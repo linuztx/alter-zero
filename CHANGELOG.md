@@ -24,7 +24,10 @@ release heading when a version is cut.
   schema keywords xAI's API refuses, such as an MCP server's `format` or
   `pattern`, are left out of what is sent, so one such server can't fail
   every request. A refusal says what to do: no active subscription, credits
-  used up, or a sign-in to renew. This is an unofficial route, as xAI
+  used up, or a sign-in to renew, and an account whose plan lists no models
+  says so in `/model` rather than showing an empty list. A server error or a
+  rate limit while you approve the code doesn't end the sign-in: it keeps
+  waiting for your approval. This is an unofficial route, as xAI
   documents no sign-in for other apps, so it may stop working without notice
   (`docs/xai.md`).
 

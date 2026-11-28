@@ -312,7 +312,7 @@ fn spawn_xai_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSender<D
         let result = llm::xai::await_approval(&device, &cancel)
             // The account rides back with the token: *whose* account this is
             // is what a browser approval leaves open.
-            .map(|signed_in| (signed_in.refresh_token, signed_in.email))
+            .map(|signed_in| (signed_in.refresh_token, signed_in.account))
             .map_err(|e| e.to_string());
         if !cancel.is_cancelled() {
             let _ = tx.send(DeviceEvent::Done(result));

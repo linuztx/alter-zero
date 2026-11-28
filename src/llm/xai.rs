@@ -30,7 +30,7 @@
 //! to make (`docs/xai.md` *The wire*).
 //!
 //! The pure halves (the request bodies, the response parses, the poll's
-//! verdict, the link check, the freshness rule, the account's email, the
+//! verdict, the link check, the freshness rule, the account's name, the
 //! schema sanitizer, the advice) are unit-tested; the HTTP calls are boundary
 //! code.
 
@@ -54,9 +54,9 @@ use crate::stream::CancelToken;
 pub const CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
 
 /// The scopes the sign-in asks for: an OpenID identity (`openid profile
-/// email` — the email is what the confirmation names), a refresh token
-/// (`offline_access`), and the access the token is for — `api:access` is
-/// what lets it reach `api.x.ai`.
+/// email` — the email, or the handle, is what the confirmation names), a
+/// refresh token (`offline_access`), and the access the token is for —
+/// `api:access` is what lets it reach `api.x.ai`.
 pub const SCOPE: &str = "openid profile email offline_access grok-cli:access api:access";
 
 /// Where the sign-in and the token mint go, unless [`ISSUER_ENV`] says
@@ -85,6 +85,11 @@ const DEFAULT_INTERVAL: u64 = 5;
 /// one: RFC 8628 §3.5's five seconds. One that names an interval is taken at
 /// its word instead (pi's fix for a clock that drifts in a VM).
 const SLOW_DOWN_STEP: u64 = 5;
+
+/// The slowest the poll ever gets. An answer naming an interval of an hour —
+/// at the start or in a `slow_down` — would otherwise leave the page counting
+/// down long after the user approved, or past the code's own life.
+pub const MAX_INTERVAL: Duration = Duration::from_secs(60);
 
 /// How much of an access token's life is given back before it is re-minted,
 /// so a request never leaves with a token that expires in flight.
@@ -279,11 +284,11 @@ impl DeviceCode {
         Duration::from_secs(self.expires_in.max(1))
     }
 
-    /// How long to wait between polls: what the server asked, floored at a
-    /// second (a zero would be a tight loop).
+    /// How long to wait between polls: what the server asked, held between a
+    /// second (a zero would be a tight loop) and [`MAX_INTERVAL`].
     #[must_use]
     pub fn poll_interval(&self) -> Duration {
-        Duration::from_secs(self.interval.max(1))
+        Duration::from_secs(self.interval).clamp(Duration::from_secs(1), MAX_INTERVAL)
     }
 }
 
@@ -370,13 +375,18 @@ pub enum Poll {
     /// The server asked for a slower cadence — at the interval it named,
     /// when it named one.
     SlowDown(Option<u64>),
+    /// A failure on the way there rather than an answer — a proxy's error
+    /// page, a rate limit, a timeout, a server briefly down. The code is
+    /// still good: ask again after the interval.
+    Retry,
     /// The flow is over — the sentence to show.
     Denied(String),
 }
 
 /// Read one poll's answer: an access token is an approval, the RFC 8628
-/// errors are a wait, a slower wait or the end of the flow, and an answer
-/// that is none of those ends the flow naming its status.
+/// errors are a wait, a slower wait or the end of the flow, a status saying
+/// the trip failed (408, 429, a 5xx) with no such error in its body is one
+/// more wait, and any other answer ends the flow naming its status.
 #[must_use]
 pub fn poll_verdict(status: u16, body: &str) -> Poll {
     #[derive(Debug, Default, Deserialize)]
@@ -389,7 +399,15 @@ pub fn poll_verdict(status: u16, body: &str) -> Poll {
     if let Ok(tokens) = TokenSet::parse(body) {
         return Poll::Approved(tokens);
     }
+    // A timeout, a rate limit, a server or a proxy in front of it failing:
+    // none of those says anything about the code, which is still good, so the
+    // next poll may well succeed — unless the body is an answer this flow
+    // knows, which keeps its meaning whatever status carried it.
+    let transient = status == 408 || status == 429 || status >= 500;
     let Ok(raw) = serde_json::from_str::<Raw>(body) else {
+        if transient {
+            return Poll::Retry;
+        }
         return Poll::Denied(format!("xAI answered {status} to the device code poll"));
     };
     // A denial carries the server's own sentence when it wrote one; the fixed
@@ -418,6 +436,7 @@ pub fn poll_verdict(status: u16, body: &str) -> Poll {
         Some("invalid_grant") => Poll::Denied(denial(
             "the device code is no longer valid — press Esc and sign in again",
         )),
+        _ if transient => Poll::Retry,
         Some(other) => Poll::Denied(format!(
             "xAI refused the sign-in: {other} — press Esc and try again"
         )),
@@ -436,7 +455,8 @@ pub struct TokenSet {
     pub refresh_token: Option<String>,
     /// The access token's life, in seconds.
     pub expires_in: Option<u64>,
-    /// The OpenID identity token, whose `email` claim names the account.
+    /// The OpenID identity token, whose `email` — or, for an account that
+    /// shares none, `preferred_username` — claim names the account.
     pub id_token: Option<String>,
 }
 
@@ -499,24 +519,32 @@ pub fn cache_lifetime(expires_in: Option<u64>, jwt_exp: Option<u64>, now: u64) -
         .max(MIN_CACHE.min(life / 2))
 }
 
-/// The email address the sign-in's tokens name — the `id_token`'s `email`
-/// claim, else the access token's — for the confirmation. Read and never
-/// verified: nothing here checks a JWT signature.
+/// Whose account the sign-in's tokens name, for the confirmation: an `email`
+/// claim — the `id_token`'s, else the access token's — else, for an account
+/// whose tokens name no email, its `preferred_username` handle, looked for
+/// the same way. Read and never verified: nothing here checks a JWT
+/// signature.
 #[must_use]
-pub fn account_email(tokens: &TokenSet) -> Option<String> {
-    let email_of = |jwt: &str| {
-        jwt_claims(jwt)?
-            .get("email")?
-            .as_str()
-            .map(str::trim)
-            .filter(|email| !email.is_empty())
-            .map(str::to_string)
+pub fn account_name(tokens: &TokenSet) -> Option<String> {
+    let claims: Vec<Value> = [
+        tokens.id_token.as_deref(),
+        Some(tokens.access_token.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(jwt_claims)
+    .collect();
+    let named = |claim: &str| {
+        claims.iter().find_map(|claims| {
+            claims
+                .get(claim)?
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
     };
-    tokens
-        .id_token
-        .as_deref()
-        .and_then(email_of)
-        .or_else(|| email_of(&tokens.access_token))
+    named("email").or_else(|| named("preferred_username"))
 }
 
 /// A JWT's claims, read without a signature check.
@@ -993,9 +1021,9 @@ fn nap(total: Duration, cancel: &CancelToken) -> bool {
 pub struct SignedIn {
     /// The refresh token to store.
     pub refresh_token: String,
-    /// The account's email, for the confirmation — `None` when the tokens
-    /// name none.
-    pub email: Option<String>,
+    /// Whose account it is, for the confirmation — its email, else its
+    /// handle; `None` when the tokens name neither.
+    pub account: Option<String>,
 }
 
 /// The [`SignedIn`] an approved poll's tokens make.
@@ -1013,8 +1041,23 @@ fn signed_in(tokens: &TokenSet) -> Result<SignedIn> {
     })?;
     Ok(SignedIn {
         refresh_token,
-        email: account_email(tokens),
+        account: account_name(tokens),
     })
+}
+
+/// The interval after a `slow_down`: the one the server named, else RFC 8628
+/// §3.5's five seconds more — never faster than the current one, since the
+/// server has just said it was too fast, and never slower than
+/// [`MAX_INTERVAL`].
+#[must_use]
+pub fn slowed(interval: Duration, named: Option<u64>) -> Duration {
+    named
+        .map_or(
+            interval + Duration::from_secs(SLOW_DOWN_STEP),
+            Duration::from_secs,
+        )
+        .max(interval)
+        .min(MAX_INTERVAL)
 }
 
 /// Poll until the user approves `device`'s code on xAI's page. Blocks for as
@@ -1042,12 +1085,8 @@ pub fn await_approval(device: &DeviceCode, cancel: &CancelToken) -> Result<Signe
         let (status, text) = post_form(&token_url(), body.clone())?;
         match poll_verdict(status, &text) {
             Poll::Approved(tokens) => return signed_in(&tokens),
-            Poll::Pending => {}
-            Poll::SlowDown(named) => {
-                interval = named.map_or(interval + Duration::from_secs(SLOW_DOWN_STEP), |secs| {
-                    Duration::from_secs(secs.max(1))
-                });
-            }
+            Poll::Pending | Poll::Retry => {}
+            Poll::SlowDown(named) => interval = slowed(interval, named),
             Poll::Denied(reason) => {
                 return Err(LlmError::Api {
                     status,
@@ -1448,10 +1487,63 @@ mod tests {
             panic!("an unknown error did not end the flow");
         };
         assert!(other.contains("server_error"), "{other}");
-        let Poll::Denied(html) = poll_verdict(502, "<html>bad gateway</html>") else {
-            panic!("a page that is no answer did not end the flow");
+        let Poll::Denied(html) = poll_verdict(400, "<html>bad request</html>") else {
+            panic!("a client error that is no answer did not end the flow");
         };
-        assert!(html.contains("502"), "{html}");
+        assert!(html.contains("400"), "{html}");
+    }
+
+    #[test]
+    fn a_transient_failure_is_polled_again() {
+        // A proxy's error page, a rate limit, a timeout, a server that says it
+        // is unavailable: the code is still good, so the next poll may well
+        // succeed (hermes keeps polling through the same).
+        for (status, body) in [
+            (503, "<html>unavailable</html>"),
+            (502, ""),
+            (429, ""),
+            (408, "timeout"),
+            (503, r#"{"error":"temporarily_unavailable"}"#),
+        ] {
+            assert_eq!(poll_verdict(status, body), Poll::Retry, "{status} {body}");
+        }
+        // The RFC 8628 answers keep their meaning whatever status carries
+        // them, a transient one included.
+        assert_eq!(
+            poll_verdict(503, r#"{"error":"authorization_pending"}"#),
+            Poll::Pending
+        );
+        assert!(matches!(
+            poll_verdict(429, r#"{"error":"expired_token"}"#),
+            Poll::Denied(_)
+        ));
+    }
+
+    #[test]
+    fn a_slow_down_grows_the_interval_and_never_past_the_cap() {
+        let five = Duration::from_secs(5);
+        // RFC 8628's five seconds more, unless the server named its own.
+        assert_eq!(slowed(five, None), Duration::from_secs(10));
+        assert_eq!(slowed(five, Some(12)), Duration::from_secs(12));
+        // A slow-down never speeds the poll up, nor slows it past the cap.
+        assert_eq!(slowed(five, Some(1)), five);
+        assert_eq!(slowed(five, Some(3_600)), MAX_INTERVAL);
+        assert_eq!(slowed(MAX_INTERVAL, None), MAX_INTERVAL);
+    }
+
+    #[test]
+    fn a_poll_interval_is_held_between_a_second_and_the_cap() {
+        let device = |interval: u64| {
+            DeviceCode::parse(
+                &json!({"device_code": "d", "user_code": "U",
+                        "verification_uri": "https://accounts.x.ai/device",
+                        "interval": interval})
+                .to_string(),
+            )
+            .unwrap()
+        };
+        assert_eq!(device(3_600).poll_interval(), MAX_INTERVAL);
+        assert_eq!(device(7).poll_interval(), Duration::from_secs(7));
     }
 
     #[test]
@@ -1487,7 +1579,7 @@ mod tests {
             signed_in(&tokens).unwrap(),
             SignedIn {
                 refresh_token: "r".to_string(),
-                email: Some("dev@example.com".to_string()),
+                account: Some("dev@example.com".to_string()),
             }
         );
     }
@@ -1499,13 +1591,13 @@ mod tests {
             id_token: Some(jwt(&json!({"email": "id@example.com", "sub": "u-1"}))),
             ..TokenSet::default()
         };
-        assert_eq!(account_email(&both).as_deref(), Some("id@example.com"));
+        assert_eq!(account_name(&both).as_deref(), Some("id@example.com"));
         let access_only = TokenSet {
             id_token: Some("not-a-jwt".to_string()),
             ..both.clone()
         };
         assert_eq!(
-            account_email(&access_only).as_deref(),
+            account_name(&access_only).as_deref(),
             Some("access@example.com")
         );
         let neither = TokenSet {
@@ -1513,7 +1605,28 @@ mod tests {
             id_token: Some(jwt(&json!({"email": "  "}))),
             ..TokenSet::default()
         };
-        assert_eq!(account_email(&neither), None);
+        assert_eq!(account_name(&neither), None);
+    }
+
+    #[test]
+    fn an_account_with_no_email_is_named_by_its_handle() {
+        // Tokens that name no email still name a handle, which says whose
+        // account this is. An email in either token outranks a handle in
+        // either.
+        let handle_only = TokenSet {
+            access_token: "opaque".to_string(),
+            id_token: Some(jwt(&json!({"preferred_username": "grok_fan"}))),
+            ..TokenSet::default()
+        };
+        assert_eq!(account_name(&handle_only).as_deref(), Some("grok_fan"));
+        let email_in_access = TokenSet {
+            access_token: jwt(&json!({"email": "dev@example.com"})),
+            ..handle_only.clone()
+        };
+        assert_eq!(
+            account_name(&email_in_access).as_deref(),
+            Some("dev@example.com")
+        );
     }
 
     #[test]
@@ -1787,36 +1900,59 @@ mod tests {
 
     #[test]
     fn a_rotation_write_back_never_overwrites_a_newer_sign_in() {
-        let path = std::env::temp_dir().join(format!(
-            "alter-zero-xai-rotation-{}-{:?}.env",
-            std::process::id(),
-            std::thread::current().id()
-        ));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        let stored = |path: &std::path::Path| {
+            crate::llm::EnvFile::parse(&std::fs::read_to_string(path).unwrap())
+                .get(REFRESH_ENV_VAR)
+                .map(str::to_string)
+        };
         std::fs::write(&path, format!("{REFRESH_ENV_VAR}=original\nOTHER=keep\n")).unwrap();
-        // This session's own chain: the write lands.
-        assert!(persist_refresh_to(&path, "rotated", &["original"]));
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains(&format!("{REFRESH_ENV_VAR}=rotated")));
-        assert!(text.contains("OTHER=keep"));
+        // This session's own chain: the write lands, and the rest stays.
+        assert!(persist_refresh_to(
+            &path,
+            "rotated",
+            &["original", "original"]
+        ));
+        assert_eq!(stored(&path).as_deref(), Some("rotated"));
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("OTHER=keep")
+        );
+        // The store holding the token this session presented — the chain
+        // rotated once already — is still its own.
+        assert!(persist_refresh_to(
+            &path,
+            "rotated-2",
+            &["original", "rotated"]
+        ));
+        assert_eq!(stored(&path).as_deref(), Some("rotated-2"));
         // A sign-in landed meanwhile: the rotation of the replaced chain must
         // not take the store back to a retired token.
         std::fs::write(&path, format!("{REFRESH_ENV_VAR}=newer-sign-in\n")).unwrap();
-        assert!(!persist_refresh_to(&path, "stale-rotation", &["original"]));
-        assert!(
-            std::fs::read_to_string(&path)
-                .unwrap()
-                .contains("newer-sign-in")
-        );
-        // No token stored at all (a credential from the environment): the
-        // write lands, so the next launch finds one.
+        assert!(!persist_refresh_to(
+            &path,
+            "stale",
+            &["original", "rotated-2"]
+        ));
+        assert_eq!(stored(&path).as_deref(), Some("newer-sign-in"));
+        // No token stored (a credential from the environment), or no store
+        // at all: the write lands, so the next launch finds one.
         std::fs::write(&path, "OTHER=keep\n").unwrap();
-        assert!(persist_refresh_to(&path, "first-write", &["original"]));
-        assert!(
-            std::fs::read_to_string(&path)
-                .unwrap()
-                .contains("first-write")
-        );
-        let _ = std::fs::remove_file(&path);
+        assert!(persist_refresh_to(
+            &path,
+            "first-write",
+            &["original", "original"]
+        ));
+        assert_eq!(stored(&path).as_deref(), Some("first-write"));
+        let fresh = dir.path().join("not-made-yet").join(".env");
+        assert!(persist_refresh_to(
+            &fresh,
+            "fresh",
+            &["original", "original"]
+        ));
+        assert_eq!(stored(&fresh).as_deref(), Some("fresh"));
     }
 
     #[test]
@@ -2017,5 +2153,190 @@ mod tests {
         });
         assert!(called, "a failure must not leave anything cached");
         forget(&stored);
+    }
+
+    /// A refresh answer rotating to `rotated`, its bearer named after it.
+    fn rotation_to(rotated: &str) -> TokenSet {
+        TokenSet {
+            access_token: format!("access-for-{rotated}"),
+            refresh_token: Some(rotated.to_string()),
+            expires_in: Some(3600),
+            ..TokenSet::default()
+        }
+    }
+
+    #[test]
+    fn forget_never_waits_for_a_refresh_in_flight() {
+        // `forget` runs on the TUI loop when a sign-in lands, while a refresh
+        // on a backend thread can hold the gate for a whole request timeout.
+        // The loop must not wait behind it, and the refresh that was out
+        // must leave no bearer under the forgotten token: the next request
+        // mints afresh.
+        use std::sync::Barrier;
+
+        let stored = "xai-forget-in-flight";
+        let started = Barrier::new(2);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                authorize_with(stored, |_| {
+                    started.wait();
+                    std::thread::sleep(Duration::from_millis(1_500));
+                    Ok(rotation_to("xai-forget-in-flight-r1"))
+                })
+                .unwrap();
+            });
+            started.wait();
+            let asked = Instant::now();
+            forget(stored);
+            assert!(
+                asked.elapsed() < Duration::from_millis(700),
+                "forget waited on the refresh: {:?}",
+                asked.elapsed()
+            );
+        });
+        let mut refreshes = 0;
+        authorize_with(stored, |_| {
+            refreshes += 1;
+            Ok(rotation_to("xai-forget-in-flight-r2"))
+        })
+        .unwrap();
+        assert_eq!(refreshes, 1, "the forgotten token's bearer was kept");
+        forget(stored);
+    }
+
+    #[test]
+    fn concurrent_misses_present_the_token_once() {
+        // xAI's refresh tokens are single-use: a second thread presenting the
+        // one the first just retired would be refused. Thirty-two threads
+        // missing at once mint one bearer and share it.
+        use std::sync::Barrier;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let stored = "xai-concurrent-misses";
+        let threads = 32;
+        let barrier = Barrier::new(threads);
+        let refreshes = AtomicUsize::new(0);
+        let bearers: Vec<String> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..threads)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        authorize_with(stored, |presented| {
+                            let earlier = refreshes.fetch_add(1, Ordering::SeqCst);
+                            std::thread::sleep(Duration::from_millis(25));
+                            if earlier != 0 || presented != stored {
+                                return Err(LlmError::Decode("refresh token reused".to_string()));
+                            }
+                            Ok(rotation_to("xai-concurrent-misses-r1"))
+                        })
+                        .map(|access| access.bearer)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap().unwrap())
+                .collect()
+        });
+        assert_eq!(refreshes.load(Ordering::SeqCst), 1);
+        assert!(
+            bearers
+                .iter()
+                .all(|bearer| bearer == "access-for-xai-concurrent-misses-r1"),
+            "{bearers:?}"
+        );
+        forget(stored);
+    }
+
+    #[test]
+    fn an_old_alias_finds_the_newest_bearer_after_an_expiry() {
+        // A config still holding the first token, after another config's
+        // refreshes rotated the chain twice, reads the newest bearer — never
+        // a refresh of its own, which would present a retired token.
+        let (first, second, third) = ("xai-alias-r0", "xai-alias-r1", "xai-alias-r2");
+        authorize_with(first, |_| Ok(rotation_to(second))).unwrap();
+        cache().lock().unwrap().get_mut(second).unwrap().until = Instant::now();
+        let newest = authorize_with(second, |presented| {
+            assert_eq!(presented, second);
+            Ok(rotation_to(third))
+        })
+        .unwrap();
+        let from_first =
+            authorize_with(first, |_| unreachable!("an old alias refreshed again")).unwrap();
+        assert_eq!(from_first, newest);
+        assert_eq!(live_refresh_token(first), third);
+        forget(first);
+    }
+
+    #[test]
+    fn forget_drops_every_token_of_the_chain() {
+        let (first, second, third) = ("xai-chain-r0", "xai-chain-r1", "xai-chain-r2");
+        authorize_with(first, |_| Ok(rotation_to(second))).unwrap();
+        cache().lock().unwrap().get_mut(second).unwrap().until = Instant::now();
+        authorize_with(second, |_| Ok(rotation_to(third))).unwrap();
+        forget(first);
+        for token in [first, second, third] {
+            assert_eq!(live_refresh_token(token), token, "{token} still rotates");
+            assert!(
+                !cache().lock().unwrap().contains_key(token),
+                "{token} is still cached"
+            );
+        }
+    }
+
+    #[test]
+    fn a_refresh_that_failed_is_retried_with_the_same_token() {
+        let stored = "xai-retried";
+        assert!(
+            authorize_with(stored, |_| Err(LlmError::Http(
+                "temporary failure".to_string()
+            )))
+            .is_err()
+        );
+        let retried = authorize_with(stored, |presented| {
+            assert_eq!(presented, stored, "a failure rotated nothing");
+            Ok(rotation_to("xai-retried-r1"))
+        })
+        .unwrap();
+        let hit = authorize_with(stored, |_| unreachable!("the retry's bearer is cached")).unwrap();
+        assert_eq!(hit, retried);
+        forget(stored);
+    }
+
+    #[test]
+    fn a_chain_of_rotations_keeps_one_bearer() {
+        // Every refresh retires the token it presented; the cache must not
+        // keep a bearer under each retired one for the session's life.
+        let stored = "xai-bounded-r0";
+        for index in 1..=64 {
+            let current = live_refresh_token(stored);
+            if let Some(entry) = cache().lock().unwrap().get_mut(&current) {
+                entry.until = Instant::now();
+            }
+            authorize_with(stored, |_| {
+                Ok(rotation_to(&format!("xai-bounded-r{index}")))
+            })
+            .unwrap();
+        }
+        let kept = cache()
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|token| token.starts_with("xai-bounded-"))
+            .count();
+        assert_eq!(kept, 1);
+        forget(stored);
+    }
+
+    #[test]
+    fn a_rotation_from_a_reloaded_config_repoints_the_older_ones() {
+        // A config rebuilt mid-session holds a newer token than the first
+        // one; its refresh must move the first config along too.
+        let (first, second, third) = ("xai-reloaded-r0", "xai-reloaded-r1", "xai-reloaded-r2");
+        note_rotation(first, first, second);
+        note_rotation(second, second, third);
+        assert_eq!(live_refresh_token(first), third);
+        assert_eq!(live_refresh_token(second), third);
+        forget(first);
     }
 }

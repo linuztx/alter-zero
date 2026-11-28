@@ -1227,8 +1227,12 @@ discovery — whose answer's **prefilled** `verification_uri_complete` is the
 link the device page shows (`https`, or loopback `http`, else refused), the
 row under it saying *and confirm this one-time code* where a link already
 carries the code (`ui::login_view`), the first poll one interval in,
-`slow_down` taking the interval it names else RFC 8628's five seconds, and
-the confirmation naming the `id_token`'s email. Refresh tokens are
+`slow_down` taking the interval it names else RFC 8628's five seconds
+(`xai::slowed`, never faster, and every interval held under
+`xai::MAX_INTERVAL`, a minute), a 408/429/5xx naming no OAuth error polled
+again (`Poll::Retry` — the code is still good), and the confirmation naming
+the `id_token`'s email, else the access token's, else a
+`preferred_username` handle (`xai::account_name`). Refresh tokens are
 **single-use** — every mint rotates the pair and revokes the token presented
 — so the gate, the write-back and the rotation map are load-bearing, and a
 refresh **clears** `forgotten` as it starts, so a sign-in's own `forget` of
@@ -1247,13 +1251,16 @@ model's ladder lists `none`), and no `include` is asked for, reasoning
 being replayed on no provider; the catalog is `/v1/language-models` (the
 chat models, their `input_modalities` and `capabilities.reasoning_effort`
 ladder — a sniff of its own in `models.rs`) with each window borrowed from
-`/v1/models`' `context_length`, falling back to `/v1/models` alone; the
+`/v1/models`' `context_length`, falling back to `/v1/models` alone, and a
+sign-in's empty catalog an error naming the plan (`catalog_or_error`, the
+ChatGPT rule); the
 refusals (`xai::auth_advice` — no active subscription, credits spent, a
 bearer rejected, the plan's reach, and `refresh_advice`'s dead grant or
 tier-denied 403) are lifted out of xAI's `{code, error}` envelope; `/usage`
-says xAI publishes no figures and links grok.com; `smoke.sh` Phase 174 drives
-the sign-in → listing → turn → rejected bearer → missing subscription path
-against a stub; the **user's own providers**
+says xAI publishes no figures and links grok.com, asking xAI for nothing;
+`smoke.sh` Phase 174 drives the sign-in past a 503 → listing → Ctrl+T → turn
+→ rejected bearer → missing subscription → `/usage` path against a stub; the
+**user's own providers**
 (`docs/user-providers.md`): `{config_home}/providers.toml` is **laid over**
 the embedded shipped table rather than replacing it —
 `ProvidersFile::with_user_layer`, a raw-TOML merge where a new id adds a

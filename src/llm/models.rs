@@ -837,18 +837,30 @@ const DEFAULT_EFFECTIVE_CONTEXT_PERCENT: u64 = 95;
 /// per-record client-version gate has moved past what
 /// [`chatgpt::CLIENT_VERSION`] claims. Both are actionable, and both used to
 /// arrive as a provider that simply contributed no rows to the `/model`
-/// picker — a silence that reads like the fetch never happened.
+/// picker — a silence that reads like the fetch never happened. An xAI
+/// sign-in's empty listing is the same silence, about its Grok plan.
 ///
 /// [`chatgpt::CLIENT_VERSION`]: super::chatgpt::CLIENT_VERSION
 ///
 /// # Errors
-/// An empty ChatGPT catalog becomes an [`LlmError`] naming both causes.
+/// An empty ChatGPT or xAI sign-in catalog becomes an [`LlmError`] naming
+/// the likely cause.
 fn catalog_or_error(models: Vec<ModelEntry>, auth: super::AuthScheme) -> Result<Vec<ModelEntry>> {
     if models.is_empty() && auth == super::AuthScheme::ChatGptCodex {
         return Err(LlmError::Api {
             status: 200,
             body: "the account listed no models — its ChatGPT plan may not include Codex, \
                    or this client is too old for the models it serves"
+                .to_string(),
+        });
+    }
+    // The same silence on an xAI sign-in: the listing authenticated, so an
+    // empty one is the account (`docs/xai.md` *What `/model` lists*).
+    if models.is_empty() && auth == super::AuthScheme::XaiGrok {
+        return Err(LlmError::Api {
+            status: 200,
+            body: "the account listed no models — its Grok plan may not include API access \
+                   through the sign-in, which xAI limits to some SuperGrok tiers"
                 .to_string(),
         });
     }
@@ -995,14 +1007,16 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
             return Err(LlmError::Cancelled);
         }
         let listed = get(&format!("{base}/models"));
-        return xai_catalog(languages, listed, &cfg.provider_id).map_err(|error| match error {
-            LlmError::Api { status, body } if cfg.auth == super::AuthScheme::XaiGrok => {
-                let body =
-                    super::xai::advise(status, &body, cfg.api_key.as_deref()).unwrap_or(body);
-                LlmError::Api { status, body }
-            }
-            other => other,
-        });
+        let models =
+            xai_catalog(languages, listed, &cfg.provider_id).map_err(|error| match error {
+                LlmError::Api { status, body } if cfg.auth == super::AuthScheme::XaiGrok => {
+                    let body =
+                        super::xai::advise(status, &body, cfg.api_key.as_deref()).unwrap_or(body);
+                    LlmError::Api { status, body }
+                }
+                other => other,
+            })?;
+        return catalog_or_error(models, cfg.auth);
     }
     // A listing of its own that the server does not have stands down for the
     // chat base's `/models`, which every chat-completions server answers
@@ -2016,6 +2030,12 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        // An xAI sign-in's silence names the subscription.
+        let shown = catalog_or_error(Vec::new(), super::super::AuthScheme::XaiGrok)
+            .expect_err("empty is an error here")
+            .to_string();
+        assert!(shown.contains("no models"), "{shown}");
+        assert!(shown.contains("SuperGrok"), "{shown}");
     }
 
     #[test]
@@ -3076,6 +3096,29 @@ mod tests {
         let shown = err.to_string();
         assert!(shown.contains("no active Grok subscription"), "{shown}");
         assert!(!shown.contains("\"code\""), "{shown}");
+    }
+
+    #[test]
+    fn an_xai_sign_in_that_lists_no_models_says_why() {
+        // The listing authenticated, so an empty one is the account — a Grok
+        // plan without API access — which a blank picker would not say. A
+        // pasted key's empty list stays an ordinary empty list.
+        let (port, _) = serve(|path| match path {
+            "/v1/language-models" => ("200 OK", r#"{"models":[]}"#),
+            "/v1/models" => ("200 OK", r#"{"object":"list","data":[]}"#),
+            _ => ("404 Not Found", "{}"),
+        });
+        let err = fetch_models(&xai_cfg(port), &CancelToken::new()).unwrap_err();
+        let shown = err.to_string();
+        assert!(shown.contains("no models"), "{shown}");
+        assert!(shown.contains("SuperGrok"), "{shown}");
+        let mut keyed = xai_cfg(port);
+        keyed.auth = crate::llm::AuthScheme::ApiKey;
+        assert!(
+            fetch_models(&keyed, &CancelToken::new())
+                .expect("listed")
+                .is_empty()
+        );
     }
 
     #[test]

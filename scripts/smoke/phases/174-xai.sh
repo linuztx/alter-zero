@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 174 — the xAI Grok sign-in: the device code, the merged listing, a turn on the Responses wire, and xAI's 403s, against a local stub
+# Phase 174 — the xAI Grok sign-in: the device code, the merged listing, Ctrl+T, a turn on the Responses wire, xAI's 403s and /usage, against a local stub
 
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
@@ -14,21 +14,25 @@ smoke_begin
 #   DEVICE page at once, linking the PREFILLED page (the code baked in) over
 #   the code in its box — asking to confirm the code rather than enter it;
 # - the code request names the public client id and the scopes and nothing
-#   else, and the poll waits an interval before it asks — off the stub's log;
+#   else, and the poll waits an interval before it asks — off the stub's log
+#   — and goes on past a proxy's 503, which says nothing about the code;
 # - the sign-in completes into the account-naming toast (the id_token's
 #   email), and the refresh token lands in the key store;
 # - /model lists `/language-models`' rows — not the image model `/models`
 #   carries — each with the window `/models` lends it: picked, the footer
-#   carries the thinking level and the gauge those give it; the listing is
-#   fetched with a bearer the refresh grant minted, and the rotated refresh
-#   token is written back;
+#   carries the thinking level and the gauge those give it, and Ctrl+T steps
+#   the ladder xAI listed; the listing is fetched with a bearer the refresh
+#   grant minted, and the rotated refresh token is written back;
 # - a turn streams its reply over `/responses` with the minted bearer, and
 #   the request is xAI's shape: instructions, store false, the cache key,
-#   the effort, no `include`, and a schema keyword xAI refuses taken out;
+#   the effort Ctrl+T chose, no `include`, and a schema keyword xAI refuses
+#   taken out;
 # - a 403 refusing the bearer reads as "send your message again" and the
 #   next turn mints a new one — presenting the ROTATED refresh token — while
 #   a 403 for a missing subscription reads as what to do about it, never as
-#   the JSON envelope it came in.
+#   the JSON envelope it came in;
+# - /usage names the subscription and links the Grok dashboard, asking xAI
+#   for nothing: it publishes no usage figures.
 S174="${S}_xai"
 XA_LOG="$SMOKE_TMP/xai.log"
 XA_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
@@ -96,6 +100,15 @@ class Stub(BaseHTTPRequestHandler):
             polls += 1
             if polls == 1:
                 self.reply(400, {"error": "authorization_pending"})
+            elif polls == 2:
+                # A proxy failing in front of the token endpoint: no answer
+                # about the code, which is still good.
+                page = b"<html>503 Service Unavailable</html>"
+                self.send_response(503)
+                self.send_header("content-type", "text/html")
+                self.send_header("content-length", str(len(page)))
+                self.end_headers()
+                self.wfile.write(page)
             else:
                 self.reply(200, {"access_token": "xai-access-174-0", "refresh_token": "xai-refresh-174",
                                  "id_token": ID_TOKEN, "expires_in": 3600, "token_type": "Bearer"})
@@ -190,8 +203,9 @@ for unwanted in "enter this one-time code" "Waiting for the browser" "this windo
 	expect_lacks "$device" -F "$unwanted" "the device page wore another sign-in's wording (\"$unwanted\")"
 done
 
-# The stub approves on the second poll, one interval apart: the sign-in
-# completes into the toast naming the id_token's account.
+# The stub approves on the third poll, one interval apart, after a pending
+# and a 503: the sign-in completes into the toast naming the id_token's
+# account.
 done_pane="$(wait_pane 15 "$S174" -F "Signed in to xAI Grok")"
 dump "the sign-in completes" "$done_pane"
 expect_has "$done_pane" -F "Signed in to xAI Grok (dev@example.com) — run /model to use it" "the sign-in did not complete into the account-naming toast"
@@ -201,7 +215,8 @@ dump "the key store after signing in" "$xa_env"
 expect_has "$xa_env" -F "XAI_GROK_REFRESH_TOKEN=xai-refresh-174" "the refresh token was not stored"
 
 # Off the stub's log: the code request names the client id and the scopes
-# and nothing else, and every poll presents the device-code grant.
+# and nothing else, and every poll — the one the 503 answered too — presents
+# the device-code grant.
 xa_log="$(cat "$XA_LOG" 2>/dev/null)"
 dump "the stub's log after the sign-in" "$xa_log"
 xa_code_body="$(python3 -c 'import json,sys
@@ -213,7 +228,7 @@ expect_eq "$xa_code_body" "client_id=b1a00492-073a-47ea-816f-4c329264a828&scope=
 xa_polls="$(python3 -c 'import json,sys
 want = "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code&client_id=b1a00492-073a-47ea-816f-4c329264a828&device_code=device-174"
 print(sum(1 for line in open(sys.argv[1]) if json.loads(line)["body"] == want))' "$XA_LOG")"
-expect_eq "$xa_polls" "2" "the poll did not present the device-code grant once per interval until the approval"
+expect_eq "$xa_polls" "3" "the poll did not present the device-code grant once per interval until the approval"
 
 # /model: the merged listing — the rows `/language-models` names, each with
 # the window `/models` lends it, and no row for the image model.
@@ -238,6 +253,9 @@ footer="$(wait_pane 5 "$S174" -F "/500k")"
 dump "the footer on grok-4.7" "$footer"
 expect_has "$footer" -F "grok-4.7 medium" "the footer did not carry the ladder's thinking level"
 expect_has "$footer" -E "[0-9.]+k?/500k" "the footer did not gauge against the lent window"
+# Ctrl+T steps the ladder xAI listed — medium to high — and the turn sends it.
+keys "$S174" C-t
+wait_for 5 "$S174" -F "grok-4.7 high" || fail "Ctrl+T did not step grok-4.7 to high"
 
 # A turn: the reply streams back over `/responses`, with the cached bearer.
 submit "$S174" "$USER_MSG"
@@ -259,7 +277,7 @@ if r.get("model") != "grok-4.7": problems.append("model")
 if r.get("store") is not False: problems.append("store is not false")
 if not isinstance(r.get("instructions"), str) or not r["instructions"]: problems.append("no instructions")
 if not r.get("prompt_cache_key"): problems.append("no prompt_cache_key")
-if r.get("reasoning") != {"effort": "medium", "summary": "auto"}: problems.append(f"reasoning {r.get('reasoning')!r}")
+if r.get("reasoning") != {"effort": "high", "summary": "auto"}: problems.append(f"reasoning {r.get('reasoning')!r}")
 if "include" in r: problems.append("include was asked for")
 def walk(node):
     if isinstance(node, dict):
@@ -300,7 +318,21 @@ xa_bearers="$(python3 -c 'import json,sys
 print("|".join(json.loads(l)["auth"] for l in open(sys.argv[1]) if json.loads(l)["path"] == "/v1/responses"))' "$XA_LOG")"
 expect_eq "$xa_bearers" "Bearer xai-access-174-1|Bearer xai-access-174-1|Bearer xai-access-174-2" "the rejected bearer was sent again instead of a new one"
 
+# /usage: xAI publishes no usage figures, so the page names the subscription
+# and links the dashboard — and asks xAI for nothing, not even a bearer.
+xa_asked_before="$(wc -l <"$XA_LOG")"
+submit "$S174" "/usage"
+usage="$(wait_pane 10 "$S174" -F "xAI publishes no usage figures")"
+dump "the /usage page" "$usage"
+expect_has "$usage" -F "xAI Grok" "the usage page did not name the subscription"
+expect_has "$usage" -F "grok.com/?_s=usage" "the usage page did not link the Grok dashboard"
+sleep 0.5
+xa_asked_after="$(wc -l <"$XA_LOG")"
+expect_eq "$xa_asked_after" "$xa_asked_before" "/usage asked xAI for something"
+keys "$S174" Escape
+wait_for 3 "$S174" -E '^❯' || fail "/usage did not close"
+
 kill "$XA_SERVER" 2>/dev/null
 wait "$XA_SERVER" 2>/dev/null
 tmux kill-session -t "$S174" 2>/dev/null
-echo "==== Phase 174: xAI Grok signs in against the stub, lists the merged catalog, streams a turn and explains its 403s ===="
+echo "==== Phase 174: xAI Grok signs in past a 503, lists the merged catalog, steps its ladder, streams a turn, explains its 403s and points /usage at the dashboard ===="

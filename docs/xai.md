@@ -70,14 +70,25 @@ countdown from the code's own life, no browser launched.
    immediate one only ever answers `authorization_pending`). Then the verdict
    reads the **body**: `authorization_pending` waits again, `slow_down` takes
    the interval its answer names or else grows the current one by RFC 8628's
-   five seconds, `access_denied`/`authorization_denied`/`expired_token`/
-   `invalid_grant` end the flow with a sentence, and a body carrying an access
-   token is the approval whatever status delivered it.
+   five seconds (`xai::slowed` — never faster than the current interval, since
+   the server has just said it was too fast), `access_denied`/
+   `authorization_denied`/`expired_token`/`invalid_grant` end the flow with a
+   sentence, and a body carrying an access token is the approval whatever
+   status delivered it. A **408, 429 or 5xx** whose body is none of those —
+   a proxy's error page, a rate limit, a server briefly down — is one more
+   wait (`Poll::Retry`, hermes polls through the same): it says nothing about
+   the code, which is still good, and ending the flow on it would make the
+   user start over for a blip. Any other answer ends the flow naming its
+   status. However a poll's interval is set — the code's answer, a
+   `slow_down` — it is held under `xai::MAX_INTERVAL`, a minute: an answer
+   naming an hour would otherwise leave the page counting down long after the
+   approval, or past the code's own life.
 3. **The account** — the `openid email` scopes put an `id_token` in the
-   answer. Its `email` claim is what the confirmation names — `Signed in to
-   xAI Grok (you@example.com) — run /model to use it` — read and never
-   verified: nothing here checks a JWT signature, it only reads what the token
-   says about itself.
+   answer, and the confirmation names its `email` claim, else the access
+   token's, else — for an account whose tokens name no email — its
+   `preferred_username` handle: `Signed in to xAI Grok (you@example.com) — run
+   /model to use it`. Read and never verified: nothing here checks a JWT
+   signature, it only reads what the token says about itself.
 
 A token set without a refresh token is refused **at the sign-in**: without one
 the session would die at the first access-token expiry with no way back but
@@ -147,6 +158,14 @@ Not having `/v1/models` costs only the windows, never a row. A server that
 answers no `/v1/language-models` is listed from `/v1/models` alone — the
 OpenAI-compatible list every route to xAI serves — so a user's own pasted-key
 provider block pointing at xAI's host lists, too.
+
+A sign-in whose listings name **no model at all** is a failure rather than a
+provider with no rows: the listing authenticated, so an empty one is the
+account — a Grok plan without API access through the sign-in — and the picker
+says so (`the account listed no models — its Grok plan may not include API
+access through the sign-in, which xAI limits to some SuperGrok tiers`), the
+rule `/model` already keeps for a ChatGPT sign-in. A pasted key's empty list
+stays an empty list.
 
 A listed `"none"` is the off switch rather than a rung, and only a listed one:
 xAI answers `none` with a 400 on a model whose list doesn't name it, since that
@@ -249,10 +268,10 @@ try again"*.
 
 | file | what's in it |
 | --- | --- |
-| `src/llm/xai.rs` | the client id, scopes and endpoints; the device-code/poll/refresh shapes and verdicts, the link check, the cache-lifetime rule, the account's email, the schema sanitizer and the advice (pure); the code request, the cancel-aware poll, the token mint, the cache, the rotation write-back and the issuer override (boundary) |
+| `src/llm/xai.rs` | the client id, scopes and endpoints; the device-code/poll/refresh shapes and verdicts, the poll's cadence (the slow-down rule and its cap), the link check, the cache-lifetime rule, the account's name, the schema sanitizer and the advice (pure); the code request, the cancel-aware poll, the token mint, the cache, the rotation write-back and the issuer override (boundary) |
 | `src/llm/auth.rs` | `request_auth` — the one seam every outbound call resolves through |
 | `src/llm/config.rs` | `AuthScheme::XaiGrok` — the scheme that puts the row under *Sign in with an account* and runs the device page |
-| `src/llm/models.rs` | `fetch_models`' xAI arm — `/v1/language-models` merged with `/v1/models` — and the `capabilities.reasoning_effort` ladder sniff |
+| `src/llm/models.rs` | `fetch_models`' xAI arm — `/v1/language-models` merged with `/v1/models`, an empty sign-in listing an error — and the `capabilities.reasoning_effort` ladder sniff |
 | `src/llm/responses.rs` | the three xAI differences on the Responses wire |
 | `src/llm/openai.rs` | `explain`'s xAI arm, which also drops a rejected bearer |
 | `src/llm/usage.rs` | the `/usage` page's xAI section |

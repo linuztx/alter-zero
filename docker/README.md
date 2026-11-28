@@ -35,7 +35,8 @@ docker exec -it \
 
 Run it from your own terminal. Then `/login` to connect a provider and
 `/model` to choose a model. For a ChatGPT subscription pick **Device code
-login (headless)**, since the container has no browser.
+login (headless)**, since the container has no browser. GitHub Copilot,
+ClinePass and xAI Grok sign in with a device code already.
 
 With **Podman**, say so once and swap the word in the commands:
 
