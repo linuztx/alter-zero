@@ -93,7 +93,7 @@ fn saving_a_generated_image_never_holds_its_base64_or_its_bytes() {
         .expect("warm save");
     std::fs::remove_file(saved).expect("remove");
 
-    // A 4K output, the largest `gpt-image-2` makes.
+    // A 4K output, the largest an Images 2.6 still comes in.
     let png = picture_png(3840, 2160);
     let body = answer(&png);
 

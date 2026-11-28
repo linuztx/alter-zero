@@ -876,6 +876,12 @@ pub fn run_agent(
                     let started = std::time::Instant::now();
                     let mut outcome = execute(call, &mut on_output);
                     let ran = outcome.run(started.elapsed());
+                    // What the executor knows of how the call ran — an image
+                    // the older model made (docs/imagegen.md) — goes on the
+                    // cell's provenance row, after the approval's.
+                    if let Some(note) = outcome.note.take() {
+                        let _ = tx.send(StreamEvent::ToolNote(note));
+                    }
                     // `PostToolUse` (docs/hooks.md): the call ran, so there is
                     // nothing left to refuse — only things to say. Whatever a
                     // hook adds goes onto the **model-facing** text via the
@@ -3319,6 +3325,7 @@ mod tests {
                         context: None,
                         exit_code: None,
                         error_kind: None,
+                        note: None,
                     };
                     outcome.with_context(r#"{"answers":{"Q":"A"}}"#)
                 },
@@ -4743,6 +4750,74 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, StreamEvent::ToolStart { args, .. } if args == header)),
             "…and started so, refused or not: {events:?}"
+        );
+    }
+
+    #[test]
+    fn an_outcome_that_says_how_its_call_ran_leaves_its_note_on_the_cell() {
+        // An executor can know something about how the call ran that its
+        // cell should say — an image made by the older model
+        // (docs/imagegen.md). It rides the same ToolNote channel as an
+        // approval's, after it, before the call resolves.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let calls = vec![call("c1", "imagegen", r#"{"prompt":"a fox"}"#)];
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut vec![ChatMessage::user("draw a fox")],
+            |_msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n == 1 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    answered()
+                }
+            },
+            |_c, _sink| {
+                ToolOutcome::ok("Generated image (PNG, 2x2, 1 KB) saved to /g/1.png")
+                    .with_note("Made with gpt-image-2 (Images 2.6 not available)")
+            },
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::AllowNoted {
+                note: "Allowed by auto mode classifier".to_string(),
+            },
+            &NoHooks,
+            &no_sessions,
+        );
+        let events = drain(&mut rx);
+        let notes: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::ToolNote(n) => Some(n.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notes,
+            [
+                "Allowed by auto mode classifier",
+                "Made with gpt-image-2 (Images 2.6 not available)"
+            ]
+        );
+        let note = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolNote(n) if n.starts_with("Made with")))
+            .expect("the outcome's note");
+        let end = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolEnd { ok: true, .. }))
+            .expect("the call resolves");
+        assert!(
+            note < end,
+            "the note lands before the call resolves: {events:?}"
         );
     }
 

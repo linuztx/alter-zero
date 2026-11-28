@@ -1,11 +1,12 @@
 # Image generation (`imagegen`)
 
 Signed in with **ChatGPT Codex**, a session can make and edit raster images
-through OpenAI's `gpt-image-2`: photos, illustrations, sprites, textures,
-mockups and cutouts with a transparent background. It works whatever
-provider the conversation runs on. A Claude, OpenRouter or Ollama model calls
-the same `imagegen` tool, and the image is made with the ChatGPT sign-in,
-billed to that ChatGPT plan. No API key is involved.
+through OpenAI's Images 2.6 (`gpt-image-2.6-sunburst`): photos,
+illustrations, sprites, textures, mockups and cutouts with a transparent
+background. It works whatever provider the conversation runs on. A Claude,
+OpenRouter or Ollama model calls the same `imagegen` tool, and the image is
+made with the ChatGPT sign-in, billed to that ChatGPT plan. No API key is
+involved.
 
 There are two halves, ported from OpenAI Codex:
 
@@ -38,16 +39,17 @@ The answer is `{"created": …, "data": [{"b64_json": "…"}], …}`. Codex save
 `data[0]` under `$CODEX_HOME/generated_images/<thread>/<call>.png`. It hands
 the model the picture itself together with a hint naming the saved path.
 
-Alter Zero does the same, with these differences:
+Alter Zero takes the same endpoints, the same credential and the same
+answer. What it sends them is in *The tool* and *The call* below; the other
+differences are these:
 
 | | Codex | Alter Zero |
 | --- | --- | --- |
 | Tool | `image_gen.imagegen`, a Responses namespace | `imagegen`, a plain function on every wire |
 | When offered | ChatGPT auth **and** a provider that requires OpenAI auth, an image-capable model, not the Free plan | the ChatGPT Codex sign-in is stored, **whatever provider the session runs on**; a Free-plan account is refused when the call runs |
-| Edit inputs | `referenced_image_paths` or `num_last_images_to_include` | `referenced_image_paths` only: every picture in a conversation here has a file (a paste is saved, a `read` names its file, a generated image is saved) |
+| Edit inputs | `referenced_image_paths` or `num_last_images_to_include` | the same two, never both: a path for a picture with a file (a paste, a `read`, a generated image), the count for one without (an MCP tool's), which goes up as the conversation's own copy (*Images already in the conversation*) |
 | Saved to | `$CODEX_HOME/generated_images/<thread>/<call>.png` | `~/.alter-zero/generated_images/<session>/<N>.png` |
 | What the model sees | the picture | the picture, or a copy held to the attachment cap when the picture is past it |
-| GIF output | behind an under-development flag | not offered |
 | Skill visibility | always | only while the tool is offered |
 | Switch | none | the `/settings` **Image generation** row, per directory |
 
@@ -65,7 +67,8 @@ the gate is the stored sign-in, not the active model.
    "properties": {
      "prompt": {"type": "string"},
      "transparent_background": {"type": "boolean"},
-     "referenced_image_paths": {"type": "array", "items": {"type": "string"}}},
+     "referenced_image_paths": {"type": "array", "items": {"type": "string"}},
+     "num_last_images_to_include": {"type": "integer", "minimum": 1, "maximum": 5}},
    "required": ["prompt"], "additionalProperties": false}}
 ```
 
@@ -74,10 +77,11 @@ offers the tool (CLAUDE.md's tool-prose rule), and the craft Codex's 315-word
 `imagegen_description.md` spells out — when to make a bitmap, how to word a
 prompt, where a picture belongs — is the skill's, which is listed whenever the
 tool is offered. What stays is the capability and its sharp edges: one image
-per call, a minute or two, saved and shown with its path returned, no asking
+per call, taking minutes, saved and shown with its path returned, no asking
 for confirmation, edits by `referenced_image_paths` after looking with `read`
-(where Codex names `view_image`), and `transparent_background` for a cutout.
-There is no code mode, no `num_last_images_to_include` and no GIF.
+(where Codex names `view_image`) or, for a picture with no file, by
+`num_last_images_to_include`, and `transparent_background` for a cutout.
+There is no code mode.
 
 The tool takes no size, quality or count parameter, because Codex's sends
 `size: "auto"` and `quality: "auto"` and lets the backend choose. A model
@@ -87,11 +91,45 @@ An unknown argument is refused, with the list of accepted ones. That is
 Codex's `deny_unknown_fields`. A model that passes `size` learns at once that
 it does nothing, instead of believing it got a landscape image.
 
+### Images already in the conversation
+
+`num_last_images_to_include` names a picture that has no file. Here that is
+an MCP tool's image result: a paste, an image `read` and a generated image
+each have one, and go by `referenced_image_paths`. The count
+asks for the newest 1 to 5 images the conversation holds:
+
+- **Which.** The image parts of the request the model wrote the call
+  against. Every round records the pictures the request it sends carries
+  (`imagegen::ConversationImages`, filled in the round closure of
+  `llm::backend` for the lead and a subagent alike, and read by the
+  executor), so a call sees what the model saw when it wrote it — never a
+  picture an earlier call of the same round has just added. Whoever sent a
+  picture, it counts: a paste, a `read`, an image made earlier, an MCP tool's
+  result. What `/compact` folded away is gone, and a model that cannot see
+  images has none.
+- **Order.** The newest `n`, sent oldest first. The same picture twice counts
+  twice, since a picture with no file has no name to tell a repeat by.
+- **What goes up.** The conversation's own copy: the encoding the request
+  already carries, shared rather than copied (`docs/memory.md`). A picture
+  past the attachment cap goes up as the smaller copy the model saw.
+  `referenced_image_paths` reads the file instead.
+- **Refusals**, before anything is sent: a count outside 1 to 5 (`` `num_last_images_to_include` must be between 1 and 5 ``), a count
+  beside paths (``provide only one of `referenced_image_paths` or
+  `num_last_images_to_include` ``; an empty list of paths names none), and a
+  count past what the conversation holds (`requested the last 2 conversation
+  images, but only 1 were available`). A request never goes with fewer
+  pictures than the model asked for.
+
+The schema states the 1-to-5 bounds as `minimum` and `maximum`, and the
+parameter's description says them in words for a wire that drops the
+keywords.
+
 ### The call
 
 1. **Arguments.**
    - The prompt must not be blank.
-   - At most 5 referenced images.
+   - At most 5 referenced images, or a count of the newest images in the
+     conversation checked as *Images already in the conversation* says.
    - Each reference resolves against the working directory, the file tools'
      rule. It must be a PNG, JPEG or WebP, judged by its content, and under
      the Images API's 50 MB limit.
@@ -110,9 +148,21 @@ it does nothing, instead of believing it got a landscape image.
      app has no turn id, so each call gets a UUID of its own. Codex sends no
      `version` header, and neither does this.
 
+   The body is `prompt`, the `images` of an edit, `background`, `model`, and
+   `quality` and `size` always `auto`:
+
+   ```
+   {"prompt": "…", "background": "opaque", "model": "gpt-image-2.6-sunburst",
+    "quality": "auto", "size": "auto"}
+   ```
+
+   `background` is never `auto`: `transparent` when the call asked for a
+   cutout, else `opaque`. The model is *The model*'s.
+
    Each reference image goes up as a `data:` URL taken from the session's one
-   shared encoding (`images::attachment_data_url`, `docs/memory.md`). A
-   picture already in the conversation costs no second copy, and
+   shared encoding (`images::attachment_data_url`, `docs/memory.md`), and an
+   image named by count as the conversation's own copy. A picture already in
+   the conversation costs no second copy, and
    **Auto-resize images** applies as it does to every upload. The edit body
    is streamed (`llm::body::streamed_request`), never built whole.
 4. **Waiting.** A generation takes from tens of seconds to a few minutes. The
@@ -142,8 +192,8 @@ it does nothing, instead of believing it got a landscape image.
      image weighs (`tests/image_generation_memory.rs`).
    - The staged file's header must parse as a picture. Its format is sniffed
      from its content. Then it takes the folder's next number (the paste
-     folder's exclusive-create numbering, `clipboard`). A cancelled or
-     refused body leaves nothing behind.
+     folder's exclusive-create numbering, `clipboard`), with the extension its
+     content calls for. A cancelled or refused body leaves nothing behind.
 6. **Result.** The call's output is one fact line:
 
    ```
@@ -193,6 +243,9 @@ it does nothing, instead of believing it got a landscape image.
 | 403 | the plan wording `auth_advice` gives, then the endpoint's own words, which say whether it was the plan |
 | 429 `usage_limit_reached` | the image limit is reached, with when it resets when the body says |
 | other status | `image generation failed: HTTP {status}: {message}` |
+| a count of the newest images past what the conversation holds | `requested the last {count} conversation images, but only {available} were available` |
+| a count beside paths | ``provide only one of `referenced_image_paths` or `num_last_images_to_include` `` |
+| `gpt-image-2.6-sunburst` refused by name, and `gpt-image-2` failed too | the older model's failure as above, then on a second line `gpt-image-2 was asked after the image backend refused gpt-image-2.6-sunburst: HTTP {status}: {message}` |
 | no image in the answer | `image generation returned no image data` |
 | Esc | `Interrupted by user` |
 | the worker died without an answer | `image generation failed: the request stopped unexpectedly` |
@@ -246,6 +299,60 @@ it does nothing, instead of believing it got a landscape image.
   - **The skills walk** withholds the seeded built-in while the tool is not
     offered.
 
+## The model
+
+Every request names `gpt-image-2.6-sunburst`, Images 2.6's model for
+detailed work, the one that keeps an edit consistent with what it edits
+(`imagegen::IMAGE_MODEL`).
+
+A backend that does not take it yet still makes the image. When the answer
+refuses the model by name — a 400, 404 or 422 whose error gives `model` as
+its `param`, carries a code such as `model_not_found`, or names the model in
+its message (`refuses_model`) — the same request goes once more with
+`gpt-image-2` (`FALLBACK_IMAGE_MODEL`, `with_model_fallback`). Such a
+refusal comes back at once, so nothing was made or billed. The model's note
+says which model made the image (`Made::note`). The cell says it on one dim
+row
+under the fact line, `⎿ Made with gpt-image-2 (Images 2.6 not available)`
+(`Made::cell_note`): the outcome carries it as `ToolOutcome::note`, which the
+agent loop raises as the call's provenance note (`StreamEvent::ToolNote`,
+the channel an auto mode approval's `Allowed by auto mode classifier` row
+uses), so the row is in the Ctrl+O transcript, the rollout and a `/resume`
+too. An image made as asked has no row. Any other refusal stands, since
+another model would be refused the same way.
+
+Two things keep the second request honest. An Esc that lands while the
+refusal comes back sends nothing more: the older model's request would make,
+and bill, an image nobody waits for. And when the older model fails too, the
+call fails with both answers (`ImagegenError::FellBack`): what stopped the
+image first, then why the older model was asked.
+
+`ALTER_ZERO_IMAGEGEN_MODEL` names another model for the run, never saved:
+`gpt-image-2.6-flare`, Images 2.6's fast model, or an older one. A model
+named there is the one asked for, so its refusal is the answer and nothing
+falls back. It is read once, at startup, into `ImagegenSetup::model`.
+
+### Tried live
+
+On a ChatGPT account's sign-in in November 2026, headless turns on
+`gpt-5.6-luna` called the tool against the real backend:
+
+- `gpt-image-2.6-sunburst` was taken, so nothing fell back and the cell had
+  no row.
+- With `size` and `quality` both `auto`, the backend chose: a generation
+  came back 1536×1024, and an edit of a 256×256 picture came back
+  1254×1254, square like its input.
+- `num_last_images_to_include: 1` edited the newest image in the
+  conversation, on a ChatGPT Pro plan:
+  - a picture just generated: a red circle on white came back as the same
+    circle, blue, the same size and in the same place;
+  - an MCP tool's image result, which has no file: a 256×256 test pattern
+    of red, green, blue and yellow quadrants came back as a watercolour
+    with each colour in its own quadrant, though the prompt named neither
+    the colours nor where they go.
+- GIF output was refused on every try with `HTTP 400: GIF output is not
+  enabled for this request.`, so the tool makes still images only.
+
 ## When it is offered
 
 It is offered while **all** of these hold:
@@ -290,6 +397,10 @@ app:
   command under the permission mode, and one sentence in `SKILL.md` says so.
 - `agents/openai.yaml` and the icons are Codex's UI metadata and are not
   ported. The built-in seed carries text files only.
+- *Built-in edit semantics* in `SKILL.md` teaches which way to name the
+  images: a path, or
+  `num_last_images_to_include` only for a picture with no file, the smallest
+  count that holds every target, never both.
 
 **Gating.** The skill is always seeded, so the built-in sync never retires it
 while signed out and re-seeds it on sign-in (`docs/builtin-updates.md`).
@@ -317,8 +428,22 @@ while the tool is not offered (`llm::skill::load_skills`):
 ## Testing
 
 - **Pure core:** `cargo test --lib llm::imagegen`. This covers:
-  - the spec, the arguments, the bodies, the decoder, the scanner over split
-    and escaped input, the fact line and the error wording;
+  - the spec, the arguments (`num_last_images_to_include`'s bounds and its
+    rule against paths, and `size` and `quality` refused as unknown),
+    the bodies, the decoder, the scanner over split and escaped input, the
+    fact line and the error wording;
+  - the newest images: a request's image parts in order whoever sent them,
+    the newest `n` oldest first, a repeat counted twice, a count past them
+    refused before anything runs, and `cargo test --lib llm::exec` for the
+    executor handing its record to the call;
+  - the model fallback: which refusals name the model, one request more
+    with `gpt-image-2`, nothing more after an Esc, both answers when the
+    older model fails too, a model the run named never replaced, and the
+    note saying what made the image;
+  - the cell's row: the outcome's note set only when the older model made
+    the image, and `cargo test --lib llm::agent` for the loop raising an
+    outcome's note after an approval's; `cargo test --lib ui::tests::image`
+    for the row closing the inline and expanded cell;
   - the HTTP half against a loopback stub (the `llm::usage` pattern): the
     URL, the headers, the body, the saved file, a 429 and a cancel.
 - **The replay and the picture:** `cargo test --lib context:: ui::`.
@@ -327,11 +452,16 @@ while the tool is not offered (`llm::skill::load_skills`):
 - **The attachment:** `cargo test --lib images:: llm::agent` — the fitted copy
   sent on a restart too, a stale copy never sent, and a vision-less model's
   live note equal to the replay's.
-- **Another provider's model draws:** `cargo test --test headless draw
-  imagegen` runs a headless session on a stand-in Chat Completions provider
-  with a ChatGPT sign-in beside it: the tool offered, the mint, Codex's body
-  and headers, the saved file and the attachment on the next request; and
-  signed out, or with the row off, nothing offered and nothing asked of
+- **Another provider's model draws:** `cargo test --test headless` runs a
+  headless session on a stand-in Chat Completions provider with a ChatGPT
+  sign-in beside it: the tool offered, the mint, the body and headers, the
+  saved file and the attachment on the next request; the picture just drawn
+  edited by count, the edit carrying the copy the model saw, and a
+  foreground subagent's the same way, counted in its own conversation; a
+  backend that refuses
+  Images 2.6 by name drawn on with `gpt-image-2`, its stream item carrying
+  the cell's row as its `note`; the model the run names;
+  and signed out, or with the row off, nothing offered and nothing asked of
   ChatGPT.
 - **Memory:** `cargo test --test image_generation_memory` streams a
   multi-megabyte answer and holds the growth under 2 MB;

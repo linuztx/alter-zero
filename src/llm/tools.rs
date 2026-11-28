@@ -110,6 +110,15 @@ pub struct ToolOutcome {
     /// a command stopped at its time limit. A failed outcome that names none
     /// is the tool's own failure ([`ToolOutcome::run`]).
     pub error_kind: Option<crate::stream::ToolErrorKind>,
+    /// `Some(text)` when the executor knows something about **how the call
+    /// ran** that its cell should say — an image the older model made
+    /// (`docs/imagegen.md` *The model*). The agent loop raises it as a
+    /// `StreamEvent::ToolNote`, the provenance channel an approval and a
+    /// hook already use, so it is the resolved cell's dim `⎿` row, in the
+    /// Ctrl+O transcript and the rollout too
+    /// ([`crate::app::ToolCall::approval_note`]). `None` for every other
+    /// outcome.
+    pub note: Option<String>,
 }
 
 impl ToolOutcome {
@@ -127,6 +136,7 @@ impl ToolOutcome {
             context: None,
             exit_code: None,
             error_kind: None,
+            note: None,
         }
     }
 
@@ -145,6 +155,7 @@ impl ToolOutcome {
             context: None,
             exit_code: None,
             error_kind: None,
+            note: None,
         }
     }
 
@@ -164,7 +175,15 @@ impl ToolOutcome {
             context: None,
             exit_code: None,
             error_kind: None,
+            note: None,
         }
+    }
+
+    /// Say how the call ran on its cell's dim row ([`Self::note`]).
+    #[must_use]
+    pub fn with_note(mut self, note: impl Into<String>) -> Self {
+        self.note = Some(note.into());
+        self
     }
 
     /// Mark the output as truncated at the byte cap.

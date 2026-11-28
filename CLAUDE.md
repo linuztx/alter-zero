@@ -3410,11 +3410,33 @@ stored** — the `chatgpt_codex` provider's own token variable resolving
 (`ProvidersFile::signed_in_with`, never the generic `ALTER_ZERO_API_KEY`) —
 every real backend is offered the **`imagegen`** tool, whatever provider the
 session runs on: Codex's client-side `image_gen.imagegen` as a plain function,
-`prompt` + `transparent_background` + `referenced_image_paths` (≤5; every
-picture here has a file, so Codex's `num_last_images_to_include` is not
-ported), no size, quality or model (Codex sends `gpt-image-2`, `auto`,
-`auto`). The pure core is `src/llm/imagegen/` — the spec, the checked
-arguments (unknown ones refused by name, Codex's `deny_unknown_fields`), the
+`prompt` + `transparent_background` + `referenced_image_paths` (≤5) or
+`num_last_images_to_include` (1–5, the bounds stated in the schema; never
+beside paths, an empty list naming none), the way to name a picture with no
+file — an MCP tool's: the newest
+`n` image parts of the request the model wrote the call against, oldest
+first, a repeat counted twice, sent as the conversation's own copies
+(`imagegen::ConversationImages`, recorded by the lead's and a subagent's
+round closure in `llm::backend` for the executor to read, so a call never
+sees a picture its own round just added; fewer than asked refused before
+anything is sent), no size, quality or `n` (the request sends `auto` and
+`auto`, the backend choosing); the model
+is `gpt-image-2.6-sunburst` (`IMAGE_MODEL`) — a backend refusing it by name
+(a 400/404/422 whose error's `param` is `model`, whose code names an unknown
+model, or whose message names it, `refuses_model`) is asked once more with
+`gpt-image-2`
+(`FALLBACK_IMAGE_MODEL`, `with_model_fallback` around the retries; such a
+refusal bills nothing, an Esc while it comes back sends nothing more, and the
+older model failing too fails with both answers, `ImagegenError::FellBack`)
+and the model's note saying what made the picture (`Made::note`), the cell
+a dim `⎿ Made with gpt-image-2 (Images 2.6 not available)` row
+(`Made::cell_note` → `ToolOutcome::note`, which `run_agent` raises as the
+call's `StreamEvent::ToolNote` provenance row) — unless
+`ALTER_ZERO_IMAGEGEN_MODEL` names another for the run (`ImagegenSetup::model`,
+read at bootstrap), whose refusal stands; tried live, the backend took the
+2.6 model. The pure core is `src/llm/imagegen/` —
+the spec, the checked arguments (unknown ones refused by name, Codex's
+`deny_unknown_fields`), the
 typed body (a `BodySource`, references as the session's shared
 `AttachmentUrl` encodings, an edit's body streamed), the fact line
 `Generated image (PNG, WxH, size) saved to {path}` (`format_generated` /
