@@ -1620,6 +1620,17 @@ mod tests {
             body.contains("`referenced_image_paths`"),
             "how an edit names its images"
         );
+        // …and the other way, for a picture with no file, never both.
+        assert!(
+            body.contains("`num_last_images_to_include`"),
+            "how an edit names a picture with no file"
+        );
+        assert!(
+            body.contains(
+                "Never provide both `referenced_image_paths` and `num_last_images_to_include`"
+            ),
+            "the rule against naming both"
+        );
         for (file, text) in std::iter::once(("SKILL.md", body)).chain(IMAGEGEN_FILES) {
             if !file.ends_with(".md") {
                 continue;

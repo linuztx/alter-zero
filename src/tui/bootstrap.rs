@@ -289,9 +289,10 @@ impl<'t> Session<'t> {
             .unwrap_or_default();
         // The `imagegen` tool's setup (docs/imagegen.md): the ChatGPT Codex
         // sign-in it makes images with — filled in by `ModelSession::resolve`
-        // — where those images are saved, and the seeded skill that drives
-        // it. Whether the tool is offered is the **Image generation** row's
-        // to say, so the setup is there either way.
+        // — where those images are saved, the seeded skill that drives it,
+        // and the image model, which `ALTER_ZERO_IMAGEGEN_MODEL` can name for
+        // the run. Whether the tool is offered is the **Image generation**
+        // row's to say, so the setup is there either way.
         let imagegen_setup = Some(alter_zero::llm::imagegen::ImagegenSetup {
             signin: alter_zero::llm::imagegen::ChatGptSignin::default(),
             dir: config::generated_images_dir(&session_id),
@@ -299,6 +300,11 @@ impl<'t> Session<'t> {
                 config::config_home().as_deref(),
             )
             .map(|root| root.join(alter_zero::llm::skill::IMAGEGEN_SKILL)),
+            model: alter_zero::llm::imagegen::image_model(
+                std::env::var(alter_zero::llm::imagegen::IMAGEGEN_MODEL_ENV)
+                    .ok()
+                    .as_deref(),
+            ),
         });
         // The walk runs before the settings and the backend are known, so it
         // judges the seeded `imagegen` skill by the sign-in alone — read the

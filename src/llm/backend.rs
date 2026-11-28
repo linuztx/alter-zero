@@ -980,9 +980,17 @@ impl ReplySource for LlmBackend {
             // the gauge until the first usage frame, then the provider's count
             // (docs/background-compaction.md *The lines on the gauge*).
             let mut meter = PromptMeter::from_gauge(baseline.used, baseline.overhead);
+            // The pictures the request each round sends carries, for an
+            // `imagegen` call's `num_last_images_to_include`: recorded as the
+            // round goes out, so a call sees what the model saw when it wrote
+            // it (docs/imagegen.md).
+            let conversation_images = imagegen
+                .is_some()
+                .then(super::imagegen::ConversationImages::default);
             let mut executor = RealToolExecutor::new()
                 .with_vision(vision)
-                .with_imagegen(imagegen);
+                .with_imagegen(imagegen)
+                .with_conversation_images(conversation_images.clone().unwrap_or_default());
             let notices = background.clone();
             if let Some(registry) = background.clone() {
                 // The registry carries the terminal-detach helper from
@@ -1061,6 +1069,9 @@ impl ReplySource for LlmBackend {
                     }
                     if let Ok(mut previous) = wire_history.lock() {
                         previous.remember(msgs);
+                    }
+                    if let Some(images) = &conversation_images {
+                        images.record(msgs);
                     }
                     let sent = msgs.len();
                     let (outcome, usage) =
@@ -2059,10 +2070,16 @@ fn spawn_subagent_run(
                 report: note.report,
             });
         }
+        // The pictures its own rounds carry, for `num_last_images_to_include`
+        // — the lead's rule over the agent's conversation (docs/imagegen.md).
+        let conversation_images = imagegen
+            .is_some()
+            .then(super::imagegen::ConversationImages::default);
         let mut executor = RealToolExecutor::new()
             .with_vision(vision)
             .with_detach_helper(detach)
-            .with_imagegen(imagegen);
+            .with_imagegen(imagegen)
+            .with_conversation_images(conversation_images.clone().unwrap_or_default());
         // The shared background registry rides in so the subagent's `bash`
         // can `run_in_background` — every launch attributed to this agent,
         // and the Ctrl+B latch untouched (docs/agent-tool.md).
@@ -2129,6 +2146,9 @@ fn spawn_subagent_run(
                         meter.reset();
                         return agent::RoundOutcome::Compacted(rebuilt);
                     }
+                }
+                if let Some(images) = &conversation_images {
+                    images.record(msgs);
                 }
                 let sent = msgs.len();
                 let (outcome, usage) =
@@ -3364,6 +3384,7 @@ mod tests {
             skill: Some(std::path::PathBuf::from(
                 "/home/me/.alter-zero/skills/imagegen",
             )),
+            model: super::super::imagegen::IMAGE_MODEL.to_string(),
         }
     }
 

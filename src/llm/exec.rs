@@ -92,6 +92,11 @@ pub struct RealToolExecutor {
     /// offers it (`docs/imagegen.md`). `None` declines a call recoverably —
     /// a model can name a tool it was never offered.
     imagegen: Option<crate::llm::imagegen::ImagegenSetup>,
+    /// The images the conversation holds as of the round being answered,
+    /// which the backend records each round (`docs/imagegen.md`): what an
+    /// `imagegen` call's `num_last_images_to_include` takes the newest of.
+    /// Empty when nothing records them.
+    conversation_images: crate::llm::imagegen::ConversationImages,
 }
 
 impl RealToolExecutor {
@@ -144,6 +149,17 @@ impl RealToolExecutor {
         self.imagegen = setup;
         self
     }
+
+    /// Read the conversation's images from `images`, the handle the backend
+    /// records each round's request into (`docs/imagegen.md`).
+    #[must_use]
+    pub fn with_conversation_images(
+        mut self,
+        images: crate::llm::imagegen::ConversationImages,
+    ) -> Self {
+        self.conversation_images = images;
+        self
+    }
 }
 
 impl ToolExecutor for RealToolExecutor {
@@ -194,9 +210,13 @@ impl ToolExecutor for RealToolExecutor {
             "write" => run_write(&call.arguments),
             "edit" => run_edit(&call.arguments),
             crate::llm::imagegen::IMAGEGEN_TOOL_NAME => match &self.imagegen {
-                Some(setup) => {
-                    crate::llm::imagegen::run_imagegen(&call.arguments, setup, self.vision, cancel)
-                }
+                Some(setup) => crate::llm::imagegen::run_imagegen(
+                    &call.arguments,
+                    setup,
+                    self.vision,
+                    &self.conversation_images,
+                    cancel,
+                ),
                 None => ToolOutcome::error(crate::llm::imagegen::UNAVAILABLE),
             },
             other => ToolOutcome::error(format!("unknown tool: {other}")),
@@ -529,6 +549,7 @@ fn run_piped(
         // The status the frame above names, as data (docs/rollout-records.md).
         exit_code,
         error_kind: None,
+        note: None,
     }
 }
 
@@ -1489,6 +1510,7 @@ mod tests {
             signin: crate::llm::imagegen::ChatGptSignin::default(),
             dir: std::path::PathBuf::from("/nowhere"),
             skill: None,
+            model: crate::llm::imagegen::IMAGE_MODEL.to_string(),
         };
         let outcome = RealToolExecutor::new().with_imagegen(Some(setup)).execute(
             &call(
@@ -1501,6 +1523,41 @@ mod tests {
         // The tool itself answered: nobody is signed in.
         assert!(!outcome.ok);
         assert_eq!(outcome.output, crate::llm::auth::NOT_SIGNED_IN);
+    }
+
+    #[test]
+    fn an_imagegen_call_counts_the_conversation_images_the_executor_holds() {
+        let setup = crate::llm::imagegen::ImagegenSetup {
+            signin: crate::llm::imagegen::ChatGptSignin::default(),
+            dir: std::path::PathBuf::from("/nowhere"),
+            skill: None,
+            model: crate::llm::imagegen::IMAGE_MODEL.to_string(),
+        };
+        let images = crate::llm::imagegen::ConversationImages::default();
+        let executor = RealToolExecutor::new()
+            .with_imagegen(Some(setup))
+            .with_conversation_images(images.clone());
+        let run = || {
+            executor.execute(
+                &call(
+                    crate::llm::imagegen::IMAGEGEN_TOOL_NAME,
+                    r#"{"prompt": "add a hat", "num_last_images_to_include": 1}"#,
+                ),
+                &CancelToken::new(),
+                &mut |_| {},
+            )
+        };
+        // Nothing recorded yet: there is no newest image to take.
+        assert_eq!(
+            run().output,
+            "requested the last 1 conversation images, but only 0 were available"
+        );
+        // The round records what it sends, and the call sees it at once.
+        images.record(&[crate::llm::ChatMessage::with_parts(
+            "user",
+            vec![crate::llm::ContentPart::image("data:image/png;base64,Zm9v")],
+        )]);
+        assert_eq!(run().output, crate::llm::auth::NOT_SIGNED_IN);
     }
 
     /// A running cell as the TUI keeps it: a `ToolScreen`'s settled text

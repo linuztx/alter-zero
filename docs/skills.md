@@ -420,10 +420,12 @@ an `ALTER_ZERO_SKILLS_DIR` override receives no built-ins.
 
 **`imagegen`** is OpenAI Codex's image-generation system skill, ported with its
 references and scripts (Apache-2.0, its `LICENSE.txt` seeded beside it). It
-drives the native **`imagegen`** tool, which makes images with
-`gpt-image-2` through the ChatGPT Codex sign-in, whatever provider the session
-runs on (`docs/imagegen.md`). It covers:
+drives the native **`imagegen`** tool, which makes images with Images 2.6
+(`gpt-image-2.6-sunburst`) through the ChatGPT Codex sign-in, whatever
+provider the session runs on (`docs/imagegen.md`). It covers:
 - when a bitmap is right and when SVG/CSS is;
+- which way an edit names its images: a path, or `num_last_images_to_include`
+  for a picture with no file, never both;
 - how to shape a prompt, and Codex's use-case taxonomy;
 - where a generated image belongs: copied into the project when the project
   uses it.

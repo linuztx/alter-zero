@@ -1,6 +1,6 @@
-//! The `imagegen` tool: images made and edited with OpenAI's `gpt-image-2`
-//! through the user's **ChatGPT Codex sign-in**, whatever provider the
-//! conversation itself runs on (`docs/imagegen.md`).
+//! The `imagegen` tool: images made and edited with OpenAI's Images 2.6
+//! (`gpt-image-2.6-sunburst`) through the user's **ChatGPT Codex sign-in**,
+//! whatever provider the conversation itself runs on (`docs/imagegen.md`).
 //!
 //! Ported from OpenAI Codex's built-in `image_gen.imagegen`, which is a
 //! client-side function rather than the hosted Responses tool: the model
@@ -34,9 +34,32 @@ pub const IMAGEGEN_TOOL_NAME: &str = "imagegen";
 /// The cell header's name: `● ImageGen(a red fox at dawn)`.
 pub const IMAGEGEN_TOOL_DISPLAY: &str = "ImageGen";
 
-/// The image model every request names. Codex hard-codes it too: the tool
-/// takes no model, size or quality — the backend chooses (`docs/imagegen.md`).
-pub const IMAGE_MODEL: &str = "gpt-image-2";
+/// The image model every request names unless [`IMAGEGEN_MODEL_ENV`] names
+/// another: Images 2.6's Sunburst, the model for detailed work that keeps an
+/// edit consistent with what it edits. Its fast sibling is
+/// `gpt-image-2.6-flare` (`docs/imagegen.md`).
+pub const IMAGE_MODEL: &str = "gpt-image-2.6-sunburst";
+
+/// The model a request is sent again with when the backend refuses
+/// [`IMAGE_MODEL`] by name: the one images were made with before it, so a
+/// backend that does not take the newest yet still makes the image
+/// (`docs/imagegen.md` *The model*).
+pub const FALLBACK_IMAGE_MODEL: &str = "gpt-image-2";
+
+/// Names another image model for the run, never saved — `gpt-image-2.6-flare`
+/// for speed, or an older model. A model named here is the one asked for:
+/// its refusal is the answer, with no fallback.
+pub const IMAGEGEN_MODEL_ENV: &str = "ALTER_ZERO_IMAGEGEN_MODEL";
+
+/// The model a session's requests name: `env`, the variable's value, when it
+/// says anything, else [`IMAGE_MODEL`].
+#[must_use]
+pub fn image_model(env: Option<&str>) -> String {
+    env.map(str::trim)
+        .filter(|model| !model.is_empty())
+        .unwrap_or(IMAGE_MODEL)
+        .to_string()
+}
 
 /// How many images one call may edit or take as references.
 pub const MAX_REFERENCED_IMAGES: usize = 5;
@@ -75,6 +98,12 @@ pub fn imagegen_spec() -> Value {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Absolute paths of up to 5 local images to edit or to use as references."
+                },
+                "num_last_images_to_include": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_REFERENCED_IMAGES,
+                    "description": "How many of the newest images in the conversation to edit, 1 to 5; never with `referenced_image_paths`."
                 }
             },
             "required": ["prompt"],
@@ -84,17 +113,18 @@ pub fn imagegen_spec() -> Value {
 }
 
 /// The tool's description: what it does and its sharp edges, short — every
-/// word rides every request that offers it, and the craft Codex's
-/// `imagegen_description.md` spells out (when to draw, how to word a prompt,
-/// where a picture belongs) is the `imagegen` skill's, listed whenever the
-/// tool is offered (`docs/imagegen.md`).
+/// word rides every request that offers it, and the craft (when to draw, how
+/// to word a prompt, where a picture belongs, which images to name) is the
+/// `imagegen` skill's, listed whenever the tool is offered
+/// (`docs/imagegen.md`).
 const IMAGEGEN_DESCRIPTION: &str = "\
 Generate an image from a prompt, or edit images, with ChatGPT's image model \
-through the user's ChatGPT sign-in. Each call makes one image (it can take a \
-minute or two), saves it, shows it to the user and returns its path. Generate \
+through the user's ChatGPT sign-in. Each call makes one image (it can take \
+minutes), saves it, shows it to the user and returns its path. Generate \
 directly, without asking for confirmation. For an edit or a style reference, \
 list the images in `referenced_image_paths`, looking at a local one with `read` \
-first; set `transparent_background` for a cutout.";
+first; for conversation images with no file, set `num_last_images_to_include` \
+instead. Set `transparent_background` for a cutout.";
 
 /// A call's arguments, checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +135,10 @@ pub struct ImagegenArgs {
     pub transparent_background: bool,
     /// The images to edit or take as references, as the model wrote them.
     pub referenced_image_paths: Vec<String>,
+    /// How many of the newest images in the conversation to take instead
+    /// ([`ConversationImages`]): the way to name a picture that has no file,
+    /// like an MCP tool's.
+    pub num_last_images_to_include: Option<usize>,
 }
 
 impl ImagegenArgs {
@@ -113,8 +147,10 @@ impl ImagegenArgs {
     /// once that it does nothing (Codex's `deny_unknown_fields`).
     ///
     /// # Errors
-    /// Unparseable or unknown arguments, a blank prompt, or more than
-    /// [`MAX_REFERENCED_IMAGES`] references — each a message the model reads.
+    /// Unparseable or unknown arguments, a blank prompt, more than
+    /// [`MAX_REFERENCED_IMAGES`] references, a count of the newest images
+    /// outside 1 to [`MAX_REFERENCED_IMAGES`], or a count beside paths —
+    /// each a message the model reads.
     pub fn parse(arguments: &str) -> Result<Self, String> {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -125,6 +161,8 @@ impl ImagegenArgs {
             transparent_background: Option<bool>,
             #[serde(default)]
             referenced_image_paths: Option<Vec<String>>,
+            #[serde(default)]
+            num_last_images_to_include: Option<i64>,
         }
         let raw: Raw = crate::llm::tools::parse_args(arguments)?;
         let prompt = raw.prompt.unwrap_or_default().trim().to_string();
@@ -138,12 +176,98 @@ impl ImagegenArgs {
                 referenced_image_paths.len()
             ));
         }
+        // One way of naming the images or the other, never both; an empty
+        // list of paths names none.
+        let num_last_images_to_include = match raw.num_last_images_to_include {
+            None => None,
+            Some(_) if !referenced_image_paths.is_empty() => {
+                return Err(
+                    "provide only one of `referenced_image_paths` or `num_last_images_to_include`"
+                        .to_string(),
+                );
+            }
+            Some(count) => Some(
+                usize::try_from(count)
+                    .ok()
+                    .filter(|count| (1..=MAX_REFERENCED_IMAGES).contains(count))
+                    .ok_or_else(|| {
+                        format!(
+                            "`num_last_images_to_include` must be between 1 and \
+                             {MAX_REFERENCED_IMAGES}"
+                        )
+                    })?,
+            ),
+        };
         Ok(Self {
             prompt,
             transparent_background: raw.transparent_background.unwrap_or(false),
             referenced_image_paths,
+            num_last_images_to_include,
         })
     }
+}
+
+/// The pictures the conversation holds as of the round a call answers: the
+/// image parts of the request the model wrote its calls against, oldest
+/// first — a paste, an image `read`, an image made earlier, an MCP tool's
+/// result — each as the conversation's own copy, never the file it came from
+/// (`docs/imagegen.md` *Images already in the conversation*). Shared by
+/// handle: each round records the request it sends, and an `imagegen` call's
+/// `num_last_images_to_include` takes the newest from it ([`Self::newest`]).
+/// The copies are the messages' own encodings, shared rather than duplicated
+/// (`docs/memory.md`).
+#[derive(Debug, Clone, Default)]
+pub struct ConversationImages(Arc<Mutex<Vec<AttachmentUrl>>>);
+
+impl ConversationImages {
+    /// Record the images `messages` carry, in order and whoever sent them,
+    /// in place of the last record.
+    pub fn record(&self, messages: &[crate::llm::ChatMessage]) {
+        let images = messages
+            .iter()
+            .filter_map(|message| match &message.content {
+                crate::llm::MessageContent::Parts(parts) => Some(parts),
+                crate::llm::MessageContent::Text(_) => None,
+            })
+            .flatten()
+            .filter_map(|part| match part {
+                crate::llm::ContentPart::ImageUrl { image_url } => Some(image_url.url.clone()),
+                crate::llm::ContentPart::Text { .. } => None,
+            })
+            .collect();
+        if let Ok(mut slot) = self.0.lock() {
+            *slot = images;
+        }
+    }
+
+    /// The newest `count` of the recorded images, oldest first, the same
+    /// picture twice counting twice (`newest_images`).
+    ///
+    /// # Errors
+    /// Fewer than `count` recorded.
+    pub fn newest(&self, count: usize) -> Result<Vec<AttachmentUrl>, String> {
+        match self.0.lock() {
+            Ok(images) => newest_images(&images, count),
+            Err(_) => newest_images(&[], count),
+        }
+    }
+}
+
+/// The newest `count` of `images`, in the order the conversation holds them,
+/// the same picture twice counting twice: a picture with no file has no
+/// stable name to tell a repeat by.
+///
+/// # Errors
+/// Fewer than `count` images: the call fails and nothing is sent, never a
+/// request with fewer pictures than the model meant.
+fn newest_images(images: &[AttachmentUrl], count: usize) -> Result<Vec<AttachmentUrl>, String> {
+    let available = images.len();
+    if available < count {
+        return Err(format!(
+            "requested the last {count} conversation images, but only {available} were available"
+        ));
+    }
+    Ok(images[available - count..].to_vec())
 }
 
 /// One request to the Images endpoints, owned so it can be streamed
@@ -154,6 +278,8 @@ pub(crate) struct ImageRequest {
     pub prompt: String,
     pub transparent_background: bool,
     pub images: Vec<AttachmentUrl>,
+    /// The image model ([`image_model`]).
+    pub model: String,
 }
 
 impl ImageRequest {
@@ -175,14 +301,15 @@ impl crate::llm::body::BodySource for ImageRequest {
             image_url: &'a AttachmentUrl,
         }
         // Codex's fields, in its order: the backend chooses the size and the
-        // quality, and `background` is never `auto` (`docs/imagegen.md`).
+        // quality, and `background` is never `auto` — opaque unless a cutout
+        // was asked for (`docs/imagegen.md`).
         #[derive(serde::Serialize)]
         struct Body<'a> {
             prompt: &'a str,
             #[serde(skip_serializing_if = "Vec::is_empty")]
             images: Vec<Reference<'a>>,
             background: &'static str,
-            model: &'static str,
+            model: &'a str,
             quality: &'static str,
             size: &'static str,
         }
@@ -198,7 +325,7 @@ impl crate::llm::body::BodySource for ImageRequest {
             } else {
                 "opaque"
             },
-            model: IMAGE_MODEL,
+            model: &self.model,
             quality: "auto",
             size: "auto",
         };
@@ -319,10 +446,16 @@ pub(crate) fn failure_text(status: u16, body: &str, now: i64) -> String {
             format!("{advice} ChatGPT said: {message}")
         };
     }
+    format!("image generation failed: {}", http_words(status, &message))
+}
+
+/// A refusal in a few words: its status, and the error's own message when it
+/// has one.
+fn http_words(status: u16, message: &str) -> String {
     if message.is_empty() {
-        format!("image generation failed: HTTP {status}")
+        format!("HTTP {status}")
     } else {
-        format!("image generation failed: HTTP {status}: {message}")
+        format!("HTTP {status}: {message}")
     }
 }
 
@@ -453,6 +586,8 @@ pub struct ImagegenSetup {
     /// whose type may not call the tool is not briefed on it either — the
     /// tool and the listing travel together (`docs/subagents.md`).
     pub skill: Option<PathBuf>,
+    /// The image model every request names ([`image_model`]).
+    pub model: String,
 }
 
 /// Where one request goes and what it carries — the base URL and every
@@ -491,6 +626,13 @@ pub(crate) enum ImagegenError {
     NoImage,
     /// The image could not be kept.
     Save(String),
+    /// The backend refused [`IMAGE_MODEL`] by name — `status` and `body` —
+    /// and [`FALLBACK_IMAGE_MODEL`], asked instead, failed too: `then`.
+    FellBack {
+        status: u16,
+        body: String,
+        then: Box<ImagegenError>,
+    },
 }
 
 impl ImagegenError {
@@ -502,6 +644,13 @@ impl ImagegenError {
             Self::Scan(error) => format!("image generation failed: {error}"),
             Self::NoImage => "image generation returned no image data".to_string(),
             Self::Save(reason) => format!("the generated image could not be saved: {reason}"),
+            // What stopped the image first, then why the older model was asked.
+            Self::FellBack { status, body, then } => format!(
+                "{}\n{FALLBACK_IMAGE_MODEL} was asked after the image backend refused \
+                 {IMAGE_MODEL}: {}",
+                then.text(now),
+                http_words(*status, &error_message(body))
+            ),
         }
     }
 
@@ -518,8 +667,8 @@ impl ImagegenError {
     }
 }
 
-/// The most a generated image may weigh on disk: the largest
-/// `gpt-image-2` output is a few tens of megabytes.
+/// The most a generated image may weigh on disk: the largest Images 2.6
+/// output, a 4K still, is a few tens of megabytes.
 const GENERATED_IMAGE_MAX_BYTES: u64 = 128 * 1024 * 1024;
 
 /// The most of an answer read at all — the image's base64 and the rest.
@@ -679,6 +828,122 @@ fn format_names(format: image::ImageFormat) -> Option<(&'static str, &'static st
     }
 }
 
+/// How an image was made where that is not what the call asked for — what
+/// the model's note and the cell's row say about it (`docs/imagegen.md` *The
+/// model*). The default is an image made as asked.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Made {
+    /// Made with [`FALLBACK_IMAGE_MODEL`]: the backend refused
+    /// [`IMAGE_MODEL`] by name.
+    pub fell_back: bool,
+}
+
+impl Made {
+    /// What the model reads about it after the rest of its note, when there
+    /// is anything to read.
+    fn note(&self) -> Option<String> {
+        self.fell_back.then(|| {
+            format!(
+                "This image was made with {FALLBACK_IMAGE_MODEL}: the image backend did not \
+                 take {IMAGE_MODEL}."
+            )
+        })
+    }
+
+    /// The cell's dim row about it: which model made the image, when it is
+    /// not the one asked for.
+    fn cell_note(&self) -> Option<String> {
+        self.fell_back
+            .then(|| format!("Made with {FALLBACK_IMAGE_MODEL} (Images 2.6 not available)"))
+    }
+}
+
+/// Whether a refusal says the backend does not take `model` itself — the one
+/// refusal worth asking again with [`FALLBACK_IMAGE_MODEL`]: a bad request
+/// answered at once, so nothing was made or billed. The error's `param` says
+/// so when there is one (`model`, or the other field it is about instead),
+/// else a code naming an unknown model, else the error's words naming the
+/// model.
+fn refuses_model(status: u16, body: &str, model: &str) -> bool {
+    #[derive(Deserialize, Default)]
+    struct Fields {
+        #[serde(default)]
+        param: Option<String>,
+        #[serde(default)]
+        code: Option<String>,
+    }
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum ErrorField {
+        Fields(Fields),
+        Other(serde::de::IgnoredAny),
+    }
+    #[derive(Deserialize)]
+    struct Envelope {
+        #[serde(default)]
+        error: Option<ErrorField>,
+    }
+    if !matches!(status, 400 | 404 | 422) {
+        return false;
+    }
+    let fields = serde_json::from_str::<Envelope>(body)
+        .ok()
+        .and_then(|envelope| match envelope.error {
+            Some(ErrorField::Fields(fields)) => Some(fields),
+            _ => None,
+        })
+        .unwrap_or_default();
+    if let Some(param) = fields.param.filter(|param| !param.is_empty()) {
+        return param == "model";
+    }
+    if fields.code.as_deref().is_some_and(|code| {
+        matches!(
+            code,
+            "model_not_found" | "invalid_model" | "unsupported_model"
+        )
+    }) {
+        return true;
+    }
+    error_message(body).contains(model)
+}
+
+/// Make the image `asked` asks for, and, when the backend refuses
+/// [`IMAGE_MODEL`] by name ([`refuses_model`]), once more with
+/// [`FALLBACK_IMAGE_MODEL`], handing back how it was made
+/// (`docs/imagegen.md` *The model*). Any other failure stands, since another
+/// model would be refused the same way, and so does the refusal of a model
+/// `ALTER_ZERO_IMAGEGEN_MODEL` named — that one is the run's choice. Nothing
+/// more is sent once `cancel` is set — an Esc while the refusal came back
+/// would otherwise be billed an image nobody waits for — and an older model
+/// failing too fails with both answers ([`ImagegenError::FellBack`]).
+fn with_model_fallback<T>(
+    asked: &ImageRequest,
+    cancel: &CancelToken,
+    mut attempt: impl FnMut(&ImageRequest) -> Result<T, ImagegenError>,
+) -> Result<(T, Made), ImagegenError> {
+    match attempt(asked) {
+        Err(ImagegenError::Refused { status, body })
+            if asked.model == IMAGE_MODEL
+                && refuses_model(status, &body, IMAGE_MODEL)
+                && !cancel.is_cancelled() =>
+        {
+            let older = ImageRequest {
+                model: FALLBACK_IMAGE_MODEL.to_string(),
+                ..asked.clone()
+            };
+            match attempt(&older) {
+                Ok(image) => Ok((image, Made { fell_back: true })),
+                Err(then) => Err(ImagegenError::FellBack {
+                    status,
+                    body,
+                    then: Box::new(then),
+                }),
+            }
+        }
+        other => other.map(|image| (image, Made::default())),
+    }
+}
+
 /// Run `attempt` until it succeeds, fails for good, or has been retried
 /// [`RETRIES`] times, pausing `pause` (doubled each time) between tries and
 /// giving up at once on a cancel.
@@ -822,7 +1087,7 @@ impl Attachment {
 /// Codex's note for the model, and the picture attached when there is one to
 /// attach — or, for a model that cannot see, the mark that has the agent
 /// loop send the note the replay sends in its place.
-fn finished(saved: &Saved, dir: &Path, attachment: Attachment) -> ToolOutcome {
+fn finished(saved: &Saved, dir: &Path, attachment: Attachment, made: &Made) -> ToolOutcome {
     let fact = format_generated(
         saved.label,
         saved.size,
@@ -834,8 +1099,15 @@ fn finished(saved: &Saved, dir: &Path, attachment: Attachment) -> ToolOutcome {
         Attachment::Withheld => Shown::Withheld,
         Attachment::Unavailable => Shown::Unavailable,
     };
-    let model = model_result(&fact, &dir.to_string_lossy(), shown);
-    let outcome = ToolOutcome::ok(fact).with_context(model);
+    let mut model = model_result(&fact, &dir.to_string_lossy(), shown);
+    if let Some(note) = made.note() {
+        model.push('\n');
+        model.push_str(&note);
+    }
+    let mut outcome = ToolOutcome::ok(fact).with_context(model);
+    if let Some(note) = made.cell_note() {
+        outcome = outcome.with_note(note);
+    }
     match attachment {
         Attachment::Attached(fitted) => outcome.with_image(fitted.url),
         Attachment::Withheld => outcome.with_image_withheld(),
@@ -844,14 +1116,16 @@ fn finished(saved: &Saved, dir: &Path, attachment: Attachment) -> ToolOutcome {
 }
 
 /// Run one `imagegen` call (`docs/imagegen.md` *The call*): check the
-/// arguments and the images they name, then mint, send and save on a worker
-/// thread the turn abandons on Esc, and hand back the fact line, the model's
-/// note and the picture. `vision` is the model's image support — a model
-/// known not to see gets the file and no attachment.
+/// arguments and the images they name — files, or the newest of the
+/// conversation's `images` — then mint, send and save on a worker thread the
+/// turn abandons on Esc, and hand back the fact line, the model's note and
+/// the picture. `vision` is the model's image support — a model known not to
+/// see gets the file and no attachment.
 pub(crate) fn run_imagegen(
     arguments: &str,
     setup: &ImagegenSetup,
     vision: Option<bool>,
+    images: &ConversationImages,
     cancel: &CancelToken,
 ) -> ToolOutcome {
     let args = match ImagegenArgs::parse(arguments) {
@@ -862,16 +1136,27 @@ pub(crate) fn run_imagegen(
         Ok(references) => references,
         Err(error) => return ToolOutcome::error(error),
     };
+    // The conversation's own copies, as the model saw them; never both these
+    // and files (`ImagegenArgs::parse`).
+    let newest = match args
+        .num_last_images_to_include
+        .map(|count| images.newest(count))
+    {
+        None => Vec::new(),
+        Some(Ok(newest)) => newest,
+        Some(Err(error)) => return ToolOutcome::error(error),
+    };
     let Some(cfg) = setup.signin.get() else {
         return ToolOutcome::error(crate::llm::auth::NOT_SIGNED_IN);
     };
     let dir = setup.dir.clone();
+    let model = setup.model.clone();
     let worker_dir = dir.clone();
     let worker_cancel = cancel.clone();
     let result = crate::llm::off_thread(
-        move || -> Result<(Saved, Attachment), String> {
+        move || -> Result<(Saved, Attachment, Made), String> {
             let target = resolve_target(&cfg)?;
-            let images = references
+            let mut images = references
                 .iter()
                 .map(|path| {
                     crate::images::attachment_data_url(path).ok_or_else(|| {
@@ -879,31 +1164,37 @@ pub(crate) fn run_imagegen(
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            images.extend(newest);
             let request = ImageRequest {
                 prompt: args.prompt,
                 transparent_background: args.transparent_background,
                 images,
+                model,
             };
-            let saved = with_retries(RETRY_PAUSE, &worker_cancel, || {
-                request_image(&target, &request, &worker_dir, &worker_cancel)
+            // A backend that refuses the newest model by name is asked once
+            // more with the older one; each model's request has its retries.
+            let (saved, made) = with_model_fallback(&request, &worker_cancel, |request| {
+                with_retries(RETRY_PAUSE, &worker_cancel, || {
+                    request_image(&target, request, &worker_dir, &worker_cancel)
+                })
             })
             .map_err(|error| error.text(unix_now()))?;
             // Encoded here, on the worker the turn abandons on Esc: a picture
             // past the cap is decoded and shrunk.
             let attachment = Attachment::for_saved(&saved.path, vision);
-            Ok((saved, attachment))
+            Ok((saved, attachment, made))
         },
         cancel,
     );
     match result {
         None => unanswered(cancel),
         Some(Err(error)) => ToolOutcome::error(error),
-        Some(Ok((saved, attachment))) => {
+        Some(Ok((saved, attachment, made))) => {
             let shown = saved.path.to_string_lossy().into_owned();
             // The cell this call resolves draws the picture from the file
             // (`docs/images.md`).
             crate::images::remember_size(&shown, saved.size);
-            finished(&saved, &dir, attachment)
+            finished(&saved, &dir, attachment, &made)
         }
     }
 }
@@ -950,21 +1241,22 @@ mod tests {
         assert_eq!(params["type"], "object");
         assert_eq!(params["required"], json!(["prompt"]));
         assert_eq!(params["additionalProperties"], false);
-        assert_eq!(params["properties"]["prompt"]["type"], "string");
+        let props = &params["properties"];
+        assert_eq!(props["prompt"]["type"], "string");
+        assert_eq!(props["transparent_background"]["type"], "boolean");
+        assert_eq!(props["referenced_image_paths"]["type"], "array");
+        assert_eq!(props["referenced_image_paths"]["items"]["type"], "string");
+        // The count of the newest images in the conversation, its 1 to 5
+        // stated in the schema.
+        let count = &props["num_last_images_to_include"];
         assert_eq!(
-            params["properties"]["transparent_background"]["type"],
-            "boolean"
+            (&count["type"], &count["minimum"], &count["maximum"]),
+            (&json!("integer"), &json!(1), &json!(5))
         );
-        assert_eq!(
-            params["properties"]["referenced_image_paths"]["type"],
-            "array"
-        );
-        assert_eq!(
-            params["properties"]["referenced_image_paths"]["items"]["type"],
-            "string"
-        );
-        // No size, quality or count: the backend chooses (docs/imagegen.md).
-        let names: Vec<&str> = params["properties"]
+        // No size, quality, count, model or output format: the backend
+        // chooses the size and the quality, a call makes one image, and the
+        // model is the session's (docs/imagegen.md).
+        let names: Vec<&str> = props
             .as_object()
             .unwrap()
             .keys()
@@ -972,7 +1264,12 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["prompt", "transparent_background", "referenced_image_paths"]
+            [
+                "prompt",
+                "transparent_background",
+                "referenced_image_paths",
+                "num_last_images_to_include"
+            ]
         );
     }
 
@@ -998,20 +1295,16 @@ mod tests {
         // This app looks at a local image with `read`; Codex's `view_image`,
         // code mode and GIF output are not here.
         assert!(description.contains("`read`"), "{description}");
-        for absent in [
-            "view_image",
-            "num_last_images_to_include",
-            "@exec",
-            "gif",
-            "GIF",
-        ] {
+        assert!(
+            description.contains("`num_last_images_to_include`"),
+            "{description}"
+        );
+        for absent in ["view_image", "@exec", "gif", "GIF"] {
             assert!(!description.contains(absent), "{absent}: {description}");
         }
-        // Every parameter is one short sentence (CLAUDE.md's tool prose rule).
-        for (name, param) in spec["function"]["parameters"]["properties"]
-            .as_object()
-            .unwrap()
-        {
+        // Every parameter is short (CLAUDE.md's tool prose rule).
+        let props = &spec["function"]["parameters"]["properties"];
+        for (name, param) in props.as_object().unwrap() {
             let text = param["description"].as_str().unwrap();
             assert!(text.ends_with('.'), "{name}: {text}");
             assert!(text.len() < 110, "{name}: {text}");
@@ -1026,6 +1319,7 @@ mod tests {
                 prompt: "a red fox at dawn".to_string(),
                 transparent_background: false,
                 referenced_image_paths: Vec::new(),
+                num_last_images_to_include: None,
             }
         );
         assert_eq!(
@@ -1038,6 +1332,7 @@ mod tests {
                 prompt: "add a hat".to_string(),
                 transparent_background: true,
                 referenced_image_paths: vec!["/tmp/fox.png".to_string()],
+                num_last_images_to_include: None,
             }
         );
     }
@@ -1054,9 +1349,29 @@ mod tests {
 
     #[test]
     fn an_argument_the_tool_does_not_take_is_refused_by_name() {
-        let error = ImagegenArgs::parse(r#"{"prompt": "x", "size": "1536x1024"}"#).unwrap_err();
-        assert!(error.contains("`size`"), "{error}");
+        let error = ImagegenArgs::parse(r#"{"prompt": "x", "n": 2}"#).unwrap_err();
+        assert!(error.contains("`n`"), "{error}");
         assert!(error.contains("`referenced_image_paths`"), "{error}");
+        // Nor a size or a quality: the backend chooses both.
+        for (raw, field) in [
+            (r#"{"prompt": "x", "size": "1536x1024"}"#, "`size`"),
+            (r#"{"prompt": "x", "quality": "high"}"#, "`quality`"),
+        ] {
+            let error = ImagegenArgs::parse(raw).unwrap_err();
+            assert!(error.contains(&format!("unknown field {field}")), "{error}");
+            assert!(!error.contains("`size`, `quality`"), "{error}");
+        }
+    }
+
+    #[test]
+    fn the_model_is_images_2_6s_unless_the_environment_names_another() {
+        assert_eq!(IMAGE_MODEL, "gpt-image-2.6-sunburst");
+        assert_eq!(image_model(None), IMAGE_MODEL);
+        assert_eq!(image_model(Some("  ")), IMAGE_MODEL);
+        assert_eq!(
+            image_model(Some(" gpt-image-2.6-flare ")),
+            "gpt-image-2.6-flare"
+        );
     }
 
     #[test]
@@ -1084,35 +1399,151 @@ mod tests {
     }
 
     #[test]
-    fn a_new_image_is_a_generation_with_codexs_fields() {
-        let request = ImageRequest {
-            prompt: "paint a blue whale".to_string(),
-            transparent_background: false,
-            images: Vec::new(),
+    fn the_newest_images_are_counted_from_one_to_five_and_never_beside_paths() {
+        let count = |raw: &str| {
+            ImagegenArgs::parse(&format!(
+                r#"{{"prompt": "x", "num_last_images_to_include": {raw}}}"#
+            ))
+            .map(|args| args.num_last_images_to_include)
         };
+        assert_eq!(count("1"), Ok(Some(1)));
+        assert_eq!(count("5"), Ok(Some(5)));
+        assert_eq!(count("null"), Ok(None));
+        let args = ImagegenArgs::parse(r#"{"prompt": "x"}"#).unwrap();
+        assert_eq!(args.num_last_images_to_include, None);
+        for raw in ["0", "6", "-1"] {
+            assert_eq!(
+                count(raw),
+                Err("`num_last_images_to_include` must be between 1 and 5".to_string()),
+                "{raw}"
+            );
+        }
+        // No whole number is no count at all.
+        for raw in ["1.5", r#""2""#] {
+            assert!(count(raw).is_err(), "{raw}");
+        }
+        // One way of naming the images or the other, never both; an empty
+        // list of paths names none.
+        let both = ImagegenArgs::parse(
+            r#"{"prompt": "x", "referenced_image_paths": ["/a.png"],
+                "num_last_images_to_include": 1}"#,
+        );
+        assert_eq!(
+            both,
+            Err(
+                "provide only one of `referenced_image_paths` or `num_last_images_to_include`"
+                    .to_string()
+            )
+        );
+        let args = ImagegenArgs::parse(
+            r#"{"prompt": "x", "referenced_image_paths": [], "num_last_images_to_include": 2}"#,
+        )
+        .unwrap();
+        assert_eq!(args.num_last_images_to_include, Some(2));
+    }
+
+    /// A picture as a `data:` URL whose payload is its name.
+    fn picture(name: &str) -> AttachmentUrl {
+        AttachmentUrl::from(format!("data:image/png;base64,{name}"))
+    }
+
+    #[test]
+    fn the_conversations_images_are_its_image_parts_in_order_whoever_sent_them() {
+        use crate::llm::{ChatMessage, ContentPart};
+        let messages = vec![
+            ChatMessage::system("You are a helpful assistant."),
+            ChatMessage::with_parts(
+                "user",
+                vec![
+                    ContentPart::text("draw on this [Image #1: /p/1.png]"),
+                    ContentPart::image(picture("pasted")),
+                ],
+            ),
+            ChatMessage::assistant("Reading it."),
+            ChatMessage::user("no picture here"),
+            ChatMessage::with_parts(
+                "user",
+                vec![
+                    ContentPart::text("[image] attached"),
+                    ContentPart::image(picture("read")),
+                    ContentPart::image(picture("mcp")),
+                ],
+            ),
+        ];
+        let images = ConversationImages::default();
+        assert_eq!(images.newest(1), Err(too_few(1, 0)));
+        images.record(&messages);
+        assert_eq!(
+            images.newest(3),
+            Ok(vec![picture("pasted"), picture("read"), picture("mcp")])
+        );
+        // Each round records the request it answers, replacing the last.
+        images.record(&messages[..3]);
+        assert_eq!(images.newest(1), Ok(vec![picture("pasted")]));
+        // Every clone is the same record: the round sets it, the call reads it.
+        let held = images.clone();
+        images.record(&messages);
+        assert_eq!(held.newest(1), Ok(vec![picture("mcp")]));
+    }
+
+    /// What a count past the conversation's images is refused with.
+    fn too_few(count: usize, available: usize) -> String {
+        format!(
+            "requested the last {count} conversation images, but only {available} were available"
+        )
+    }
+
+    #[test]
+    fn the_newest_images_go_up_oldest_first_and_too_few_is_an_error() {
+        let images = [picture("a"), picture("b"), picture("c")];
+        assert_eq!(
+            newest_images(&images, 2),
+            Ok(vec![picture("b"), picture("c")])
+        );
+        assert_eq!(newest_images(&images, 3), Ok(images.to_vec()));
+        // The same picture twice counts twice: it has no name to tell a
+        // repeat by.
+        let twice = [picture("a"), picture("a")];
+        assert_eq!(newest_images(&twice, 2), Ok(twice.to_vec()));
+        // Never fewer than asked for: the call fails and nothing is sent.
+        assert_eq!(newest_images(&images, 4), Err(too_few(4, 3)));
+        assert_eq!(newest_images(&[], 1), Err(too_few(1, 0)));
+    }
+
+    #[test]
+    fn a_new_image_is_a_generation_with_codexs_fields() {
+        // The backend chooses the size and the quality.
+        let request = generation("paint a blue whale");
         assert_eq!(request.endpoint(), "images/generations");
         assert_eq!(
             body(&request),
             json!({"prompt": "paint a blue whale", "background": "opaque",
-                   "model": "gpt-image-2", "quality": "auto", "size": "auto"})
+                   "model": "gpt-image-2.6-sunburst", "quality": "auto", "size": "auto"})
         );
+        // The model is the session's: `ALTER_ZERO_IMAGEGEN_MODEL` can name
+        // another.
+        let request = ImageRequest {
+            model: "gpt-image-2.6-flare".to_string(),
+            ..generation("paint a blue whale")
+        };
+        assert_eq!(body(&request)["model"], "gpt-image-2.6-flare");
     }
 
     #[test]
     fn an_edit_carries_its_images_as_data_urls() {
         let request = ImageRequest {
-            prompt: "add a red hat".to_string(),
             transparent_background: true,
             images: vec![AttachmentUrl::from(
                 "data:image/png;base64,Zm9v".to_string(),
             )],
+            ..generation("add a red hat")
         };
         assert_eq!(request.endpoint(), "images/edits");
         assert_eq!(
             body(&request),
             json!({"prompt": "add a red hat",
                    "images": [{"image_url": "data:image/png;base64,Zm9v"}],
-                   "background": "transparent", "model": "gpt-image-2",
+                   "background": "transparent", "model": "gpt-image-2.6-sunburst",
                    "quality": "auto", "size": "auto"})
         );
     }
@@ -1326,6 +1757,7 @@ mod tests {
             prompt: prompt.to_string(),
             transparent_background: false,
             images: Vec::new(),
+            model: IMAGE_MODEL.to_string(),
         }
     }
 
@@ -1385,11 +1817,11 @@ mod tests {
         let (base, server) = serve(vec![(200, image_answer(&png))]);
         let dir = tempfile::tempdir().unwrap();
         let request = ImageRequest {
-            prompt: "add a red hat".to_string(),
             transparent_background: true,
             images: vec![AttachmentUrl::from(
                 "data:image/png;base64,Zm9v".to_string(),
             )],
+            ..generation("add a red hat")
         };
         request_image(&target(&base), &request, dir.path(), &CancelToken::new()).unwrap();
         let received = &server.join().unwrap()[0];
@@ -1537,6 +1969,226 @@ mod tests {
     }
 
     #[test]
+    fn only_a_refusal_of_the_model_itself_reads_as_one() {
+        let refused = |status, body: &str| refuses_model(status, body, IMAGE_MODEL);
+        // The error's `param` says which field it is about, when it says.
+        assert!(refused(
+            400,
+            r#"{"error": {"param": "model", "message": "Invalid value."}}"#
+        ));
+        assert!(!refused(
+            400,
+            r#"{"error": {"param": "size", "message": "gpt-image-2.6-sunburst takes no 512x512"}}"#
+        ));
+        // Else a code naming an unknown model, else its words naming the model.
+        for code in ["model_not_found", "invalid_model", "unsupported_model"] {
+            let body = format!(r#"{{"error": {{"code": "{code}"}}}}"#);
+            assert!(refused(404, &body), "{code}");
+        }
+        assert!(refused(
+            400,
+            r#"{"error": {"message": "The model gpt-image-2.6-sunburst does not exist."}}"#
+        ));
+        assert!(refused(
+            422,
+            r#"{"detail": "unknown model gpt-image-2.6-sunburst"}"#
+        ));
+        assert!(!refused(400, r#"{"error": {"message": "Invalid size."}}"#));
+        // Not a refusal of the request at all: a limit, the sign-in, the server.
+        for status in [401, 403, 429, 500] {
+            let body = r#"{"error": {"param": "model", "message": "gpt-image-2.6-sunburst"}}"#;
+            assert!(!refused(status, body), "{status}");
+        }
+    }
+
+    /// A refusal of [`IMAGE_MODEL`] by name.
+    fn model_refused() -> ImagegenError {
+        ImagegenError::Refused {
+            status: 400,
+            body: r#"{"error": {"param": "model", "message": "Unknown model."}}"#.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_backend_that_refuses_the_model_makes_the_image_with_the_older_one() {
+        let cancel = CancelToken::new();
+        let asked = std::cell::RefCell::new(Vec::new());
+        let made = with_model_fallback(&generation("a fox"), &cancel, |request| {
+            asked.borrow_mut().push(request.model.clone());
+            if request.model == IMAGE_MODEL {
+                Err(model_refused())
+            } else {
+                Ok(7)
+            }
+        });
+        assert_eq!(made.unwrap(), (7, Made { fell_back: true }));
+        assert_eq!(*asked.borrow(), [IMAGE_MODEL, FALLBACK_IMAGE_MODEL]);
+        // A model that takes it makes it, once.
+        asked.borrow_mut().clear();
+        let made = with_model_fallback(&generation("a fox"), &cancel, |request| {
+            asked.borrow_mut().push(request.model.clone());
+            Ok(1)
+        });
+        assert_eq!(made.unwrap(), (1, Made::default()));
+        assert_eq!(*asked.borrow(), [IMAGE_MODEL]);
+    }
+
+    #[test]
+    fn any_other_refusal_or_a_model_the_run_named_is_never_sent_again() {
+        // Another model would be refused the same way.
+        let attempts = std::cell::Cell::new(0);
+        let made: Result<((), _), _> =
+            with_model_fallback(&generation("a fox"), &CancelToken::new(), |_| {
+                attempts.set(attempts.get() + 1);
+                Err(ImagegenError::Refused {
+                    status: 400,
+                    body: r#"{"error": {"param": "size"}}"#.to_string(),
+                })
+            });
+        assert!(made.is_err());
+        assert_eq!(attempts.get(), 1);
+        // A model `ALTER_ZERO_IMAGEGEN_MODEL` named is the one asked for:
+        // its refusal is the answer.
+        let named = ImageRequest {
+            model: "gpt-image-2.6-flare".to_string(),
+            ..generation("a fox")
+        };
+        attempts.set(0);
+        let made: Result<((), _), _> = with_model_fallback(&named, &CancelToken::new(), |_| {
+            attempts.set(attempts.get() + 1);
+            Err(model_refused())
+        });
+        assert!(made.is_err());
+        assert_eq!(attempts.get(), 1);
+    }
+
+    #[test]
+    fn an_esc_while_the_refusal_comes_back_sends_nothing_more() {
+        // The older model's request would make, and bill, an image nobody
+        // waits for any more.
+        let cancel = CancelToken::new();
+        let attempts = std::cell::Cell::new(0);
+        let made: Result<((), _), _> = with_model_fallback(&generation("a fox"), &cancel, |_| {
+            attempts.set(attempts.get() + 1);
+            cancel.cancel();
+            Err(model_refused())
+        });
+        assert!(matches!(
+            made,
+            Err(ImagegenError::Refused { status: 400, .. })
+        ));
+        assert_eq!(attempts.get(), 1);
+    }
+
+    #[test]
+    fn when_the_older_model_fails_too_both_answers_are_told() {
+        let made: Result<((), _), _> =
+            with_model_fallback(&generation("a fox"), &CancelToken::new(), |request| {
+                if request.model == IMAGE_MODEL {
+                    Err(model_refused())
+                } else {
+                    Err(ImagegenError::Refused {
+                        status: 400,
+                        body: r#"{"error": {"param": "size", "message": "Invalid size."}}"#
+                            .to_string(),
+                    })
+                }
+            });
+        // What stopped the image first, then why the older model was asked.
+        assert_eq!(
+            made.unwrap_err().text(0),
+            "image generation failed: HTTP 400: Invalid size.\n\
+             gpt-image-2 was asked after the image backend refused gpt-image-2.6-sunburst: \
+             HTTP 400: Unknown model."
+        );
+        // A refusal with no words is its status.
+        let bare = ImagegenError::FellBack {
+            status: 404,
+            body: String::new(),
+            then: Box::new(ImagegenError::NoImage),
+        };
+        assert_eq!(
+            bare.text(0),
+            "image generation returned no image data\n\
+             gpt-image-2 was asked after the image backend refused gpt-image-2.6-sunburst: \
+             HTTP 404"
+        );
+        assert!(!bare.retryable(), "each model's request had its retries");
+    }
+
+    #[test]
+    fn a_refused_model_is_asked_again_over_the_wire_with_the_older_one() {
+        let refusal = r#"{"error": {"message": "The model gpt-image-2.6-sunburst does not exist.",
+                          "type": "invalid_request_error", "param": "model"}}"#;
+        let png = tiny_png();
+        let (base, server) = serve(vec![(400, refusal.to_string()), (200, image_answer(&png))]);
+        let dir = tempfile::tempdir().unwrap();
+        let cancel = CancelToken::new();
+        let (saved, made) =
+            with_model_fallback(&generation("paint a blue whale"), &cancel, |request| {
+                request_image(&target(&base), request, dir.path(), &cancel)
+            })
+            .unwrap();
+        assert_eq!(saved.path, dir.path().join("1.png"));
+        assert_eq!(made, Made { fell_back: true });
+        let bodies: Vec<Value> = server
+            .join()
+            .unwrap()
+            .iter()
+            .map(|received| serde_json::from_slice(&received.body).unwrap())
+            .collect();
+        let models: Vec<&Value> = bodies.iter().map(|body| &body["model"]).collect();
+        assert_eq!(models, [&json!(IMAGE_MODEL), &json!(FALLBACK_IMAGE_MODEL)]);
+        // The same request otherwise: the older model is asked for what the
+        // newest was.
+        assert_eq!(bodies[0]["prompt"], bodies[1]["prompt"]);
+    }
+
+    #[test]
+    fn the_model_is_told_which_model_made_its_image() {
+        let dir = Path::new("/g");
+        let fitted = || crate::images::FittedAttachment {
+            url: AttachmentUrl::from("data:image/png;base64,Zm9v".to_string()),
+            sent: None,
+        };
+        let note = |made: &Made| {
+            let outcome = finished(&saved(dir), dir, Attachment::Attached(fitted()), made);
+            // The cell says only what was made.
+            assert_eq!(
+                outcome.output,
+                "Generated image (PNG, 1024x1536, 1.4 MB) saved to /g/1.png"
+            );
+            outcome.context.unwrap()
+        };
+        let context = note(&Made::default());
+        assert!(!context.contains(FALLBACK_IMAGE_MODEL), "{context}");
+        let context = note(&Made { fell_back: true });
+        assert!(
+            context.ends_with(
+                "This image was made with gpt-image-2: the image backend did not take \
+                 gpt-image-2.6-sunburst."
+            ),
+            "{context}"
+        );
+    }
+
+    #[test]
+    fn the_cell_says_when_the_older_model_made_the_image() {
+        let dir = Path::new("/g");
+        let note = |made: &Made| {
+            finished(&saved(dir), dir, Attachment::Withheld, made)
+                .note
+                .clone()
+        };
+        assert_eq!(
+            note(&Made { fell_back: true }).as_deref(),
+            Some("Made with gpt-image-2 (Images 2.6 not available)")
+        );
+        // Made as asked: the cell has nothing to add.
+        assert_eq!(note(&Made::default()), None);
+    }
+
+    #[test]
     fn a_cancel_ends_the_retries() {
         let cancel = CancelToken::new();
         cancel.cancel();
@@ -1609,7 +2261,12 @@ mod tests {
             url: url.clone(),
             sent: None,
         };
-        let outcome = finished(&saved(dir), dir, Attachment::Attached(fitted));
+        let outcome = finished(
+            &saved(dir),
+            dir,
+            Attachment::Attached(fitted),
+            &Made::default(),
+        );
         assert!(outcome.ok);
         assert_eq!(
             outcome.output,
@@ -1624,7 +2281,7 @@ mod tests {
     #[test]
     fn a_model_that_cannot_see_gets_the_file_and_no_picture() {
         let dir = Path::new("/g");
-        let outcome = finished(&saved(dir), dir, Attachment::Withheld);
+        let outcome = finished(&saved(dir), dir, Attachment::Withheld, &Made::default());
         assert!(outcome.ok);
         assert_eq!(outcome.image, None);
         assert!(outcome.image_withheld, "the loop sends the replay's note");
@@ -1673,6 +2330,7 @@ mod tests {
             signin: ChatGptSignin::default(),
             dir: PathBuf::from("/nowhere"),
             skill: None,
+            model: IMAGE_MODEL.to_string(),
         }
     }
 
@@ -1682,6 +2340,7 @@ mod tests {
             r#"{"prompt": "x", "size": "4k"}"#,
             &setup(),
             None,
+            &ConversationImages::default(),
             &CancelToken::new(),
         );
         assert!(!outcome.ok);
@@ -1690,9 +2349,41 @@ mod tests {
 
     #[test]
     fn a_call_with_nobody_signed_in_says_how_to_sign_in() {
-        let outcome = run_imagegen(r#"{"prompt": "x"}"#, &setup(), None, &CancelToken::new());
+        let outcome = run_imagegen(
+            r#"{"prompt": "x"}"#,
+            &setup(),
+            None,
+            &ConversationImages::default(),
+            &CancelToken::new(),
+        );
         assert!(!outcome.ok);
         assert_eq!(outcome.output, crate::llm::auth::NOT_SIGNED_IN);
+    }
+
+    #[test]
+    fn a_count_past_the_conversations_images_is_refused_before_anything_runs() {
+        let images = ConversationImages::default();
+        let run = |images: &ConversationImages| {
+            run_imagegen(
+                r#"{"prompt": "x", "num_last_images_to_include": 2}"#,
+                &setup(),
+                None,
+                images,
+                &CancelToken::new(),
+            )
+        };
+        let outcome = run(&images);
+        assert!(!outcome.ok);
+        assert_eq!(outcome.output, too_few(2, 0));
+        // With the pictures there, the call goes on to the sign-in.
+        images.record(&[crate::llm::ChatMessage::with_parts(
+            "user",
+            vec![
+                crate::llm::ContentPart::image(picture("a")),
+                crate::llm::ContentPart::image(picture("b")),
+            ],
+        )]);
+        assert_eq!(run(&images).output, crate::llm::auth::NOT_SIGNED_IN);
     }
 
     #[test]
@@ -1714,6 +2405,9 @@ mod tests {
         );
         let text = failure_text(400, "plain text\nbody", 0);
         assert_eq!(text, "image generation failed: HTTP 400: plain text body");
+        // A bare `detail`, as the backend answers some refusals.
+        let text = failure_text(400, r#"{"detail":"Invalid size."}"#, 0);
+        assert_eq!(text, "image generation failed: HTTP 400: Invalid size.");
         let text = failure_text(502, "", 0);
         assert_eq!(text, "image generation failed: HTTP 502");
     }
