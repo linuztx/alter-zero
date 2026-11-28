@@ -2787,11 +2787,11 @@ data: [DONE]
 
     #[test]
     fn a_chat_request_to_xai_s_api_drops_the_schema_keywords_it_refuses() {
-        // xAI's grammar compiler answers `pattern`/`format` and a
-        // slash-bearing `enum` with a 400 before any token, and it sits
-        // behind Chat Completions as well as `/responses` — so a pasted-key
-        // block on this wire is stripped the same way (`docs/xai.md` *The
-        // wire*).
+        // `pattern` and `format` break the grammar xAI builds for a tool
+        // call's arguments on Chat Completions as on `/responses`, so a
+        // pasted-key block on this wire is stripped the same way — and an
+        // `enum`, slashes and all, is a constraint xAI honours, so it stays
+        // (`docs/xai.md` *The wire*).
         let tools = vec![json!({"type": "function", "function": {
             "name": "fetch",
             "description": "Fetch a page.",
@@ -2809,7 +2809,7 @@ data: [DONE]
             p["tools"][0]["function"]["parameters"],
             json!({"type": "object", "properties": {
                 "url": {"type": "string"},
-                "model": {"type": "string"},
+                "model": {"type": "string", "enum": ["meta-llama/Llama-3", "gpt2"]},
                 "pattern": {"type": "string"},
             }})
         );

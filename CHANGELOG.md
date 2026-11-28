@@ -97,9 +97,9 @@ release heading when a version is cut.
 ### Fixed
 
 - **A pasted-key xAI provider handles MCP tools that use `format` or
-  `pattern`.** xAI refuses a request whose tool schemas carry the `pattern`
-  or `format` keyword, or an `enum` with a `/` in a value, so one MCP server
-  with such a tool can make every request fail. Requests to xAI's API left
+  `pattern`.** A tool schema's `format` keyword can make xAI fail or hang a
+  request, and a `pattern` it can't compile is refused outright, so one MCP
+  server with such a tool can make every request fail. Requests to xAI's API left
   those keywords out only on the Responses API. They now do on Chat
   Completions too, which an `xai` block in your own `providers.toml` uses by
   default (`docs/xai.md`).

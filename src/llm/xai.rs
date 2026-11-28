@@ -464,8 +464,8 @@ pub struct TokenSet {
     pub refresh_token: Option<String>,
     /// The access token's life, in seconds.
     pub expires_in: Option<u64>,
-    /// The OpenID identity token, whose `email` — or, for an account that
-    /// shares none, `preferred_username` — claim names the account.
+    /// The OpenID identity token, whose `email` claim names the account. The
+    /// sign-in's answer carries one; a refresh's does not.
     pub id_token: Option<String>,
 }
 
@@ -528,36 +528,35 @@ pub fn cache_lifetime(expires_in: Option<u64>, jwt_exp: Option<u64>, now: u64) -
         .max(MIN_CACHE.min(life / 2))
 }
 
-/// Whose account the sign-in's tokens name, for the confirmation: an `email`
-/// claim — the `id_token`'s, else the access token's — else, for an account
-/// whose tokens name no email, its `preferred_username` handle, looked for
-/// the same way. Read and never verified: nothing here checks a JWT
-/// signature.
+/// Whose account the sign-in's tokens name, for the confirmation: the
+/// `id_token`'s `email` claim. Its access token names no account, and xAI's
+/// identity provider issues no `preferred_username` (`docs/xai.md`). Read and
+/// never verified: nothing here checks a JWT signature.
 #[must_use]
 pub fn account_name(tokens: &TokenSet) -> Option<String> {
-    let claims: Vec<Value> = [
-        tokens.id_token.as_deref(),
-        Some(tokens.access_token.as_str()),
-    ]
-    .into_iter()
-    .flatten()
-    .filter_map(jwt_claims)
-    .collect();
-    let named = |claim: &str| {
-        claims.iter().find_map(|claims| {
-            claims
-                .get(claim)?
-                .as_str()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-        })
-    };
-    named("email").or_else(|| named("preferred_username"))
+    jwt_claims(tokens.id_token.as_deref()?)?.email?.words()
+}
+
+/// The claims this module reads off a token: whose account it is, and when
+/// it dies.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Claims {
+    email: Option<Text>,
+    exp: Option<WholeSeconds>,
+}
+
+/// A whole, non-negative number of seconds, or anything else — which reads
+/// as absent.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum WholeSeconds {
+    Whole(u64),
+    Other(serde::de::IgnoredAny),
 }
 
 /// A JWT's claims, read without a signature check.
-fn jwt_claims(jwt: &str) -> Option<Value> {
+fn jwt_claims(jwt: &str) -> Option<Claims> {
     let payload = jwt.split('.').nth(1)?;
     let bytes = b64url_decode(payload)?;
     serde_json::from_slice(&bytes).ok()
@@ -565,7 +564,10 @@ fn jwt_claims(jwt: &str) -> Option<Value> {
 
 /// An access token's own `exp` claim.
 fn jwt_exp(jwt: &str) -> Option<u64> {
-    jwt_claims(jwt)?.get("exp")?.as_u64()
+    match jwt_claims(jwt)?.exp? {
+        WholeSeconds::Whole(secs) => Some(secs),
+        WholeSeconds::Other(_) => None,
+    }
 }
 
 /// Decode base64url (RFC 4648 §5), padded or not — `chatgpt`'s decoder,
@@ -623,12 +625,13 @@ pub fn serves(cfg: &ModelConfig) -> bool {
     cfg.auth == AuthScheme::XaiGrok || is_api_base(&cfg.api_base)
 }
 
-/// Drop what xAI refuses from a tool's parameter `schema`, in place: the
-/// `pattern` and `format` keywords, and an `enum` with a `/` in a value (which
-/// takes its `enum` away, never its `type`). Each answers with a 400 before
-/// any token (hermes #27197): it is xAI's grammar compiler that refuses them,
-/// and it sits behind Chat Completions as well as `/responses`, so both wires
-/// strip them. An MCP server's schemas often carry one.
+/// Drop what breaks xAI's tool-call grammar from a tool's parameter
+/// `schema`, in place: the `pattern` and `format` keywords. A pattern its
+/// compiler can't build is a 400 for the whole request, and some formats a
+/// 500, a hang or garbage arguments — measured on Chat Completions and
+/// `/responses` alike, so both wires strip them (`docs/xai.md` *The wire*).
+/// An MCP server's schemas often carry one. An `enum` stays, whatever its
+/// values: xAI honours it.
 ///
 /// It walks the schema by its **subschemas** — `properties`, `items`,
 /// `anyOf` and the rest — so a property *named* `pattern` or `format` is
@@ -640,17 +643,6 @@ pub fn sanitize_schema(schema: &mut Value) {
     };
     object.remove("pattern");
     object.remove("format");
-    let slashed = object
-        .get("enum")
-        .and_then(Value::as_array)
-        .is_some_and(|values| {
-            values
-                .iter()
-                .any(|v| v.as_str().is_some_and(|text| text.contains('/')))
-        });
-    if slashed {
-        object.remove("enum");
-    }
     // Maps from a name to a subschema: the names are data, the values schemas.
     for key in [
         "properties",
@@ -777,20 +769,19 @@ pub fn advise(status: u16, body: &str, stored: Option<&str>) -> Option<String> {
 /// else keeps the server's words.
 #[must_use]
 pub fn refresh_advice(status: u16, body: &str) -> String {
-    let code = serde_json::from_str::<Value>(body)
-        .ok()
-        .and_then(|value| value.get("error")?.as_str().map(str::to_ascii_lowercase))
-        .unwrap_or_default();
-    if matches!(
-        code.as_str(),
-        "invalid_grant" | "invalid_token" | "invalid_client" | "unauthorized_client"
-    ) {
+    let refusal = Refusal::parse(body);
+    if refusal.code().is_some_and(|code| {
+        matches!(
+            code.as_str(),
+            "invalid_grant" | "invalid_token" | "invalid_client" | "unauthorized_client"
+        )
+    }) {
         return SIGN_IN_AGAIN.to_string();
     }
     match status {
         403 => TIER_DENIED.to_string(),
         400 | 401 => SIGN_IN_AGAIN.to_string(),
-        _ => match envelope_message(body) {
+        _ => match refusal.sentence() {
             Some(words) => format!("xAI could not renew the sign-in: {words}"),
             None => "xAI could not renew the sign-in".to_string(),
         },
@@ -1080,8 +1071,8 @@ fn nap(total: Duration, cancel: &CancelToken) -> bool {
 pub struct SignedIn {
     /// The refresh token to store.
     pub refresh_token: String,
-    /// Whose account it is, for the confirmation — its email, else its
-    /// handle; `None` when the tokens name neither.
+    /// Whose account it is, for the confirmation — its email; `None` when
+    /// the identity token names none.
     pub account: Option<String>,
 }
 
@@ -1309,22 +1300,89 @@ fn persist_refresh_to(path: &std::path::Path, key: &str, rotated: &str, chain: &
 /// `error.message`, or a top-level `message` — `None` for a body that is
 /// none of them.
 fn envelope_message(body: &str) -> Option<String> {
-    let value: Value = serde_json::from_str(body.trim()).ok()?;
-    let text = |field: Option<&Value>| {
-        field
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-            .map(str::to_string)
-    };
-    // An OAuth error (RFC 6749 §5.2) puts a machine code in `error` and the
-    // sentence in `error_description`, so a description outranks it; xAI's
-    // API envelope has none, and its `error` is the sentence.
-    let error = value.get("error");
-    text(value.get("error_description"))
-        .or_else(|| text(error))
-        .or_else(|| text(error.and_then(|e| e.get("message"))))
-        .or_else(|| text(value.get("message")))
+    Refusal::parse(body).sentence()
+}
+
+/// The fields of a refusal the advice reads, each its own: one of an
+/// unexpected type is passed over, and everything else in the body is
+/// skipped rather than kept — Cline's `RawOAuthError` shape.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Refusal {
+    error: Option<ErrorField>,
+    error_description: Option<Text>,
+    message: Option<Text>,
+}
+
+/// A refusal's `error`: a string — an OAuth code, or the sentence in xAI's
+/// `{"code", "error"}` envelope — or an OpenAI-shaped object naming its
+/// `message`.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ErrorField {
+    Text(String),
+    Object {
+        #[serde(default)]
+        message: Option<Text>,
+    },
+    Other(serde::de::IgnoredAny),
+}
+
+/// A JSON string, or anything else — which reads as absent.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum Text {
+    Text(String),
+    Other(serde::de::IgnoredAny),
+}
+
+impl Text {
+    /// The string, trimmed, when it says anything.
+    fn words(self) -> Option<String> {
+        match self {
+            Self::Text(text) => words(&text),
+            Self::Other(_) => None,
+        }
+    }
+}
+
+/// `text` trimmed, when it says anything.
+fn words(text: &str) -> Option<String> {
+    Some(text.trim())
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+impl Refusal {
+    /// The fields read from `body`; a body that is no JSON object has none.
+    fn parse(body: &str) -> Self {
+        serde_json::from_str(body.trim()).unwrap_or_default()
+    }
+
+    /// `error` as a code, lowercased.
+    fn code(&self) -> Option<String> {
+        match &self.error {
+            Some(ErrorField::Text(code)) => Some(code.to_ascii_lowercase()),
+            _ => None,
+        }
+    }
+
+    /// The sentence. An OAuth error (RFC 6749 §5.2) puts a machine code in
+    /// `error` and the sentence in `error_description`, so a description
+    /// outranks it; xAI's API envelope has none, and its `error` is the
+    /// sentence.
+    fn sentence(self) -> Option<String> {
+        let (said, nested) = match self.error {
+            Some(ErrorField::Text(text)) => (words(&text), None),
+            Some(ErrorField::Object { message }) => (None, message),
+            Some(ErrorField::Other(_)) | None => (None, None),
+        };
+        self.error_description
+            .and_then(Text::words)
+            .or(said)
+            .or_else(|| nested.and_then(Text::words))
+            .or_else(|| self.message.and_then(Text::words))
+    }
 }
 
 #[cfg(test)]
@@ -1665,48 +1723,31 @@ mod tests {
     }
 
     #[test]
-    fn the_account_is_named_by_the_identity_token_then_the_access_token() {
-        let both = TokenSet {
-            access_token: jwt(&json!({"email": "access@example.com"})),
+    fn the_account_is_named_by_the_identity_token_s_email() {
+        let signed_in = TokenSet {
+            access_token: jwt(&json!({"sub": "u-1", "tier": "supergrok"})),
             id_token: Some(jwt(&json!({"email": "id@example.com", "sub": "u-1"}))),
             ..TokenSet::default()
         };
-        assert_eq!(account_name(&both).as_deref(), Some("id@example.com"));
-        let access_only = TokenSet {
-            id_token: Some("not-a-jwt".to_string()),
-            ..both.clone()
-        };
-        assert_eq!(
-            account_name(&access_only).as_deref(),
-            Some("access@example.com")
-        );
-        let neither = TokenSet {
-            access_token: "opaque".to_string(),
-            id_token: Some(jwt(&json!({"email": "  "}))),
-            ..TokenSet::default()
-        };
-        assert_eq!(account_name(&neither), None);
-    }
-
-    #[test]
-    fn an_account_with_no_email_is_named_by_its_handle() {
-        // Tokens that name no email still name a handle, which says whose
-        // account this is. An email in either token outranks a handle in
-        // either.
-        let handle_only = TokenSet {
-            access_token: "opaque".to_string(),
+        assert_eq!(account_name(&signed_in).as_deref(), Some("id@example.com"));
+        // xAI's access tokens name no account, and its identity provider
+        // issues no `preferred_username`: neither is read.
+        let elsewhere = TokenSet {
+            access_token: jwt(&json!({"email": "access@example.com"})),
             id_token: Some(jwt(&json!({"preferred_username": "grok_fan"}))),
             ..TokenSet::default()
         };
-        assert_eq!(account_name(&handle_only).as_deref(), Some("grok_fan"));
-        let email_in_access = TokenSet {
-            access_token: jwt(&json!({"email": "dev@example.com"})),
-            ..handle_only.clone()
+        assert_eq!(account_name(&elsewhere), None);
+        let blank = TokenSet {
+            id_token: Some(jwt(&json!({"email": "  "}))),
+            ..TokenSet::default()
         };
-        assert_eq!(
-            account_name(&email_in_access).as_deref(),
-            Some("dev@example.com")
-        );
+        assert_eq!(account_name(&blank), None);
+        let not_a_jwt = TokenSet {
+            id_token: Some("not-a-jwt".to_string()),
+            ..TokenSet::default()
+        };
+        assert_eq!(account_name(&not_a_jwt), None);
     }
 
     #[test]
@@ -1757,7 +1798,8 @@ mod tests {
         );
         assert_eq!(jwt_exp("not-a-jwt"), None);
         assert_eq!(jwt_exp("eyJ4.$$$.y"), None);
-        assert_eq!(jwt_claims(&jwt(&json!({"a": 1}))), Some(json!({"a": 1})));
+        assert!(jwt_claims(&jwt(&json!({"a": 1}))).is_some());
+        assert!(jwt_claims("not-a-jwt").is_none());
         assert_eq!(b64url_decode("aGk"), Some(b"hi".to_vec()));
         assert_eq!(b64url_decode("aGk="), Some(b"hi".to_vec()));
     }
@@ -1814,7 +1856,7 @@ mod tests {
                     "url": {"type": "string"},
                     "pattern": {"type": "string", "description": "a regex"},
                     "format": {"type": "string", "enum": ["json", "text"]},
-                    "mime": {"type": "string"},
+                    "mime": {"type": "string", "enum": ["text/plain", "image/png"]},
                     "tags": {"type": "array", "items": {"type": "string"}},
                     "either": {"anyOf": [{"type": "string"}, {"type": "null"}]},
                     "nested": {"type": "object", "properties": {"when": {"type": "string"}},
@@ -1932,6 +1974,86 @@ mod tests {
         // Nothing to lift: the refusal passes through as it came.
         assert_eq!(auth_advice(500, "upstream exploded"), None);
         assert_eq!(auth_advice(0, "the stream ended"), None);
+    }
+
+    #[test]
+    fn a_refusal_s_words_are_read_field_by_field() {
+        // Each field the advice reads costs only itself: one of an unexpected
+        // type is passed over, never the whole refusal with it.
+        for (body, words) in [
+            (
+                r#"{"error":"code","error_description":"the description"}"#,
+                Some("the description"),
+            ),
+            (
+                r#"{"code":"x","error":"the sentence"}"#,
+                Some("the sentence"),
+            ),
+            (
+                r#"{"error":{"message":"nested","type":"t"}}"#,
+                Some("nested"),
+            ),
+            (r#"{"message":"top level"}"#, Some("top level")),
+            (
+                r#"{"error_description":5,"error":"the sentence"}"#,
+                Some("the sentence"),
+            ),
+            (
+                r#"{"error_description":"  ","error":"the sentence"}"#,
+                Some("the sentence"),
+            ),
+            (
+                r#"{"error":{"message":7},"message":"top level"}"#,
+                Some("top level"),
+            ),
+            (r#"{"error":null,"message":"top level"}"#, Some("top level")),
+            (
+                r#"{"data":[{"deep":{"er":[1,2,3]}}],"error":"after data"}"#,
+                Some("after data"),
+            ),
+            (" {\"error\":\"padded\"}\n", Some("padded")),
+            (r#""a bare string""#, None),
+            ("[1,2]", None),
+            ("<html>503</html>", None),
+            ("", None),
+        ] {
+            assert_eq!(envelope_message(body).as_deref(), words, "{body}");
+        }
+        // The code a refused refresh is judged by is `error` as a string.
+        assert_eq!(
+            refresh_advice(500, r#"{"error":"INVALID_GRANT"}"#),
+            SIGN_IN_AGAIN
+        );
+        assert_eq!(
+            refresh_advice(500, r#"{"error":5,"error_description":"try later"}"#),
+            "xAI could not renew the sign-in: try later"
+        );
+        assert_eq!(
+            refresh_advice(500, r#"{"error":{"message":"invalid_grant"}}"#),
+            "xAI could not renew the sign-in: invalid_grant"
+        );
+    }
+
+    #[test]
+    fn a_token_s_claims_are_read_field_by_field() {
+        assert_eq!(
+            jwt_exp(&jwt(&json!({"exp": 1_893_456_000, "email": 5}))),
+            Some(1_893_456_000)
+        );
+        for exp in [json!(1.5e9), json!("1893456000"), json!(-1), json!(null)] {
+            assert_eq!(jwt_exp(&jwt(&json!({"exp": exp}))), None, "{exp}");
+        }
+        let id_token = jwt(&json!({"email": "dev@example.com", "exp": "soon"}));
+        let tokens = TokenSet {
+            id_token: Some(id_token),
+            ..TokenSet::default()
+        };
+        assert_eq!(account_name(&tokens).as_deref(), Some("dev@example.com"));
+        let tokens = TokenSet {
+            id_token: Some(jwt(&json!({"email": 5}))),
+            ..TokenSet::default()
+        };
+        assert_eq!(account_name(&tokens), None);
     }
 
     #[test]

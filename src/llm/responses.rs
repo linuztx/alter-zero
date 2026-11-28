@@ -824,8 +824,9 @@ mod tests {
 
     #[test]
     fn a_request_to_xai_s_api_drops_the_schema_keywords_it_refuses() {
-        // xAI's `/responses` answers `pattern`/`format` and a slash-bearing
-        // `enum` with a 400 — and an MCP server's schemas often carry them.
+        // `pattern` and `format` break the grammar xAI's `/responses` builds
+        // for a tool call's arguments — and an MCP server's schemas often
+        // carry them.
         let tools = vec![json!({"type": "function", "function": {
             "name": "fetch",
             "description": "Fetch a page.",

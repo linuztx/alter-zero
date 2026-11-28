@@ -1231,8 +1231,8 @@ carries the code (`ui::login_view`), the first poll one interval in,
 (`xai::slowed`, never faster, and every interval held under
 `xai::MAX_INTERVAL`, a minute), a 408/429/5xx naming no OAuth error polled
 again (`Poll::Retry` — the code is still good), and the confirmation naming
-the `id_token`'s email, else the access token's, else a
-`preferred_username` handle (`xai::account_name`). Refresh tokens are
+the `id_token`'s email alone (`xai::account_name` — the access token names
+no account and xAI's provider issues no `preferred_username`). Refresh tokens are
 **single-use** — every mint rotates the pair and revokes the token presented
 — so the gate, the write-back and the rotation map are load-bearing; the
 write-back goes under the provider's own variable (`ModelConfig::api_key_env`,
@@ -1252,11 +1252,13 @@ xAI answers one it can't validate with a **403** carrying
 `reject_access`) so the next request mints afresh. The API is the Responses
 wire on `api.x.ai/v1`, and `xai::serves` (the scheme, or any `x.ai` base)
 makes three differences in `responses.rs`: tool schemas lose the `pattern`/
-`format` keywords and slash-bearing `enum`s xAI 400s on
+`format` keywords that break xAI's argument grammar — measured live, a
+`\p{…}` pattern is a 400 and a `uri`/`email` format a 500, a hang or garbage
+arguments, on both wires — while an `enum` is kept whatever its values, every
+model choosing a listed `text/plain` or `/usr/bin`
 (`xai::sanitize_schema`, walking subschemas so a property *named* `pattern`
-stays — xAI's grammar compiler refuses them, and it sits behind Chat
-Completions too, so `openai.rs` strips the request's copy the same way for a
-pasted-key `xai` block on that wire), Off is `reasoning: {"effort": "none"}` (offered only where a
+stays; `openai.rs` strips the request's copy the same way for a
+pasted-key `xai` block on Chat Completions), Off is `reasoning: {"effort": "none"}` (offered only where a
 model's ladder lists `none`), and no `include` is asked for, reasoning
 being replayed on no provider; the catalog is `/v1/language-models` (the
 chat models, their `input_modalities` and `capabilities.reasoning_effort`
