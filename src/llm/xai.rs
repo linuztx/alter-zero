@@ -665,11 +665,12 @@ fn refresh_gate() -> &'static Mutex<()> {
     &GATE
 }
 
-/// The refresh tokens [`forget`] dropped since a refresh last settled. A
-/// refresh drains it under the cache lock before keeping what it minted, and
-/// a name from its own chain there means a sign-in replaced the credential
-/// while the request was out: the bearer is not cached, and the next request
-/// refreshes afresh. This is what lets `forget` skip the gate.
+/// The refresh tokens [`forget`] dropped while a refresh was out. A refresh
+/// clears it as it starts (anything there is older than it, and already
+/// honoured) and drains it under the cache lock before keeping what it
+/// minted: a name from its own chain there means a sign-in replaced the
+/// credential while the request was out, so the bearer is not cached and the
+/// next request refreshes afresh. This is what lets `forget` skip the gate.
 fn forgotten() -> &'static Mutex<Vec<String>> {
     static FORGOTTEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
     &FORGOTTEN
@@ -931,6 +932,14 @@ fn authorize_with(
     // we waited. Never present its now-retired refresh token a second time.
     if let Some(access) = cached_access(refresh_token) {
         return Ok(access);
+    }
+    // What earlier forgets left on record is already honoured — each cleared
+    // the cache itself — and none of them raced this refresh, which has not
+    // started. Kept, they would make the settle below throw away the bearer
+    // of the first refresh after every sign-in, which forgets the very token
+    // it stores; the next request would then refresh, and rotate, again.
+    if let Ok(mut list) = forgotten().lock() {
+        list.clear();
     }
     let presented = live_refresh_token(refresh_token);
     let refresh_started = Instant::now();
@@ -1476,6 +1485,25 @@ mod tests {
             1,
             "the forgotten account exchanges afresh"
         );
+        forget(key);
+    }
+
+    #[test]
+    fn auth_cache_regression_a_refresh_after_a_sign_ins_forget_is_cached() {
+        // A sign-in forgets the token it stores before anything has refreshed
+        // it. That forget is about bearers minted *before* it, which it has
+        // already dropped; the first refresh after it must keep what it
+        // mints, or the next request refreshes — and rotates — again
+        // (`smoke.sh` Phase 174 counted two refreshes where one does).
+        let key = "xai-forgotten-before";
+        forget(key);
+        let first =
+            authorize_with(key, |_| Ok(cache_test_tokens("xai-forgotten-before-r1"))).unwrap();
+        let hit = authorize_with(key, |_| {
+            panic!("the first refresh after a sign-in keeps its bearer")
+        })
+        .unwrap();
+        assert_eq!(hit.bearer, first.bearer);
         forget(key);
     }
 
