@@ -31,15 +31,15 @@
 #     `LMSTUDIO_HOST`); a bare host there is completed from the base.
 #   - `auth` (optional) is how the provider authenticates: a pasted key by
 #     default, a subscription sign-in (`github_copilot`, `chatgpt_codex`,
-#     `anthropic_console`, `cline_account`, `google_antigravity`), or
-#     `optional_key` for a server
+#     `anthropic_console`, `cline_account`, `google_antigravity`,
+#     `xai_grok`), or `optional_key` for a server
 #     that needs none. It also decides the `/login` list a provider is under:
 #     Sign in with an account, Sign in with an API key, or Sign in with a
 #     local model, whose page tests the server's address before saving it
 #     (docs/local-models.md).
 #   - `wire_api` (optional) is the request shape: chat completions by default,
 #     `responses`, `anthropic`, `ollama`, or `cloud_code` (docs/chatgpt.md,
-#     docs/claude.md, docs/ollama.md, docs/antigravity.md).
+#     docs/claude.md, docs/ollama.md, docs/antigravity.md, docs/xai.md).
 #   - `drop_params` (optional) lists top-level request fields the provider's
 #     server refuses (`prompt_cache_key`, `stream_options`, …), taken out of
 #     every request after everything else is set (docs/user-providers.md).
@@ -352,3 +352,21 @@ api_key_env = "ANTIGRAVITY_REFRESH_TOKEN"
 
 [providers.antigravity.kwargs]
 api_base = "https://daily-cloudcode-pa.googleapis.com"
+
+# xAI's Grok models on a Grok subscription (SuperGrok), reached with an **xAI
+# sign-in** (docs/xai.md). `/login` runs xAI's RFC 8628 device code — the
+# headless sign-in of xAI's own CLI, on its public client — and what
+# `api_key_env` stores is the long-lived **refresh** token; every request mints
+# a short-lived access token from it, which is the bearer itself, so nothing
+# here is sent verbatim. xAI's API speaks the **Responses** API, which it
+# recommends for its reasoning models — hence `wire_api` — and the listing's
+# effort levels are the Ctrl+T ladder.
+[providers.xai_grok]
+name = "xAI Grok"
+auth = "xai_grok"
+wire_api = "responses"
+description = "Sign in with your Grok subscription (SuperGrok), with a device code"
+api_key_env = "XAI_GROK_REFRESH_TOKEN"
+
+[providers.xai_grok.kwargs]
+api_base = "https://api.x.ai/v1"

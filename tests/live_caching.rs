@@ -25,6 +25,8 @@
 //!                              cargo test --test live_caching -- --ignored --nocapture live_anthropic_console
 //! CHATGPT_CODEX_REFRESH_TOKEN=rt.1.… ALTER_ZERO_LIVE_TOKEN_STORE=/tmp/live.env \
 //!                              cargo test --test live_caching -- --ignored --nocapture live_chatgpt
+//! XAI_GROK_REFRESH_TOKEN=… ALTER_ZERO_LIVE_TOKEN_STORE=/tmp/live.env \
+//!                              cargo test --test live_caching -- --ignored --nocapture live_xai
 //! ```
 //!
 //! The `live_*_growing_conversation_keeps_cache` tests send six growing
@@ -40,8 +42,9 @@
 //! rather than the body's `prompt_cache_key` (`docs/chatgpt.md`); it prints
 //! rather than asserts, so it stays useful when the backend drifts again.
 //!
-//! The two sign-ins whose refresh token **rotates** (Anthropic Console,
-//! ChatGPT — `docs/claude.md`, `docs/chatgpt.md`) refuse to run without
+//! The sign-ins whose refresh token **rotates** (Anthropic Console, ChatGPT,
+//! xAI Grok — `docs/claude.md`, `docs/chatgpt.md`, `docs/xai.md`) refuse to
+//! run without
 //! `ALTER_ZERO_LIVE_TOKEN_STORE`: the mint may retire the token it was given,
 //! and the rotated one is written back only to a store path, so a run without
 //! one would strand the caller with a token the provider no longer honours.
@@ -51,7 +54,8 @@
 //! `ALTER_ZERO_LIVE_VENICE_MODEL` (the proxy and the direct provider alike),
 //! `ALTER_ZERO_LIVE_VENICE_CLAUDE_MODEL`,
 //! `ALTER_ZERO_LIVE_OPENROUTER_MODEL`, `ALTER_ZERO_LIVE_ANTHROPIC_MODEL`,
-//! `ALTER_ZERO_LIVE_CHATGPT_MODEL`, `ALTER_ZERO_LIVE_OLLAMA_CLOUD_MODEL` and
+//! `ALTER_ZERO_LIVE_CHATGPT_MODEL`, `ALTER_ZERO_LIVE_OLLAMA_CLOUD_MODEL`,
+//! `ALTER_ZERO_LIVE_XAI_MODEL` and
 //! `ALTER_ZERO_LIVE_COPILOT_MODEL` override each provider's default model
 //! (their catalogs churn).
 
@@ -852,4 +856,49 @@ fn live_chatgpt_fast_mode_is_listed_and_a_priority_request_is_served() {
         );
         assert!(!text.trim().is_empty(), "{label}: an answer came back");
     }
+}
+
+// ---------------------------------------------------------------------------
+// xAI Grok (the Responses wire on api.x.ai; implicit caching)
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore = "hits the network; needs XAI_GROK_REFRESH_TOKEN + ALTER_ZERO_LIVE_TOKEN_STORE"]
+fn live_xai_lists_its_models_and_reads_the_prefix_from_cache() {
+    // The sign-in's whole path on the real API (`docs/xai.md`): the bearer
+    // minted from the stored refresh token (and the rotation written back),
+    // the catalog from `/language-models` with each window joined in from
+    // `/models` and each effort list read as the Ctrl+T ladder, then two
+    // turns over the Responses wire — xAI caches automatically and routes a
+    // conversation by its `prompt_cache_key`.
+    alter_zero::llm::xai::set_store_path(token_store());
+    let salt = salt();
+    let refresh = credential("XAI_GROK_REFRESH_TOKEN");
+    let probe = config("xai_grok", "probe", Some(refresh.clone()), salt);
+    let listed = fetch_models(&probe, &CancelToken::new()).expect("the xAI model listing");
+    for model in &listed {
+        println!(
+            "{}: window {:?}, vision {:?}, ladder {:?}",
+            model.id, model.context, model.vision, model.reasoning
+        );
+    }
+    assert!(
+        listed.iter().any(|m| m.context.is_some()),
+        "the windows joined in from /models"
+    );
+    let model = std::env::var("ALTER_ZERO_LIVE_XAI_MODEL").unwrap_or_else(|_| {
+        listed
+            .first()
+            .map(|m| m.id.clone())
+            .expect("the listing names a model")
+    });
+    println!("model under test: {model}");
+    let cfg = config("xai_grok", &model, Some(refresh), salt);
+    let backend = LlmBackend::configure(cfg, Some(big_system_prompt(salt)), false);
+    let (first, second) = two_turns(&backend);
+    assert!(first.total() > 1_000, "the whole prefix billed: {first:?}");
+    assert!(
+        second.cached > 1_000,
+        "turn 2 read the prefix from xAI's cache: {second:?}"
+    );
 }

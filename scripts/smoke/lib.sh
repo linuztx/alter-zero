@@ -113,6 +113,10 @@ smoke_sanitize_env() {
 	# refresh token turns on the `imagegen` tool and its built-in skill for
 	# every phase (docs/imagegen.md); Phase 168 signs in against its own stub.
 	unset CHATGPT_CODEX_REFRESH_TOKEN OPENAI_CHATGPT_REFRESH_TOKEN
+	# …and a developer's xAI Grok sign-in (docs/xai.md), whose refresh
+	# token would mark that subscription configured and send /model to
+	# api.x.ai; Phase 174 signs in against its own stub.
+	unset XAI_GROK_REFRESH_TOKEN
 	# Run from inside a herdr pane (docs/herdr.md), every phase's app would
 	# report its turns to the developer's real herdr — the pane the suite was
 	# started from flickering through a hundred agents' states. The herdr

@@ -16,7 +16,8 @@
 //!   `docs/model-cache.md`); [`spawn_probe_fetch`] — the active provider's,
 //!   for the startup capability probe.
 //! - [`spawn_signin`] — the `/login` subscription sign-in (`docs/copilot.md`,
-//!   `docs/chatgpt.md`, `docs/claude.md`, `docs/cline.md`), chosen by the
+//!   `docs/chatgpt.md`, `docs/claude.md`, `docs/cline.md`,
+//!   `docs/antigravity.md`, `docs/xai.md`), chosen by the
 //!   row's auth scheme — the one worker that runs for **minutes** rather than
 //!   milliseconds: it waits on the provider until the user approves, or
 //!   `cancel` trips.
@@ -169,9 +170,10 @@ pub(crate) fn spawn_server_test(
 /// GitHub's device code (`docs/copilot.md`), OpenAI's browser PKCE or its
 /// device code (`docs/chatgpt.md` — the one scheme offering two, so its
 /// `kind` is what the user picked on the method choice), Anthropic's browser
-/// PKCE (`docs/claude.md`), Cline's WorkOS device code (`docs/cline.md`), or
+/// PKCE (`docs/claude.md`), Cline's WorkOS device code (`docs/cline.md`),
 /// Google's browser PKCE for Antigravity (`docs/antigravity.md`) — the one
-/// sign-in that also sets the account up, on `base`, the provider's own host.
+/// sign-in that also sets the account up, on `base`, the provider's own host
+/// — or xAI's device code (`docs/xai.md`).
 /// All report on the same two messages, because every page is the same page
 /// — something to show, then a wait.
 ///
@@ -196,6 +198,7 @@ pub(crate) fn spawn_signin(
         (AuthScheme::ClineAccount, _) => spawn_cline_login(cancel, tx),
         (AuthScheme::GoogleAntigravity, _) => spawn_antigravity_login(base, cancel, tx),
         (AuthScheme::GithubCopilot, _) => spawn_copilot_login(cancel, tx),
+        (AuthScheme::XaiGrok, _) => spawn_xai_login(cancel, tx),
         // A pasted key has nothing to sign in to. `start_device_login`
         // refuses such a row before it gets here; this arm only keeps the
         // match honest.
@@ -406,6 +409,38 @@ fn spawn_chatgpt_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSend
                 )
             })
             .map_err(|e| e.to_string());
+        if !cancel.is_cancelled() {
+            let _ = tx.send(DeviceEvent::Done(result));
+        }
+    });
+}
+
+/// Run xAI's device-code sign-in: ask `auth.x.ai` for a code, publish it
+/// with the page to enter it at, then poll until the user approves it there.
+/// The account the token belongs to rides back with it, for the
+/// confirmation. See `docs/xai.md`.
+fn spawn_xai_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>) {
+    std::thread::spawn(move || {
+        let device = match llm::xai::request_device_code() {
+            Ok(device) => device,
+            Err(e) => {
+                let _ = tx.send(DeviceEvent::Done(Err(e.to_string())));
+                return;
+            }
+        };
+        if tx
+            .send(DeviceEvent::Code {
+                verification_uri: device.verification_uri().to_string(),
+                user_code: device.user_code().to_string(),
+                expires_at: std::time::Instant::now() + device.lifetime(),
+            })
+            .is_err()
+        {
+            return;
+        }
+        let result = llm::xai::await_approval(&device, &cancel)
+            .map(|signed_in| (signed_in.refresh_token, signed_in.account));
+        // A cancelled flow has no page left to report to.
         if !cancel.is_cancelled() {
             let _ = tx.send(DeviceEvent::Done(result));
         }

@@ -1,11 +1,12 @@
 //! The inline `/login` onboarding: pick how you sign in — a **subscription**
 //! (GitHub Copilot's device flow, ChatGPT Codex's browser or device code,
-//! Anthropic's Console browser sign-in, Cline's device code), an **API key**
+//! Anthropic's Console browser sign-in, Cline's device code, Google
+//! Antigravity's browser sign-in, xAI Grok's device code), an **API key**
 //! (pick a provider, paste its key), or a **local model** (pick a server —
 //! Ollama, LM Studio — enter its address, and the connection is tested before
 //! anything is saved). See `docs/llm.md`, `docs/copilot.md`,
-//! `docs/chatgpt.md`, `docs/claude.md`, `docs/cline.md` and
-//! `docs/local-models.md`.
+//! `docs/chatgpt.md`, `docs/claude.md`, `docs/cline.md`,
+//! `docs/antigravity.md`, `docs/xai.md` and `docs/local-models.md`.
 
 use std::time::Duration;
 

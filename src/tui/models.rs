@@ -333,6 +333,13 @@ impl ModelSession {
         if let Some(project) = config::antigravity_project() {
             llm::antigravity::set_project(project);
         }
+        // xAI's refresh token rotates on every use, and the write-back runs
+        // as deep on a backend thread as the others; its issuer is
+        // overridable for the smoke suite's local stand-in (`docs/xai.md`).
+        llm::xai::set_store_path(env_file_path.clone());
+        if let Some(issuer) = config::xai_issuer() {
+            llm::xai::set_issuer(issuer);
+        }
         // GitHub's REST API — Copilot's token exchange and the `/usage`
         // quota read — overridable the same way (docs/usage.md).
         if let Some(base) = config::github_api_base() {

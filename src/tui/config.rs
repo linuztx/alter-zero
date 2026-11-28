@@ -412,10 +412,13 @@ fn signin_kinds(auth: AuthScheme) -> Vec<SigninKind> {
         AuthScheme::AnthropicConsole | AuthScheme::GoogleAntigravity => {
             vec![SigninKind::BrowserLink]
         }
-        // One flow each, a device code: GitHub's own for Copilot, and Cline's
+        // One flow each, a device code: GitHub's own for Copilot, Cline's
         // WorkOS one, which is also the way its extension and CLI sign in
-        // (`docs/cline.md`).
-        AuthScheme::GithubCopilot | AuthScheme::ClineAccount => vec![SigninKind::DeviceCode],
+        // (`docs/cline.md`), and xAI's, the headless sign-in of its own CLI
+        // and the only one its other clients run (`docs/xai.md`).
+        AuthScheme::GithubCopilot | AuthScheme::ClineAccount | AuthScheme::XaiGrok => {
+            vec![SigninKind::DeviceCode]
+        }
         AuthScheme::ApiKey | AuthScheme::OptionalKey => vec![SigninKind::DeviceCode],
     }
 }
@@ -1159,6 +1162,16 @@ pub(crate) fn update_telemetry_file(
 /// (`docs/chatgpt.md`).
 pub(crate) fn openai_issuer() -> Option<String> {
     std::env::var(alter_zero::llm::chatgpt::ISSUER_ENV)
+        .ok()
+        .map(|url| url.trim().to_string())
+        .filter(|url| !url.is_empty())
+}
+
+/// Where xAI's sign-in and refresh go: `ALTER_ZERO_XAI_ISSUER` when set and
+/// non-empty (the smoke suite's local stand-in for `auth.x.ai`, or a fork's
+/// own), else `None` — the module's built-in issuer stands (`docs/xai.md`).
+pub(crate) fn xai_issuer() -> Option<String> {
+    std::env::var(alter_zero::llm::xai::ISSUER_ENV)
         .ok()
         .map(|url| url.trim().to_string())
         .filter(|url| !url.is_empty())

@@ -1121,6 +1121,30 @@ pub fn console_report() -> UsageReport {
 }
 
 // ---------------------------------------------------------------------------
+// xAI Grok (pure)
+// ---------------------------------------------------------------------------
+
+/// Where xAI documents a Grok subscription's usage: **Usage** on the Grok
+/// dashboard, which shows the weekly pool the subscription draws from.
+pub const XAI_DASHBOARD: &str = "https://grok.com/dashboard";
+
+/// What the page says for an xAI sign-in — asked of nobody. xAI's API has
+/// usage reads only for API teams on a management key; a subscription's
+/// weekly pool is shown on the dashboard alone, so the page points there
+/// rather than minting a bearer (and rotating the sign-in) to say nothing.
+#[must_use]
+pub fn xai_report() -> UsageReport {
+    UsageReport {
+        notes: vec![UsageNote::new(
+            NoteTone::Info,
+            "xAI shares no usage figures with API clients — the subscription's weekly limit is \
+             on the Grok dashboard.",
+        )],
+        ..UsageReport::default()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Google Antigravity (pure)
 // ---------------------------------------------------------------------------
 
@@ -1198,6 +1222,7 @@ pub fn dashboard_url(auth: AuthScheme) -> Option<&'static str> {
         AuthScheme::GithubCopilot => Some(COPILOT_DASHBOARD),
         AuthScheme::ClineAccount => Some(CLINEPASS_DASHBOARD),
         AuthScheme::AnthropicConsole => Some(CONSOLE_DASHBOARD),
+        AuthScheme::XaiGrok => Some(XAI_DASHBOARD),
         // Google publishes no page of Antigravity quotas; the app shows them
         // in its own settings, which no link can open.
         AuthScheme::GoogleAntigravity | AuthScheme::ApiKey | AuthScheme::OptionalKey => None,
@@ -1429,6 +1454,9 @@ pub fn fetch_usage(cfg: &ModelConfig, cancel: &CancelToken) -> Result<UsageRepor
         }
         // Nothing to read: a Console sign-in has no plan (`console_report`).
         AuthScheme::AnthropicConsole => console_report(),
+        // Nothing to read either: xAI shows a subscription's usage on its
+        // dashboard alone (`xai_report`).
+        AuthScheme::XaiGrok => xai_report(),
         // The catalog carries each model's quota: the same seam as the chat
         // request mints the bearer and finds the project, then one
         // `fetchAvailableModels` (`docs/antigravity.md` */usage*).
@@ -1687,6 +1715,37 @@ mod tests {
         assert_eq!(
             fetch_usage(&cfg, &CancelToken::new()).unwrap(),
             console_report()
+        );
+    }
+
+    #[test]
+    fn an_xai_sign_in_answers_without_its_credential_or_the_network() {
+        // xAI's API has no usage read for a subscription, so the answer
+        // needs no credential and no host to reach — and minting a bearer
+        // only to say so would rotate the sign-in for nothing.
+        let cfg = super::super::ModelConfig {
+            auth: AuthScheme::XaiGrok,
+            api_key: None,
+            api_base: "http://127.0.0.1:9".to_string(),
+            ..super::super::ModelConfig::fallback()
+        };
+        assert_eq!(
+            fetch_usage(&cfg, &CancelToken::new()).unwrap(),
+            xai_report()
+        );
+    }
+
+    #[test]
+    fn an_xai_report_points_at_the_dashboard_rather_than_guessing_a_limit() {
+        let report = xai_report();
+        assert_eq!(report.plan, None, "nothing names the tier");
+        assert!(report.meters.is_empty(), "nothing to fill a bar with");
+        assert_eq!(report.notes.len(), 1);
+        assert_eq!(report.notes[0].tone, NoteTone::Info);
+        assert!(
+            report.notes[0].text.contains("dashboard"),
+            "{:?}",
+            report.notes[0]
         );
     }
 
@@ -2443,6 +2502,9 @@ mod tests {
             dashboard_url(AuthScheme::AnthropicConsole),
             Some(CONSOLE_DASHBOARD)
         );
+        // xAI documents a subscription's weekly usage under Usage on the
+        // Grok dashboard (`docs/xai.md`).
+        assert_eq!(dashboard_url(AuthScheme::XaiGrok), Some(XAI_DASHBOARD));
         assert_eq!(dashboard_url(AuthScheme::ApiKey), None);
         assert_eq!(dashboard_url(AuthScheme::OptionalKey), None);
     }

@@ -79,6 +79,16 @@ pub enum AuthScheme {
     /// the value the provider file uses. A test pins it for the same silent
     /// degradation reason [`Self::AnthropicConsole`]'s does.
     GoogleAntigravity,
+    /// An **xAI account** with a Grok subscription: `/login` runs xAI's
+    /// device-code sign-in (the headless flow of xAI's own CLI) and stores
+    /// the resulting **refresh** token, which each request mints a
+    /// short-lived access token from — the bearer itself, on xAI's own API.
+    /// See `docs/xai.md`.
+    ///
+    /// `rename_all = "snake_case"` spells this `xai_grok`, which is the value
+    /// the provider file uses. A test pins it for the same silent degradation
+    /// reason [`Self::AnthropicConsole`]'s does.
+    XaiGrok,
     /// A key that is **accepted but not required** — a model server the user
     /// runs. Ollama's or LM Studio's local server takes no credential unless
     /// it was set to, while a hosted one (or a proxy in front of one) takes
@@ -1390,6 +1400,28 @@ api_base = "https://cloudcode-pa.googleapis.com"
     }
 
     #[test]
+    fn a_provider_can_declare_the_xai_grok_sign_in() {
+        // The sixth sign-in: the stored secret is an xAI refresh token, and
+        // every request mints a short-lived access token from it
+        // (`docs/xai.md`). The spelling is pinned because a mismatch
+        // degrades *silently* into a pasted-key row.
+        let text = r#"
+[providers.xai_grok]
+name = "xAI Grok"
+auth = "xai_grok"
+wire_api = "responses"
+[providers.xai_grok.kwargs]
+api_base = "https://api.x.ai/v1"
+"#;
+        let file = ProvidersFile::parse(text).unwrap();
+        let grok = file.get("xai_grok").unwrap();
+        assert_eq!(grok.auth, AuthScheme::XaiGrok);
+        assert!(grok.auth.is_subscription());
+        assert!(!grok.auth.key_optional());
+        assert_eq!(grok.wire_api, WireApi::Responses);
+    }
+
+    #[test]
     fn every_key_the_shipped_file_sets_is_one_the_parse_reads() {
         // Unknown keys are ignored, so a file written for a newer build still
         // parses — which also means a key the shipped file sets and nothing
@@ -1586,6 +1618,28 @@ api_base = "https://x/v1"
         assert!(
             antigravity.extra_headers.is_empty(),
             "the User-Agent is built per machine"
+        );
+    }
+
+    #[test]
+    fn the_builtin_file_ships_xai_grok_as_a_responses_sign_in() {
+        let file = ProvidersFile::builtin();
+        let grok = file.get("xai_grok").expect("shipped");
+        assert_eq!(grok.auth, AuthScheme::XaiGrok);
+        // xAI's own API, on the Responses wire it recommends for its
+        // reasoning models (`docs/xai.md`).
+        assert_eq!(grok.wire_api, WireApi::Responses);
+        assert_eq!(grok.name, "xAI Grok");
+        assert_eq!(grok.kwargs.api_base, "https://api.x.ai/v1");
+        // The rotation write-back cannot ask the provider file, so the
+        // module pins the same name.
+        assert_eq!(grok.key_env("xai_grok"), super::super::xai::REFRESH_ENV_VAR);
+        // The access token is the whole credential: no header rides beside it.
+        assert!(grok.extra_headers.is_empty());
+        let description = grok.description.as_deref().unwrap_or_default();
+        assert!(
+            description.contains("device code"),
+            "the row says how it signs in: {description}"
         );
     }
 

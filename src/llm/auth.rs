@@ -1,7 +1,7 @@
 //! What a request authenticates with, and where it goes — the one seam every
 //! outbound call resolves through, whatever the provider's [`AuthScheme`].
 //!
-//! Four providers here are *sign-ins* rather than pasted keys, and all four
+//! Six providers here are *sign-ins* rather than pasted keys, and all six
 //! keep the same two-layer split: a long-lived token in the `.env` key store,
 //! exchanged (and cached in memory) for the short-lived credential the API
 //! actually takes. GitHub Copilot's exchange additionally names the account's
@@ -21,10 +21,10 @@
 //! request body rather than in a header (`docs/antigravity.md`).
 //!
 //! See `docs/copilot.md`, `docs/chatgpt.md`, `docs/claude.md`,
-//! `docs/cline.md` and `docs/antigravity.md`.
+//! `docs/cline.md`, `docs/antigravity.md` and `docs/xai.md`.
 
 use super::config::{AuthScheme, ModelConfig, WireApi};
-use super::{Result, antigravity, chatgpt, claude, cline, copilot};
+use super::{Result, antigravity, chatgpt, claude, cline, copilot, xai};
 
 /// How one request authenticates itself.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -102,6 +102,8 @@ pub(crate) const NOT_SIGNED_IN: &str =
 /// - **[`AuthScheme::GoogleAntigravity`]** → an access token minted from the
 ///   stored refresh token, the agy CLI `User-Agent` the backend gates its
 ///   catalog on, and the account's Cloud Code project (`docs/antigravity.md`).
+/// - **[`AuthScheme::XaiGrok`]** → an access token minted from the stored
+///   refresh token, which is the bearer and nothing more (`docs/xai.md`).
 ///
 /// A subscription config with no stored token resolves to an empty
 /// [`RequestAuth`] rather than calling out: the `/model` picker builds configs
@@ -171,6 +173,21 @@ pub(crate) fn request_auth(cfg: &ModelConfig) -> Result<RequestAuth> {
                 // answers a model it hides with 404.
                 headers: vec![("user-agent".to_string(), antigravity::user_agent())],
                 project: Some(access.project),
+            })
+        }
+        AuthScheme::XaiGrok => {
+            let Some(refresh) = stored else {
+                return Ok(RequestAuth::default());
+            };
+            // The access token is the whole credential: no exchange beyond
+            // the refresh, no account header, the configured base
+            // (`docs/xai.md`).
+            let access = xai::authorize(refresh)?;
+            Ok(RequestAuth {
+                bearer: Some(access.bearer),
+                base: None,
+                headers: Vec::new(),
+                project: None,
             })
         }
         AuthScheme::GithubCopilot => {
@@ -283,6 +300,7 @@ mod tests {
             AuthScheme::AnthropicConsole,
             AuthScheme::ClineAccount,
             AuthScheme::GoogleAntigravity,
+            AuthScheme::XaiGrok,
         ] {
             let mut cfg = ModelConfig::fallback();
             cfg.auth = scheme;

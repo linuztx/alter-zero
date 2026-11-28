@@ -642,6 +642,10 @@ impl OpenAiClient {
             // a spent quota, an account to verify, a model this account
             // cannot reach (`docs/antigravity.md`).
             super::AuthScheme::GoogleAntigravity => super::antigravity::auth_advice(*status, body),
+            // xAI answers a bearer it no longer honours and an account with no
+            // API access with 403s whose `code` reads the same, and they need
+            // opposite advice (`docs/xai.md`).
+            super::AuthScheme::XaiGrok => super::xai::auth_advice(*status, body),
             // A pasted Anthropic key meets the same refusals, minus the ones
             // about a sign-in: the advice module tells them apart by status
             // and code, so it serves both.
@@ -2394,6 +2398,27 @@ mod tests {
         let explained = OpenAiClient::new(copilot).explain(failure()).to_string();
         assert!(explained.contains("claude-sonnet-4.6"), "{explained}");
         assert!(explained.contains("/model"), "{explained}");
+    }
+
+    #[test]
+    fn an_xai_refusal_names_the_account_not_the_request() {
+        // xAI answers a missing subscription with a 403 whose `code` is the
+        // generic permission sentence — the advice says what the account
+        // needs instead (`docs/xai.md`).
+        let body = r#"{"code":"The caller does not have permission to execute the specified operation","error":"You have either run out of available resources or do not have an active Grok subscription. Manage subscriptions at https://grok.com"}"#;
+        let failure = || LlmError::Api {
+            status: 403,
+            body: body.to_string(),
+        };
+        let mut grok = ModelConfig::fallback();
+        grok.auth = crate::llm::AuthScheme::XaiGrok;
+        grok.wire_api = crate::llm::WireApi::Responses;
+        let explained = OpenAiClient::new(grok).explain(failure()).to_string();
+        assert!(explained.contains("subscription"), "{explained}");
+        assert!(explained.contains("/model"), "{explained}");
+        // The same body from another provider keeps its own words.
+        let plain = OpenAiClient::new(ModelConfig::fallback()).explain(failure());
+        assert_eq!(plain.to_string(), failure().to_string());
     }
 
     #[test]

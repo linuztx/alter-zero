@@ -848,7 +848,34 @@ fn catalog_or_error(models: Vec<ModelEntry>, auth: super::AuthScheme) -> Result<
                 .to_string(),
         });
     }
+    // The same silence on an xAI sign-in: the listing authenticated, so an
+    // empty one is the account (`docs/xai.md`).
+    if models.is_empty() && auth == super::AuthScheme::XaiGrok {
+        return Err(LlmError::Api {
+            status: 200,
+            body: "the account listed no models — its Grok subscription may not include API \
+                   access (SuperGrok)"
+                .to_string(),
+        });
+    }
     Ok(models)
+}
+
+/// An xAI catalog with each model's window joined in from `/models`, which
+/// carries the `context_length` that `/language-models` leaves out. Joined by
+/// id and nothing more: a model the full listing doesn't name keeps no
+/// window rather than borrowing one, and a model only the full listing names
+/// — an image or video generator — is not added (`docs/xai.md`).
+fn with_windows(mut catalog: Vec<ModelEntry>, windows: &[ModelEntry]) -> Vec<ModelEntry> {
+    for entry in &mut catalog {
+        if entry.context.is_none() {
+            entry.context = windows
+                .iter()
+                .find(|w| w.id == entry.id)
+                .and_then(|w| w.context);
+        }
+    }
+    catalog
 }
 
 /// The `/models` endpoint for a config: `{api_model_base}/models`.
@@ -891,6 +918,11 @@ fn models_url(base: &str, auth: super::AuthScheme, wire: super::WireApi) -> Stri
                 super::chatgpt::CLIENT_VERSION
             )
         }
+        // xAI's catalog of the models that chat: `/models` lists its image
+        // and video generators beside them (`docs/xai.md`). The windows
+        // `/language-models` leaves out are joined from `/models` by
+        // `fetch_models`.
+        super::AuthScheme::XaiGrok => format!("{base}/language-models"),
         _ => format!("{base}/models"),
     }
 }
@@ -997,7 +1029,19 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
             .unwrap_or_else(|| cfg.api_model_base.clone());
         return ollama_catalog(&client, cfg, &auth, &base, &body, cancel);
     }
-    catalog_or_error(parse_models(&body, &cfg.provider_id)?, cfg.auth)
+    let catalog = catalog_or_error(parse_models(&body, &cfg.provider_id)?, cfg.auth)?;
+    // xAI's windows live on its other listing. Not having them costs only
+    // the gauge — the footer shows no share and auto-compaction waits on a
+    // window — never a row, so a failure here keeps the catalog.
+    if cfg.auth == super::AuthScheme::XaiGrok {
+        let base = auth.base.as_deref().unwrap_or(&cfg.api_model_base);
+        let windows = get(&format!("{}/models", base.trim_end_matches('/')))
+            .ok()
+            .and_then(|body| parse_models(&body, &cfg.provider_id).ok())
+            .unwrap_or_default();
+        return Ok(with_windows(catalog, &windows));
+    }
+    Ok(catalog)
 }
 
 /// The Cloud Code catalog for `cfg`'s account (boundary — real HTTP): the
@@ -2043,6 +2087,63 @@ mod tests {
             let models = xai_language_models(record);
             assert_eq!(models[0].reasoning, None, "{record}");
         }
+    }
+
+    #[test]
+    fn the_xai_catalog_is_its_language_model_listing() {
+        // `/language-models` lists the models that chat (and see), never
+        // the image and video generators `/models` lists beside them.
+        let mut cfg = ModelConfig::fallback();
+        cfg.api_model_base = "https://api.x.ai/v1/".to_string();
+        cfg.auth = super::super::AuthScheme::XaiGrok;
+        assert_eq!(models_endpoint(&cfg), "https://api.x.ai/v1/language-models");
+    }
+
+    #[test]
+    fn an_xai_catalog_takes_its_windows_from_the_full_listing() {
+        // `/language-models` names no window; `/models` does, by id.
+        let catalog = xai_language_models(
+            r#"{"id":"grok-4.7","input_modalities":["text","image"]},
+               {"id":"grok-4.3","input_modalities":["text","image"]},
+               {"id":"grok-new","input_modalities":["text"]}"#,
+        );
+        let windows = parse_models(
+            r#"{"data":[{"id":"grok-4.7","context_length":500000},
+                        {"id":"grok-4.3","context_length":1000000},
+                        {"id":"grok-imagine-image","context_length":1024}]}"#,
+            "xai_grok",
+        )
+        .unwrap();
+        let merged = with_windows(catalog, &windows);
+        let window = |id: &str| merged.iter().find(|m| m.id == id).unwrap().context;
+        assert_eq!(window("grok-4.7"), Some(500_000));
+        assert_eq!(window("grok-4.3"), Some(1_000_000));
+        // A model the full listing doesn't name keeps no window rather than
+        // borrowing one, and nothing the catalog didn't list is added.
+        assert_eq!(window("grok-new"), None);
+        assert_eq!(merged.len(), 3);
+        assert!(merged.iter().all(|m| m.id != "grok-imagine-image"));
+        // What the catalog already knew is kept.
+        let seen = |id: &str| merged.iter().find(|m| m.id == id).unwrap().vision;
+        assert_eq!(seen("grok-new"), Some(false));
+        assert_eq!(seen("grok-4.7"), Some(true));
+    }
+
+    #[test]
+    fn an_empty_xai_catalog_says_what_the_account_lacks() {
+        // The request authenticated, so listing nothing is the account — not
+        // an empty server — and the picker must say so rather than show a
+        // provider with no rows.
+        let error = catalog_or_error(Vec::new(), super::super::AuthScheme::XaiGrok)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("subscription"), "{error}");
+        // Every other provider's empty list stays an empty list.
+        assert!(
+            catalog_or_error(Vec::new(), super::super::AuthScheme::ApiKey)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
