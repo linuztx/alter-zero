@@ -58,8 +58,10 @@ them works unconfigured:
   offers nothing there — not even `Off`, which the gateway would pass
   upstream unchecked as the effort `none` (`docs/user-providers.md`).
 
-Copilot, the ChatGPT backend and Anthropic publish their own ladders, read as
-their pages describe (`docs/copilot.md`, `docs/chatgpt.md`, `docs/claude.md`).
+Copilot, the ChatGPT backend, Anthropic and xAI publish their own ladders,
+read as their pages describe (`docs/copilot.md`, `docs/chatgpt.md`,
+`docs/claude.md`, `docs/xai.md` — xAI's `capabilities.reasoning_effort`,
+whose listed `"none"` is the one way its `Off` is offered).
 A model advertising none of these shapes has no thinking: no footer mode, and
 Ctrl+T explains.
 

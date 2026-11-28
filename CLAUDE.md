@@ -1216,7 +1216,44 @@ its family, the plan off `paidTier` since `currentTier` reads free on a paid
 seat); `antigravity::auth_advice` words the verification link (Google's own
 host only), a spent quota and when it resets, a rate limit, no capacity and a
 model gone; `smoke.sh` Phase 148 plays the browser against a stub for the
-whole sign-in → onboarding → `/model` → turn → `/usage` path; the **user's own providers**
+whole sign-in → onboarding → `/model` → turn → `/usage` path; the **xAI Grok
+provider** — Grok on an xAI account's SuperGrok subscription, a **device-code
+sign-in** (`auth = "xai_grok"`, `src/llm/xai.rs`, `docs/xai.md`): the RFC
+8628 flow Grok's own CLI runs, on its public client id and the scopes the two
+reference clients (pi, hermes-agent) send — `{issuer}/oauth2/device/code`,
+then `{issuer}/oauth2/token` for the poll and the refresh, `auth.x.ai` unless
+`ALTER_ZERO_XAI_ISSUER` points elsewhere (Phase 174's stub), no OIDC
+discovery — whose answer's **prefilled** `verification_uri_complete` is the
+link the device page shows (`https`, or loopback `http`, else refused), the
+row under it saying *and confirm this one-time code* where a link already
+carries the code (`ui::login_view`), the first poll one interval in,
+`slow_down` taking the interval it names else RFC 8628's five seconds, and
+the confirmation naming the `id_token`'s email. Refresh tokens are
+**single-use** — every mint rotates the pair and revokes the token presented
+— so the gate, the write-back and the rotation map are load-bearing, and a
+refresh **clears** `forgotten` as it starts, so a sign-in's own `forget` of
+the token it then stores no longer throws away the first bearer minted from
+it (the other sign-ins' copies still do); a bearer's cached life is the
+shorter of `expires_in` and the JWT's `exp`, and a bearer the API rejects —
+xAI answers one it can't validate with a **403** carrying
+`[WKE=unauthenticated:bad-credentials]` — is dropped (`xai::advise` →
+`reject_access`) so the next request mints afresh. The API is the Responses
+wire on `api.x.ai/v1`, and `xai::serves` (the scheme, or any `x.ai` base)
+makes three differences in `responses.rs`: tool schemas lose the `pattern`/
+`format` keywords and slash-bearing `enum`s xAI 400s on
+(`xai::sanitize_schema`, walking subschemas so a property *named* `pattern`
+stays), Off is `reasoning: {"effort": "none"}` (offered only where a
+model's ladder lists `none`), and no `include` is asked for, reasoning
+being replayed on no provider; the catalog is `/v1/language-models` (the
+chat models, their `input_modalities` and `capabilities.reasoning_effort`
+ladder — a sniff of its own in `models.rs`) with each window borrowed from
+`/v1/models`' `context_length`, falling back to `/v1/models` alone; the
+refusals (`xai::auth_advice` — no active subscription, credits spent, a
+bearer rejected, the plan's reach, and `refresh_advice`'s dead grant or
+tier-denied 403) are lifted out of xAI's `{code, error}` envelope; `/usage`
+says xAI publishes no figures and links grok.com; `smoke.sh` Phase 174 drives
+the sign-in → listing → turn → rejected bearer → missing subscription path
+against a stub; the **user's own providers**
 (`docs/user-providers.md`): `{config_home}/providers.toml` is **laid over**
 the embedded shipped table rather than replacing it —
 `ProvidersFile::with_user_layer`, a raw-TOML merge where a new id adds a

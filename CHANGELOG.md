@@ -12,6 +12,22 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **Sign in with an xAI account to use Grok on your SuperGrok subscription.**
+  `/login` → **Sign in with an account** → **xAI Grok** shows a one-time
+  code beside a link that already has the code filled in. Open the link and
+  approve the code, from any device, so this also works over SSH. `/model`
+  then lists the Grok models xAI's API offers your account, each with its
+  context window, whether it reads images, and the reasoning levels **Ctrl+T**
+  cycles. On grok-4.3, which can stop reasoning, that includes Off. Tool
+  schema keywords xAI's API refuses, such as an MCP server's `format` or
+  `pattern`, are left out of what is sent, so one such server can't fail
+  every request. A refusal says what to do: no active subscription, credits
+  used up, or a sign-in to renew. This is an unofficial route, as xAI
+  documents no sign-in for other apps, so it may stop working without notice
+  (`docs/xai.md`).
+
 ### Changed
 
 - **A long turn compacts while it runs, without stopping.** Compaction used
