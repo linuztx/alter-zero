@@ -181,8 +181,10 @@ pub(crate) fn request_auth(cfg: &ModelConfig) -> Result<RequestAuth> {
                 return Ok(RequestAuth::default());
             };
             // A plain bearer, the access token itself: xAI's API takes no
-            // prefix and no account header beside it (`docs/xai.md`).
-            let access = xai::authorize(refresh)?;
+            // prefix and no account header beside it. Every mint rotates the
+            // refresh token, which is written back under the variable this
+            // provider's key is stored under (`docs/xai.md`).
+            let access = xai::authorize(refresh, &cfg.api_key_env)?;
             Ok(RequestAuth {
                 bearer: Some(access.bearer),
                 base: None,

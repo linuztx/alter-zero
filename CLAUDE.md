@@ -1234,8 +1234,16 @@ again (`Poll::Retry` — the code is still good), and the confirmation naming
 the `id_token`'s email, else the access token's, else a
 `preferred_username` handle (`xai::account_name`). Refresh tokens are
 **single-use** — every mint rotates the pair and revokes the token presented
-— so the gate, the write-back and the rotation map are load-bearing, and a
-refresh **clears** `forgotten` as it starts, so a sign-in's own `forget` of
+— so the gate, the write-back and the rotation map are load-bearing; the
+write-back goes under the provider's own variable (`ModelConfig::api_key_env`,
+which a user's file may rename) rather than a pinned name; and since two
+sessions sharing a config home share the credential, a refresh takes
+`keystore::lock_credential`'s per-credential `flock` beside the store, reads
+the store again under it and presents a token found there this process has
+never seen (another session's rotation) rather than the one it last knew —
+one it knows is retired, or any while the token is exported in the shell,
+it does not (`docs/xai.md` *Two sessions, one sign-in*, `smoke.sh` Phase
+175). A refresh **clears** `forgotten` as it starts, so a sign-in's own `forget` of
 the token it then stores no longer throws away the first bearer minted from
 it (the other sign-ins' copies still do); a bearer's cached life is the
 shorter of `expires_in` and the JWT's `exp`, and a bearer the API rejects —

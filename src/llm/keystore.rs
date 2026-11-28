@@ -284,6 +284,56 @@ pub fn update_secrets_file<R>(
     Ok((store, result))
 }
 
+/// How often a refresh waiting on [`lock_credential`] asks again.
+const CREDENTIAL_LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// Take the lock on one credential of the store at `path` — the variable
+/// `key` names — across every process using the store: an advisory lock on
+/// a file of its own beside the store (the store is replaced by a rename on
+/// every write, so a lock on the store itself would not outlive one), held
+/// until the returned file is dropped. A sign-in whose refresh token is
+/// single-use takes it around reading the stored token, the refresh, and
+/// writing back what the token rotated into, so a second session waits for
+/// the first and then reads that instead of presenting the token the first
+/// one spent (`docs/xai.md`).
+///
+/// Waits at most `wait`, since a session stopped with Ctrl+Z while holding
+/// it must not wedge every other one. `None` — the wait ran out, or the lock
+/// file could not be made — means going on without it, as before there was
+/// one.
+#[must_use]
+pub fn lock_credential(
+    path: &std::path::Path,
+    key: &str,
+    wait: std::time::Duration,
+) -> Option<std::fs::File> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let name = path.file_name()?.to_string_lossy();
+    std::fs::create_dir_all(parent).ok()?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(parent.join(format!("{name}.{key}.lock")))
+        .ok()?;
+    let until = std::time::Instant::now() + wait;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Some(file),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < until => {
+                std::thread::sleep(
+                    CREDENTIAL_LOCK_POLL
+                        .min(until.saturating_duration_since(std::time::Instant::now())),
+                );
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
 /// Replace the file at `path` with `text`, owner-only: a synced temporary
 /// file beside it, renamed over it — never a truncate-and-write, so a
 /// failure leaves the old file whole. Written *through* a link: a store
@@ -658,5 +708,30 @@ mod tests {
         assert_eq!(out.lines().count(), 1, "one line, not a torn file: {out:?}");
         let env = EnvFile::parse(&out);
         assert_eq!(env.get("K"), Some("a\nb\tc\r"));
+    }
+
+    #[test]
+    fn a_credential_lock_is_held_until_dropped_and_a_waiter_gives_up() {
+        // Another session's lock is a second open file description, which
+        // `flock` keeps apart even within one process — so one test process
+        // can play both sessions.
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("not-made-yet").join(".env");
+        let held = lock_credential(&store, "SOME_TOKEN", Duration::ZERO).expect("free");
+        let asked = Instant::now();
+        assert!(lock_credential(&store, "SOME_TOKEN", Duration::from_millis(200)).is_none());
+        assert!(
+            asked.elapsed() >= Duration::from_millis(200),
+            "gave up before its wait was out: {:?}",
+            asked.elapsed()
+        );
+        // Another credential's lock is its own.
+        assert!(lock_credential(&store, "OTHER_TOKEN", Duration::ZERO).is_some());
+        drop(held);
+        assert!(lock_credential(&store, "SOME_TOKEN", Duration::ZERO).is_some());
+        // Nothing was written into the store itself.
+        assert!(!store.exists());
     }
 }

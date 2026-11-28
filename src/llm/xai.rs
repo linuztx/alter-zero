@@ -22,8 +22,9 @@
 //!    until the user approves, the code expires, or they deny it.
 //! 3. **The refresh** — the same endpoint with `grant_type=refresh_token`.
 //!    Refresh tokens are **single-use**: each refresh rotates the pair and
-//!    revokes the token presented, which is why refreshes here are
-//!    serialized and every rotation is written straight back.
+//!    revokes the token presented, which is why refreshes are serialized —
+//!    across every session sharing the key store, not only this one's
+//!    threads — and every rotation is written straight back.
 //!
 //! And the API the bearer reaches has three differences from the Responses
 //! wire the ChatGPT backend speaks, which [`serves`] tells the request builder
@@ -113,10 +114,17 @@ const BODY_MAX_BYTES: u64 = 64 * 1024;
 /// One nap between cancel checks while the poll waits.
 const POLL_NAP: Duration = Duration::from_millis(200);
 
-/// The environment variable the refresh token lives under — the same name
-/// `providers.toml` gives the provider's `api_key_env`, pinned here because
-/// the rotation write-back cannot ask the provider file.
+/// The variable the shipped `xai_grok` provider keeps its refresh token
+/// under — its `api_key_env` in `providers.toml`. A rotation is written back
+/// under whatever variable the provider in use names
+/// ([`ModelConfig::api_key_env`](super::ModelConfig::api_key_env)), since a
+/// user's own file may rename it or add a second provider on this sign-in.
 pub const REFRESH_ENV_VAR: &str = "XAI_GROK_REFRESH_TOKEN";
+
+/// How long a refresh waits for another session's refresh of the same
+/// credential to finish ([`super::keystore::lock_credential`]): longer than
+/// one refresh can take, which [`OP_TIMEOUT`] bounds.
+const STORE_LOCK_WAIT: Duration = Duration::from_secs(OP_TIMEOUT.as_secs() + 5);
 
 /// xAI's own domain: its API is `api.x.ai`, its auth host `auth.x.ai`.
 const XAI_DOMAIN: &str = "x.ai";
@@ -846,9 +854,11 @@ fn cached_access(refresh_token: &str) -> Option<Access> {
 }
 
 /// What each retired refresh token became — the in-memory half of the fix
-/// [`persist_refresh`] makes on disk: the live `ModelConfig` carries the
+/// [`persist_refresh_to`] makes on disk: the live `ModelConfig` carries the
 /// token the session started with and nothing reloads it mid-run, so once
-/// xAI retires that token the *next* refresh would present a dead one.
+/// xAI retires that token the *next* refresh would present a dead one. It
+/// also tells a token the store was left holding by a lost write-back from
+/// one another session wrote there ([`to_present`]).
 fn rotations() -> &'static Mutex<HashMap<String, String>> {
     static ROTATIONS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
     ROTATIONS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -864,25 +874,71 @@ fn live_refresh_token(stored: &str) -> String {
         .unwrap_or_else(|| stored.to_string())
 }
 
-/// Note that `stored` (and the token actually presented, when they differ)
-/// has been superseded by `rotated`.
-fn note_rotation(stored: &str, presented: &str, rotated: &str) {
+/// Note that every token of `superseded` — the one a config holds, the one
+/// this process last knew it as, and the one it presented — has been
+/// superseded by `newest`.
+fn note_rotation(superseded: &[&str], newest: &str) {
     if let Ok(mut map) = rotations().lock() {
         // A rebuilt config may present a newer alias than the original
         // config. Repoint every alias, keeping the map one hop deep.
         for target in map.values_mut() {
-            if target == presented {
-                *target = rotated.to_string();
+            if superseded.contains(&target.as_str()) {
+                *target = newest.to_string();
             }
         }
-        map.insert(stored.to_string(), rotated.to_string());
-        if presented != stored {
-            map.insert(presented.to_string(), rotated.to_string());
+        for token in superseded {
+            if *token != newest {
+                map.insert((*token).to_string(), newest.to_string());
+            }
         }
     }
 }
 
-/// Where a rotated refresh token is written back. Set once at the boundary
+/// Whether this process knows `token` to be retired — a token it rotated
+/// away from, or saw another session rotate away from.
+fn is_retired(token: &str) -> bool {
+    rotations().lock().is_ok_and(|map| map.contains_key(token))
+}
+
+/// The refresh token to present for a credential whose newest token this
+/// process knows is `live`, when the key store holds `stored` for it: the
+/// store's, when that is a token this process has never seen — another
+/// session sharing the store rotated the credential, or signed in again —
+/// and `live` otherwise: the store holding `live` itself, nothing at all,
+/// or a token this process knows is retired (a write-back that was lost).
+fn to_present(live: &str, stored: Option<&str>, retired: impl Fn(&str) -> bool) -> String {
+    match stored.map(str::trim).filter(|token| !token.is_empty()) {
+        Some(token) if token != live.trim() && !retired(token) => token.to_string(),
+        _ => live.to_string(),
+    }
+}
+
+/// Where one credential's refresh token is kept: the `.env` store at
+/// `path`, under the variable `key` — the provider's own `api_key_env`.
+#[derive(Debug, Clone)]
+struct StoreSlot {
+    path: PathBuf,
+    key: String,
+    /// Whether the session's token came from this store and so a newer
+    /// token found there replaces it. Not one exported in the shell, which
+    /// outranks the store at every launch: whatever the store holds beside
+    /// it is no newer version of it.
+    adopts: bool,
+}
+
+impl StoreSlot {
+    /// The token the store holds under the slot's variable right now, read
+    /// afresh: another session may have written it since this one started.
+    fn current(&self) -> Option<String> {
+        let text = std::fs::read_to_string(&self.path).ok()?;
+        super::EnvFile::parse(&text)
+            .get(&self.key)
+            .map(str::to_string)
+    }
+}
+
+/// The `.env` key store a rotated refresh token is written back to, and
+/// read from again before each refresh. Set once at the boundary
 /// (`tui::models`), because the rotation happens deep on a backend thread.
 fn store_path() -> &'static Mutex<Option<PathBuf>> {
     static PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
@@ -1104,21 +1160,38 @@ pub fn await_approval(device: &DeviceCode, cancel: &CancelToken) -> Result<Signe
 /// cached until shortly before its own expiry. Boundary code — one HTTP round
 /// trip on a cache miss, none on a hit.
 ///
-/// A rotated refresh token is written back to the key store before this
-/// returns: xAI retires the one just used, and leaving the retired value on
-/// disk turns the next launch into a forced re-login.
+/// `key` is the variable the token is stored under (the provider's
+/// `api_key_env`). Another session sharing the key store may refresh the
+/// same credential, and the token it presented is spent the moment it does,
+/// so a refresh here first takes that credential's lock and reads the store
+/// again; a rotated refresh token is written back under `key` before this
+/// returns, since leaving the retired value there turns the next launch — or
+/// the other session's next refresh — into a forced re-login.
 ///
 /// # Errors
 /// A refresh xAI refused (worded by [`refresh_advice`]), or a transport
 /// failure.
-pub fn authorize(refresh_token: &str) -> Result<Access> {
-    authorize_with(refresh_token, exchange_refresh)
+pub fn authorize(refresh_token: &str, key: &str) -> Result<Access> {
+    let slot = store_path()
+        .lock()
+        .ok()
+        .and_then(|path| path.clone())
+        .map(|path| StoreSlot {
+            path,
+            key: key.to_string(),
+            // `tui::config::resolve_env`'s order: a value exported in the
+            // shell wins over the store.
+            adopts: std::env::var_os(key).is_none_or(|value| value.is_empty()),
+        });
+    authorize_with(refresh_token, slot.as_ref(), exchange_refresh)
 }
 
-/// Keep the refresh transport replaceable so the cache, the rotation and the
-/// gate can be exercised deterministically without a live account.
+/// Keep the store and the refresh transport replaceable so the cache, the
+/// rotation, the gate and the store's lock can be exercised deterministically
+/// without a live account. `slot` is `None` where there is no key store.
 fn authorize_with(
     refresh_token: &str,
+    slot: Option<&StoreSlot>,
     refresh: impl FnOnce(&str) -> Result<TokenSet>,
 ) -> Result<Access> {
     if let Some(access) = cached_access(refresh_token) {
@@ -1130,6 +1203,12 @@ fn authorize_with(
     if let Some(access) = cached_access(refresh_token) {
         return Ok(access);
     }
+    // The gate keeps this process's threads apart; another session sharing
+    // the store is kept apart by the credential's own lock, held until the
+    // rotation is written back. Held or not — the wait can run out — the
+    // store is read again below.
+    let _shared = slot
+        .and_then(|slot| super::keystore::lock_credential(&slot.path, &slot.key, STORE_LOCK_WAIT));
     // Forgets recorded before this refresh began are done already — each
     // dropped its own entries — so only one landing while the request is out
     // may cost this refresh its bearer. Without the clear, a sign-in's own
@@ -1140,8 +1219,11 @@ fn authorize_with(
         list.clear();
     }
     // What to actually present: the stored token, or whatever a previous
-    // rotation turned it into. The config still holds the original.
-    let presented = live_refresh_token(refresh_token);
+    // rotation turned it into — the config still holds the original — unless
+    // the store holds a newer one another session wrote there.
+    let live = live_refresh_token(refresh_token);
+    let stored = slot.filter(|slot| slot.adopts).and_then(StoreSlot::current);
+    let presented = to_present(&live, stored.as_deref(), is_retired);
     let refresh_started = Instant::now();
     let tokens = refresh(&presented)?;
     let access = Access {
@@ -1150,16 +1232,21 @@ fn authorize_with(
     let lifetime = cache_lifetime(tokens.expires_in, jwt_exp(&tokens.access_token), unix_now());
     // The token presented is retired the moment a rotation names another:
     // write the new one back, and point the old ones at it.
-    let cache_key = if let Some(rotated) = tokens
+    let rotated = tokens
         .refresh_token
-        .filter(|t| t.trim() != presented.trim())
-    {
-        persist_refresh(&rotated, &[refresh_token, &presented]);
-        note_rotation(refresh_token, &presented, &rotated);
-        rotated
-    } else {
-        presented.clone()
-    };
+        .filter(|t| t.trim() != presented.trim());
+    if let (Some(rotated), Some(slot)) = (&rotated, slot) {
+        persist_refresh_to(
+            &slot.path,
+            &slot.key,
+            rotated,
+            &[refresh_token, &live, &presented],
+        );
+    }
+    let cache_key = rotated.unwrap_or_else(|| presented.clone());
+    if cache_key != live {
+        note_rotation(&[refresh_token, &live, &presented], &cache_key);
+    }
     if let Ok(mut map) = cache().lock() {
         map.remove(&presented);
         let now = Instant::now();
@@ -1171,9 +1258,9 @@ fn authorize_with(
             .lock()
             .map(|mut list| std::mem::take(&mut *list))
             .unwrap_or_default();
-        let replaced = forgotten
-            .iter()
-            .any(|token| token == refresh_token || *token == presented || *token == cache_key);
+        let replaced = forgotten.iter().any(|token| {
+            token == refresh_token || *token == live || *token == presented || *token == cache_key
+        });
         if !replaced
             && let Some(until) = refresh_started.checked_add(lifetime)
             && until > now
@@ -1201,27 +1288,17 @@ fn exchange_refresh(presented: &str) -> Result<TokenSet> {
     TokenSet::parse(&text)
 }
 
-/// Write a rotated refresh token back into the `.env` key store, in place —
-/// [`persist_refresh_to`] at the store the boundary named. Best-effort: a
-/// store we cannot write still leaves a working session, and the failure
-/// surfaces as a re-login at the next launch rather than a mid-turn error the
-/// user can do nothing about.
-fn persist_refresh(rotated: &str, chain: &[&str]) {
-    let Some(path) = store_path().lock().ok().and_then(|p| p.clone()) else {
-        return;
-    };
-    persist_refresh_to(&path, rotated, chain);
-}
-
-/// Write `rotated` under [`REFRESH_ENV_VAR`] in the store at `path`, but only
-/// while the store still holds this session's own `chain` — the token it
-/// started with and the one it actually presented — or no token at all (a
-/// credential from the process environment, or a store not created yet). A
-/// sign-in that landed while the refresh was in flight wrote its own token
+/// Write `rotated` under `key` in the store at `path`, but only while the
+/// store still holds this session's own `chain` — the token it started with,
+/// the newest it knew, and the one it actually presented — or no token at all
+/// (a credential from the process environment, or a store not created yet).
+/// A sign-in that landed while the refresh was in flight wrote its own token
 /// there, and a rotation of the chain it replaced must not overwrite it.
-/// Returns whether it wrote.
-fn persist_refresh_to(path: &std::path::Path, rotated: &str, chain: &[&str]) -> bool {
-    super::EnvFile::update_if(path, REFRESH_ENV_VAR, rotated, |current| {
+/// Best-effort: a store we cannot write still leaves a working session, and
+/// the failure surfaces as a re-login at the next launch rather than a
+/// mid-turn error the user can do nothing about. Returns whether it wrote.
+fn persist_refresh_to(path: &std::path::Path, key: &str, rotated: &str, chain: &[&str]) -> bool {
+    super::EnvFile::update_if(path, key, rotated, |current| {
         current.is_none_or(|held| held.is_empty() || chain.contains(&held))
     })
     .is_ok_and(|written| written.is_some())
@@ -1887,9 +1964,9 @@ mod tests {
 
     #[test]
     fn the_env_var_matches_the_shipped_provider_file() {
-        // The rotation write-back cannot ask the provider file, so the name is
-        // pinned here — and pinned *to* the file, since a mismatch would write
-        // rotations someplace key resolution never reads.
+        // The docs and the smoke suite name the shipped provider's variable
+        // by this constant's value; a rotation goes wherever the provider in
+        // use stores its key (`ModelConfig::api_key_env`).
         let file = ProvidersFile::builtin();
         let grok = file.get("xai_grok").expect("shipped");
         assert_eq!(grok.key_env("xai_grok"), REFRESH_ENV_VAR);
@@ -1914,6 +1991,7 @@ mod tests {
         // This session's own chain: the write lands, and the rest stays.
         assert!(persist_refresh_to(
             &path,
+            REFRESH_ENV_VAR,
             "rotated",
             &["original", "original"]
         ));
@@ -1927,6 +2005,7 @@ mod tests {
         // rotated once already — is still its own.
         assert!(persist_refresh_to(
             &path,
+            REFRESH_ENV_VAR,
             "rotated-2",
             &["original", "rotated"]
         ));
@@ -1936,6 +2015,7 @@ mod tests {
         std::fs::write(&path, format!("{REFRESH_ENV_VAR}=newer-sign-in\n")).unwrap();
         assert!(!persist_refresh_to(
             &path,
+            REFRESH_ENV_VAR,
             "stale",
             &["original", "rotated-2"]
         ));
@@ -1945,6 +2025,7 @@ mod tests {
         std::fs::write(&path, "OTHER=keep\n").unwrap();
         assert!(persist_refresh_to(
             &path,
+            REFRESH_ENV_VAR,
             "first-write",
             &["original", "original"]
         ));
@@ -1952,17 +2033,195 @@ mod tests {
         let fresh = dir.path().join("not-made-yet").join(".env");
         assert!(persist_refresh_to(
             &fresh,
+            REFRESH_ENV_VAR,
             "fresh",
             &["original", "original"]
         ));
         assert_eq!(stored(&fresh).as_deref(), Some("fresh"));
     }
 
+    /// A key store at `dir` holding `token` under `key`, as `/login` leaves
+    /// it, and the slot naming it.
+    fn store_holding(dir: &std::path::Path, key: &str, token: &str) -> StoreSlot {
+        let path = dir.join(".env");
+        std::fs::write(&path, format!("{key}={token}\n")).unwrap();
+        StoreSlot {
+            path,
+            key: key.to_string(),
+            adopts: true,
+        }
+    }
+
+    /// What the store at `slot` holds under its key now.
+    fn stored_token(slot: &StoreSlot) -> Option<String> {
+        crate::llm::EnvFile::parse(&std::fs::read_to_string(&slot.path).unwrap())
+            .get(&slot.key)
+            .map(str::to_string)
+    }
+
+    #[test]
+    fn a_rotation_is_written_under_the_provider_s_own_variable() {
+        // `/login` stores the token under the provider's `api_key_env`, which
+        // a user's file may rename. The rotation must replace that entry, or
+        // the next launch reads the retired token and the sign-in is lost.
+        let dir = tempfile::tempdir().unwrap();
+        let slot = store_holding(dir.path(), "MY_GROK_TOKEN", "xai-renamed-r0");
+        let text = std::fs::read_to_string(&slot.path).unwrap();
+        std::fs::write(
+            &slot.path,
+            format!("{text}{REFRESH_ENV_VAR}=another-account\n"),
+        )
+        .unwrap();
+        authorize_with("xai-renamed-r0", Some(&slot), |_| {
+            Ok(rotation_to("xai-renamed-r1"))
+        })
+        .unwrap();
+        assert_eq!(stored_token(&slot).as_deref(), Some("xai-renamed-r1"));
+        let store = crate::llm::EnvFile::parse(&std::fs::read_to_string(&slot.path).unwrap());
+        assert_eq!(
+            store.get(REFRESH_ENV_VAR),
+            Some("another-account"),
+            "the shipped provider's entry was written over"
+        );
+        forget("xai-renamed-r0");
+    }
+
+    #[test]
+    fn a_token_another_session_rotated_is_presented_instead_of_the_retired_one() {
+        // Two sessions share one key store, and the other refreshed first:
+        // xAI retired the token both started with, and the store holds the
+        // one it rotated into. Presenting the retired one is refused, so this
+        // session presents the store's — and writes back what that becomes.
+        let dir = tempfile::tempdir().unwrap();
+        let slot = store_holding(dir.path(), "XAI_ELSEWHERE_TOKEN", "xai-elsewhere-r1");
+        let mut presented = Vec::new();
+        authorize_with("xai-elsewhere-r0", Some(&slot), |token| {
+            presented.push(token.to_string());
+            Ok(rotation_to("xai-elsewhere-r2"))
+        })
+        .unwrap();
+        assert_eq!(presented, ["xai-elsewhere-r1"]);
+        assert_eq!(stored_token(&slot).as_deref(), Some("xai-elsewhere-r2"));
+        // The config still holding the first token finds the newest bearer.
+        let again = authorize_with("xai-elsewhere-r0", Some(&slot), |_| {
+            unreachable!("the newest bearer is cached")
+        })
+        .unwrap();
+        assert_eq!(again.bearer, "access-for-xai-elsewhere-r2");
+        forget("xai-elsewhere-r0");
+    }
+
+    #[test]
+    fn a_store_left_holding_a_retired_token_is_not_presented() {
+        // A write-back that never landed — a full disk, or another writer's
+        // replacement of the file racing it — leaves the store a token this
+        // session already rotated away from. Its own newest is presented, and
+        // the store is mended.
+        let dir = tempfile::tempdir().unwrap();
+        let slot = store_holding(dir.path(), "XAI_LOST_TOKEN", "xai-lost-r0");
+        authorize_with("xai-lost-r0", Some(&slot), |_| {
+            Ok(rotation_to("xai-lost-r1"))
+        })
+        .unwrap();
+        std::fs::write(&slot.path, "XAI_LOST_TOKEN=xai-lost-r0\n").unwrap();
+        cache()
+            .lock()
+            .unwrap()
+            .get_mut("xai-lost-r1")
+            .unwrap()
+            .until = Instant::now();
+        let mut presented = None;
+        authorize_with("xai-lost-r0", Some(&slot), |token| {
+            presented = Some(token.to_string());
+            Ok(rotation_to("xai-lost-r2"))
+        })
+        .unwrap();
+        assert_eq!(presented.as_deref(), Some("xai-lost-r1"));
+        assert_eq!(stored_token(&slot).as_deref(), Some("xai-lost-r2"));
+        forget("xai-lost-r0");
+    }
+
+    #[test]
+    fn a_token_exported_in_the_shell_is_presented_whatever_the_store_holds() {
+        // A value exported in the shell outranks the store at every launch,
+        // so a token the store holds beside it is no newer version of it.
+        let dir = tempfile::tempdir().unwrap();
+        let mut slot = store_holding(dir.path(), "XAI_EXPORTED_TOKEN", "xai-exported-other");
+        slot.adopts = false;
+        let mut presented = None;
+        authorize_with("xai-exported-r0", Some(&slot), |token| {
+            presented = Some(token.to_string());
+            Ok(TokenSet {
+                access_token: "exported".to_string(),
+                expires_in: Some(3600),
+                ..TokenSet::default()
+            })
+        })
+        .unwrap();
+        assert_eq!(presented.as_deref(), Some("xai-exported-r0"));
+        forget("xai-exported-r0");
+    }
+
+    #[test]
+    fn the_refresh_holds_the_store_s_lock_while_it_is_out() {
+        // Another session refreshing the same credential must wait for this
+        // one to write its rotation back, not present the token it retires.
+        let dir = tempfile::tempdir().unwrap();
+        let slot = store_holding(dir.path(), "XAI_LOCKED_TOKEN", "xai-locked-r0");
+        authorize_with("xai-locked-r0", Some(&slot), |_| {
+            assert!(
+                crate::llm::keystore::lock_credential(&slot.path, &slot.key, Duration::ZERO)
+                    .is_none(),
+                "the lock was free while the refresh was out"
+            );
+            Ok(rotation_to("xai-locked-r1"))
+        })
+        .unwrap();
+        assert!(
+            crate::llm::keystore::lock_credential(&slot.path, &slot.key, Duration::ZERO).is_some(),
+            "the lock outlived the refresh"
+        );
+        forget("xai-locked-r0");
+    }
+
+    #[test]
+    fn a_refresh_waits_for_another_session_s_and_presents_what_it_wrote() {
+        // The other session holds the lock while its own refresh is out: this
+        // one waits, then reads the token that refresh wrote back.
+        use std::sync::Barrier;
+
+        let dir = tempfile::tempdir().unwrap();
+        let slot = store_holding(dir.path(), "XAI_WAITED_TOKEN", "xai-waited-r0");
+        let locked = Barrier::new(2);
+        let presented = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let held =
+                    crate::llm::keystore::lock_credential(&slot.path, &slot.key, Duration::ZERO)
+                        .expect("the lock is free");
+                locked.wait();
+                std::thread::sleep(Duration::from_millis(300));
+                std::fs::write(&slot.path, "XAI_WAITED_TOKEN=xai-waited-r1\n").unwrap();
+                drop(held);
+            });
+            locked.wait();
+            let mut presented = None;
+            authorize_with("xai-waited-r0", Some(&slot), |token| {
+                presented = Some(token.to_string());
+                Ok(rotation_to("xai-waited-r2"))
+            })
+            .unwrap();
+            presented
+        });
+        assert_eq!(presented.as_deref(), Some("xai-waited-r1"));
+        assert_eq!(stored_token(&slot).as_deref(), Some("xai-waited-r2"));
+        forget("xai-waited-r0");
+    }
+
     #[test]
     fn a_warm_cache_answers_without_refreshing_again() {
         let token = format!("xai-cache-test-{}", std::process::id());
         let mut calls = 0;
-        let access = authorize_with(&token, |presented| {
+        let access = authorize_with(&token, None, |presented| {
             calls += 1;
             assert_eq!(presented, token);
             Ok(TokenSet {
@@ -1974,8 +2233,10 @@ mod tests {
         .unwrap();
         assert_eq!(calls, 1);
         assert_eq!(access.bearer, "eyJx.eyJy.s", "the access token, verbatim");
-        let again =
-            authorize_with(&token, |_| unreachable!("a warm cache must not refresh")).unwrap();
+        let again = authorize_with(&token, None, |_| {
+            unreachable!("a warm cache must not refresh")
+        })
+        .unwrap();
         assert_eq!(again, access);
         forget(&token);
     }
@@ -1984,7 +2245,7 @@ mod tests {
     fn a_rotated_refresh_token_is_presented_next_time() {
         let stored = format!("xai-rotation-test-{}", std::process::id());
         let mut presentations = Vec::new();
-        authorize_with(&stored, |presented| {
+        authorize_with(&stored, None, |presented| {
             presentations.push(presented.to_string());
             Ok(TokenSet {
                 access_token: "one".to_string(),
@@ -1996,7 +2257,7 @@ mod tests {
             })
         })
         .unwrap();
-        let second = authorize_with(&stored, |presented| {
+        let second = authorize_with(&stored, None, |presented| {
             presentations.push(presented.to_string());
             Ok(TokenSet {
                 access_token: "two".to_string(),
@@ -2019,7 +2280,7 @@ mod tests {
     #[test]
     fn a_rejected_bearer_is_minted_afresh_but_the_grant_is_kept() {
         let stored = format!("xai-reject-test-{}", std::process::id());
-        let first = authorize_with(&stored, |_| {
+        let first = authorize_with(&stored, None, |_| {
             Ok(TokenSet {
                 access_token: "dead".to_string(),
                 refresh_token: Some(format!("{stored}-r2")),
@@ -2031,7 +2292,7 @@ mod tests {
         assert_eq!(first.bearer, "dead");
         reject_access(&stored);
         let mut presented_again = None;
-        let second = authorize_with(&stored, |presented| {
+        let second = authorize_with(&stored, None, |presented| {
             presented_again = Some(presented.to_string());
             Ok(TokenSet {
                 access_token: "fresh".to_string(),
@@ -2059,7 +2320,7 @@ mod tests {
                 })
             }
         };
-        authorize_with(&stored, mint("first")).unwrap();
+        authorize_with(&stored, None, mint("first")).unwrap();
         // A refusal about the plan leaves the bearer cached: it was not the
         // bearer that was refused.
         let unsubscribed = r#"{"code":"x","error":"You do not have an active Grok subscription"}"#;
@@ -2068,7 +2329,7 @@ mod tests {
             Some(NO_SUBSCRIPTION)
         );
         assert_eq!(
-            authorize_with(&stored, |_| unreachable!("still cached"))
+            authorize_with(&stored, None, |_| unreachable!("still cached"))
                 .unwrap()
                 .bearer,
             "first"
@@ -2080,7 +2341,9 @@ mod tests {
             Some(REJECTED_BEARER)
         );
         assert_eq!(
-            authorize_with(&stored, mint("second")).unwrap().bearer,
+            authorize_with(&stored, None, mint("second"))
+                .unwrap()
+                .bearer,
             "second"
         );
         // With no stored token there is nothing to drop, and the advice is
@@ -2097,7 +2360,7 @@ mod tests {
         // very next request.
         let stored = format!("xai-sign-in-forget-test-{}", std::process::id());
         forget(&stored);
-        authorize_with(&stored, |_| {
+        authorize_with(&stored, None, |_| {
             Ok(TokenSet {
                 access_token: "first".to_string(),
                 expires_in: Some(3600),
@@ -2105,7 +2368,7 @@ mod tests {
             })
         })
         .unwrap();
-        let again = authorize_with(&stored, |_| unreachable!("the first bearer was kept"));
+        let again = authorize_with(&stored, None, |_| unreachable!("the first bearer was kept"));
         assert_eq!(again.unwrap().bearer, "first");
         forget(&stored);
     }
@@ -2115,7 +2378,7 @@ mod tests {
         // A sign-in that lands while the refresh is out has replaced the
         // credential: the bearer minted from the old one is not cached.
         let stored = format!("xai-mid-refresh-forget-test-{}", std::process::id());
-        authorize_with(&stored, |presented| {
+        authorize_with(&stored, None, |presented| {
             forget(presented);
             Ok(TokenSet {
                 access_token: "stale".to_string(),
@@ -2125,7 +2388,7 @@ mod tests {
         })
         .unwrap();
         let mut refreshed = false;
-        authorize_with(&stored, |_| {
+        authorize_with(&stored, None, |_| {
             refreshed = true;
             Ok(TokenSet {
                 access_token: "fresh".to_string(),
@@ -2141,7 +2404,7 @@ mod tests {
     #[test]
     fn a_failed_refresh_caches_nothing_and_surfaces_its_advice() {
         let stored = format!("xai-failure-test-{}", std::process::id());
-        let err = authorize_with(&stored, |_| {
+        let err = authorize_with(&stored, None, |_| {
             Err(LlmError::Api {
                 status: 400,
                 body: SIGN_IN_AGAIN.to_string(),
@@ -2150,7 +2413,7 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("sign in again"), "{err}");
         let mut called = false;
-        let _ = authorize_with(&stored, |_| {
+        let _ = authorize_with(&stored, None, |_| {
             called = true;
             Err(LlmError::Cancelled)
         });
@@ -2181,7 +2444,7 @@ mod tests {
         let started = Barrier::new(2);
         std::thread::scope(|scope| {
             scope.spawn(|| {
-                authorize_with(stored, |_| {
+                authorize_with(stored, None, |_| {
                     started.wait();
                     std::thread::sleep(Duration::from_millis(1_500));
                     Ok(rotation_to("xai-forget-in-flight-r1"))
@@ -2198,7 +2461,7 @@ mod tests {
             );
         });
         let mut refreshes = 0;
-        authorize_with(stored, |_| {
+        authorize_with(stored, None, |_| {
             refreshes += 1;
             Ok(rotation_to("xai-forget-in-flight-r2"))
         })
@@ -2224,7 +2487,7 @@ mod tests {
                 .map(|_| {
                     scope.spawn(|| {
                         barrier.wait();
-                        authorize_with(stored, |presented| {
+                        authorize_with(stored, None, |presented| {
                             let earlier = refreshes.fetch_add(1, Ordering::SeqCst);
                             std::thread::sleep(Duration::from_millis(25));
                             if earlier != 0 || presented != stored {
@@ -2257,15 +2520,17 @@ mod tests {
         // refreshes rotated the chain twice, reads the newest bearer — never
         // a refresh of its own, which would present a retired token.
         let (first, second, third) = ("xai-alias-r0", "xai-alias-r1", "xai-alias-r2");
-        authorize_with(first, |_| Ok(rotation_to(second))).unwrap();
+        authorize_with(first, None, |_| Ok(rotation_to(second))).unwrap();
         cache().lock().unwrap().get_mut(second).unwrap().until = Instant::now();
-        let newest = authorize_with(second, |presented| {
+        let newest = authorize_with(second, None, |presented| {
             assert_eq!(presented, second);
             Ok(rotation_to(third))
         })
         .unwrap();
-        let from_first =
-            authorize_with(first, |_| unreachable!("an old alias refreshed again")).unwrap();
+        let from_first = authorize_with(first, None, |_| {
+            unreachable!("an old alias refreshed again")
+        })
+        .unwrap();
         assert_eq!(from_first, newest);
         assert_eq!(live_refresh_token(first), third);
         forget(first);
@@ -2274,9 +2539,9 @@ mod tests {
     #[test]
     fn forget_drops_every_token_of_the_chain() {
         let (first, second, third) = ("xai-chain-r0", "xai-chain-r1", "xai-chain-r2");
-        authorize_with(first, |_| Ok(rotation_to(second))).unwrap();
+        authorize_with(first, None, |_| Ok(rotation_to(second))).unwrap();
         cache().lock().unwrap().get_mut(second).unwrap().until = Instant::now();
-        authorize_with(second, |_| Ok(rotation_to(third))).unwrap();
+        authorize_with(second, None, |_| Ok(rotation_to(third))).unwrap();
         forget(first);
         for token in [first, second, third] {
             assert_eq!(live_refresh_token(token), token, "{token} still rotates");
@@ -2291,17 +2556,20 @@ mod tests {
     fn a_refresh_that_failed_is_retried_with_the_same_token() {
         let stored = "xai-retried";
         assert!(
-            authorize_with(stored, |_| Err(LlmError::Http(
+            authorize_with(stored, None, |_| Err(LlmError::Http(
                 "temporary failure".to_string()
             )))
             .is_err()
         );
-        let retried = authorize_with(stored, |presented| {
+        let retried = authorize_with(stored, None, |presented| {
             assert_eq!(presented, stored, "a failure rotated nothing");
             Ok(rotation_to("xai-retried-r1"))
         })
         .unwrap();
-        let hit = authorize_with(stored, |_| unreachable!("the retry's bearer is cached")).unwrap();
+        let hit = authorize_with(stored, None, |_| {
+            unreachable!("the retry's bearer is cached")
+        })
+        .unwrap();
         assert_eq!(hit, retried);
         forget(stored);
     }
@@ -2316,7 +2584,7 @@ mod tests {
             if let Some(entry) = cache().lock().unwrap().get_mut(&current) {
                 entry.until = Instant::now();
             }
-            authorize_with(stored, |_| {
+            authorize_with(stored, None, |_| {
                 Ok(rotation_to(&format!("xai-bounded-r{index}")))
             })
             .unwrap();
@@ -2336,8 +2604,8 @@ mod tests {
         // A config rebuilt mid-session holds a newer token than the first
         // one; its refresh must move the first config along too.
         let (first, second, third) = ("xai-reloaded-r0", "xai-reloaded-r1", "xai-reloaded-r2");
-        note_rotation(first, first, second);
-        note_rotation(second, second, third);
+        note_rotation(&[first], second);
+        note_rotation(&[second], third);
         assert_eq!(live_refresh_token(first), third);
         assert_eq!(live_refresh_token(second), third);
         forget(first);

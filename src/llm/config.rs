@@ -590,6 +590,7 @@ impl ProvidersFile {
             api_base,
             api_model_base,
             api_key: sel.api_key.clone(),
+            api_key_env: provider.key_env(&sel.provider_id),
             auth: provider.auth,
             wire_api: provider.wire_api,
             temperature: sel.temperature,
@@ -881,6 +882,12 @@ pub struct ModelConfig {
     /// Models-listing base (`{api_model_base}/models`).
     pub api_model_base: String,
     pub api_key: Option<String>,
+    /// The variable [`api_key`](Self::api_key) is stored under — the
+    /// provider's `api_key_env`, else its id's `{ID}_API_KEY` default
+    /// ([`Provider::key_env`]): where `/login` saves a sign-in and key
+    /// resolution reads it, so a sign-in's rotated refresh token is written
+    /// back there too.
+    pub api_key_env: String,
     /// How [`api_key`](Self::api_key) authenticates the request — a bearer as
     /// stored, or (Copilot/ChatGPT) an OAuth token to exchange for one first.
     pub auth: AuthScheme,
@@ -937,6 +944,7 @@ impl ModelConfig {
             api_base: "https://api.openai.com/v1".to_string(),
             api_model_base: "https://api.openai.com/v1".to_string(),
             api_key: None,
+            api_key_env: default_key_env("openai"),
             auth: AuthScheme::ApiKey,
             wire_api: WireApi::Chat,
             temperature: None,
@@ -1107,6 +1115,32 @@ api_base = "https://x/v1"
 "#;
         let file = ProvidersFile::parse(text).unwrap();
         assert_eq!(file.get("custom").unwrap().key_env("custom"), "MY_SECRET");
+    }
+
+    #[test]
+    fn a_config_names_the_variable_its_key_is_stored_under() {
+        // A sign-in's rotated refresh token is written back deep on a backend
+        // thread, under the name `/login` saved it under and key resolution
+        // reads: the provider's own, which a user's file may rename.
+        let sel = |provider: &str| Selection {
+            provider_id: provider.to_string(),
+            model: "m".to_string(),
+            ..Selection::default()
+        };
+        let shipped = ProvidersFile::builtin();
+        let grok = shipped.model_config(&sel("xai_grok")).unwrap();
+        assert_eq!(grok.api_key_env, "XAI_GROK_REFRESH_TOKEN");
+        let (renamed, issues) = ProvidersFile::with_user_layer(
+            "[providers.xai_grok]\napi_key_env = \"MY_GROK_TOKEN\"\n",
+            None,
+        )
+        .unwrap();
+        assert!(issues.is_empty(), "{issues:?}");
+        let grok = renamed.model_config(&sel("xai_grok")).unwrap();
+        assert_eq!(grok.api_key_env, "MY_GROK_TOKEN");
+        // A provider naming none stores its key under its id's default.
+        let openrouter = shipped.model_config(&sel("openrouter")).unwrap();
+        assert_eq!(openrouter.api_key_env, "OPENROUTER_API_KEY");
     }
 
     #[test]

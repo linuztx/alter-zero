@@ -45,7 +45,10 @@ release heading when a version is cut.
   used up, or a sign-in to renew, and an account whose plan lists no models
   says so in `/model` rather than showing an empty list. A server error or a
   rate limit while you approve the code doesn't end the sign-in: it keeps
-  waiting for your approval. This is an unofficial route, as xAI
+  waiting for your approval. Several sessions can use the sign-in at once:
+  when one renews it, the others pick up the new token instead of being
+  signed out, and a sign-in kept under a variable your own `providers.toml`
+  renames stays there. This is an unofficial route, as xAI
   documents no sign-in for other apps, so it may stop working without notice
   (`docs/xai.md`).
 

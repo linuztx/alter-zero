@@ -106,9 +106,9 @@ for an answer known in advance.
 The split every subscription keeps (`docs/chatgpt.md`):
 
 1. The **refresh token** — long-lived, persisted in the `.env` key store under
-   `XAI_GROK_REFRESH_TOKEN`, the store a pasted key lands in, so key
-   resolution, the `/login` row's ✓ and the next launch need no second
-   mechanism.
+   the provider's `api_key_env` (`XAI_GROK_REFRESH_TOKEN` as shipped), the
+   store a pasted key lands in, so key resolution, the `/login` row's ✓ and
+   the next launch need no second mechanism.
 2. The **access token** — a JWT minted on demand at `POST {issuer}/oauth2/token`
    (`grant_type=refresh_token`, the client id and the refresh token,
    form-encoded), cached in memory, never written, and sent as a plain
@@ -119,7 +119,7 @@ revokes the token just presented — "the first to refresh strands the other
 with `invalid_grant`", in hermes' words. So the three rules the other sign-ins
 keep are load-bearing here: refreshes are serialized behind one gate, so two
 threads never present one token twice; a rotated token is written straight
-back into the `.env` store (`xai::persist_refresh`, through the path
+back into the `.env` store (`xai::persist_refresh_to`, through the path
 `tui::models` hands the module at startup) — only while the store still holds
 this session's own chain, never over a token a newer sign-in stored meanwhile;
 and an in-memory rotation map keeps the live `ModelConfig`, which still holds
@@ -127,6 +127,42 @@ the token the session started with, presenting the live one. A refresh that
 answers without a `refresh_token` keeps the one presented, as both references
 do. A fresh sign-in's `xai::forget` clears the cache without waiting behind a
 refresh in flight.
+
+The write-back goes under **the variable the provider in use names** —
+`ModelConfig::api_key_env`, filled from the provider's `api_key_env` (else its
+id's `{ID}_API_KEY` default) — which is where `/login` saved the token and
+where key resolution reads it. A user's own `providers.toml` may rename the
+variable, or add a second provider on `auth = "xai_grok"` with its own, and
+a write-back pinned to the shipped name would retire the token the provider
+reads without replacing it: the next launch would ask for another sign-in.
+
+### Two sessions, one sign-in
+
+The gate keeps one process's threads apart, but two sessions sharing a config
+home — two terminals, or a headless `-p` run beside the TUI — share the key
+store and so the credential. Each starts from the token the store held. Once
+either refreshes, the other's token is spent, and its next refresh would be
+refused (`invalid_grant`, the *sign in again* advice) although the store
+already holds a working token. So a refresh does three things more:
+
+- it takes **the credential's lock** first (`keystore::lock_credential`): an
+  advisory `flock` on `{store}.{variable}.lock` beside the store — the store
+  itself is replaced by a rename on every write, so a lock on it would not
+  outlive one — held until the rotation is written back. A second session's
+  refresh waits for the first; the wait gives up after the mint's own
+  timeout plus five seconds and goes on without it, so a session stopped
+  with Ctrl+Z mid-refresh cannot wedge the others;
+- under it, it **reads the store again** and presents the token found there
+  when this process has never seen it — another session's rotation, or a
+  sign-in made in another terminal — rather than the one it last knew;
+- it presents its own when the store holds a token this process knows is
+  retired (a write-back that was lost), and writes the rotation back over it.
+
+A token exported in the shell is the exception: it outranks the store at
+every launch, so whatever the store holds beside it is no newer version of it,
+and it is presented as exported. `smoke.sh` Phase 175 runs both sessions
+against a stub that refuses a spent token, the first one's next turn after
+the second one's refresh included.
 
 The access token's cached life is the **shorter** of the grant's `expires_in`
 (a duration, immune to this machine's clock) and the JWT's own `exp` (absolute,
@@ -271,15 +307,16 @@ try again"*.
 
 | variable | effect |
 | --- | --- |
-| `XAI_GROK_REFRESH_TOKEN` | the stored refresh token (a real environment variable wins over `.env`, as everywhere) |
+| `XAI_GROK_REFRESH_TOKEN` | the stored refresh token — the shipped provider's `api_key_env`, which a user's `providers.toml` may rename (a real environment variable wins over `.env`, as everywhere) |
 | `ALTER_ZERO_XAI_ISSUER` | the auth host the sign-in and the token mint talk to — a fork's own, or `smoke.sh` Phase 174's local stub; `https://auth.x.ai` by default |
 
 ## Files
 
 | file | what's in it |
 | --- | --- |
-| `src/llm/xai.rs` | the client id, scopes and endpoints; the device-code/poll/refresh shapes and verdicts, the poll's cadence (the slow-down rule and its cap), the link check, the cache-lifetime rule, the account's name, the schema sanitizer and the advice (pure); the code request, the cancel-aware poll, the token mint, the cache, the rotation write-back and the issuer override (boundary) |
-| `src/llm/auth.rs` | `request_auth` — the one seam every outbound call resolves through |
+| `src/llm/xai.rs` | the client id, scopes and endpoints; the device-code/poll/refresh shapes and verdicts, the poll's cadence (the slow-down rule and its cap), the link check, the cache-lifetime rule, the account's name, the schema sanitizer, the advice and which refresh token to present (pure); the code request, the cancel-aware poll, the token mint, the cache, the store's re-read, the rotation write-back and the issuer override (boundary) |
+| `src/llm/keystore.rs` | `lock_credential` — the per-credential lock beside the key store that sessions sharing it take around a refresh |
+| `src/llm/auth.rs` | `request_auth` — the one seam every outbound call resolves through, handing the mint the variable the provider's key is stored under |
 | `src/llm/config.rs` | `AuthScheme::XaiGrok` — the scheme that puts the row under *Sign in with an account* and runs the device page |
 | `src/llm/models.rs` | `fetch_models`' xAI arm — `/v1/language-models` merged with `/v1/models`, an empty sign-in listing an error — and the `capabilities.reasoning_effort` ladder sniff |
 | `src/llm/responses.rs` | the three xAI differences on the Responses wire |
@@ -290,3 +327,4 @@ try again"*.
 | `src/tui/models.rs` | the store path and the issuer override, handed in once at startup |
 | `providers.toml` | the `xai_grok` row |
 | `scripts/smoke/phases/174-xai.sh` | the row, the device page and the whole wire against a local stub: the sign-in, the stored token, `/model`'s merged listing, a turn, and a missing subscription read as advice |
+| `scripts/smoke/phases/175-xaisessions.sh` | two sessions on one sign-in against a stub that refuses a spent refresh token: a headless run's refresh between the first session's requests, and every rotation under a renamed `api_key_env` |
