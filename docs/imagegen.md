@@ -396,6 +396,17 @@ On a ChatGPT account's sign-in in November 2026, headless turns on
 
 - `gpt-image-2.6-sunburst` was taken, so nothing fell back and the cell had
   no row.
+- With `size` and `quality` both `auto`, the backend chose: a generation
+  came back 1536×1024, and an edit of a 256×256 picture came back
+  1254×1254, square like its input.
+- `num_last_images_to_include: 1` edited the newest image in the
+  conversation, on a ChatGPT Pro plan:
+  - a picture just generated: a red circle on white came back as the same
+    circle, blue, the same size and in the same place;
+  - an MCP tool's image result, which has no file: a 256×256 test pattern
+    of red, green, blue and yellow quadrants came back as a watercolour
+    with each colour in its own quadrant, though the prompt named neither
+    the colours nor where they go.
 - GIF output, asked for with `output_format: "gif"` and its frame controls,
   was refused every time with `HTTP 400: GIF output is not enabled for this
   request.` (the raw answer `{"detail": "GIF output is not enabled for this
