@@ -412,10 +412,14 @@ fn signin_kinds(auth: AuthScheme) -> Vec<SigninKind> {
         AuthScheme::AnthropicConsole | AuthScheme::GoogleAntigravity => {
             vec![SigninKind::BrowserLink]
         }
-        // One flow each, a device code: GitHub's own for Copilot, and Cline's
+        // One flow each, a device code: GitHub's own for Copilot, Cline's
         // WorkOS one, which is also the way its extension and CLI sign in
-        // (`docs/cline.md`).
-        AuthScheme::GithubCopilot | AuthScheme::ClineAccount => vec![SigninKind::DeviceCode],
+        // (`docs/cline.md`), and the one Grok's own CLI runs for xAI — which
+        // works over SSH and in a container, with no callback to reach
+        // (`docs/xai.md`).
+        AuthScheme::GithubCopilot | AuthScheme::ClineAccount | AuthScheme::XaiGrok => {
+            vec![SigninKind::DeviceCode]
+        }
         AuthScheme::ApiKey | AuthScheme::OptionalKey => vec![SigninKind::DeviceCode],
     }
 }
@@ -1176,6 +1180,13 @@ pub(crate) fn cline_auth_base() -> Option<String> {
 /// `https://api.cline.bot` stands.
 pub(crate) fn cline_api_base() -> Option<String> {
     nonempty_env(alter_zero::llm::cline::API_BASE_ENV)
+}
+
+/// Where the xAI sign-in and its token mint go: `ALTER_ZERO_XAI_ISSUER` when
+/// set and non-empty (Phase 174's local stub, or a fork's own), else `None` —
+/// `https://auth.x.ai` stands (`docs/xai.md`).
+pub(crate) fn xai_issuer() -> Option<String> {
+    nonempty_env(alter_zero::llm::xai::ISSUER_ENV)
 }
 
 /// Where the Google Antigravity sign-in's token and userinfo calls go:

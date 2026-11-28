@@ -186,6 +186,7 @@ impl Session<'_> {
         llm::claude::forget(token);
         llm::cline::forget(token);
         llm::antigravity::forget(token);
+        llm::xai::forget(token);
         match self.models.save_api_key(&env_var, token) {
             Ok(()) => {
                 self.app.close_key_onboarding();

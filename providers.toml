@@ -31,8 +31,8 @@
 #     `LMSTUDIO_HOST`); a bare host there is completed from the base.
 #   - `auth` (optional) is how the provider authenticates: a pasted key by
 #     default, a subscription sign-in (`github_copilot`, `chatgpt_codex`,
-#     `anthropic_console`, `cline_account`, `google_antigravity`), or
-#     `optional_key` for a server
+#     `anthropic_console`, `cline_account`, `google_antigravity`,
+#     `xai_grok`), or `optional_key` for a server
 #     that needs none. It also decides the `/login` list a provider is under:
 #     Sign in with an account, Sign in with an API key, or Sign in with a
 #     local model, whose page tests the server's address before saving it
@@ -352,3 +352,29 @@ api_key_env = "ANTIGRAVITY_REFRESH_TOKEN"
 
 [providers.antigravity.kwargs]
 api_base = "https://daily-cloudcode-pa.googleapis.com"
+
+# xAI Grok — Grok on an xAI account's **SuperGrok** subscription, reached with
+# an **xAI account sign-in** (docs/xai.md). `/login` runs the device code
+# Grok's own CLI signs in with (RFC 8628, on its public client id), and what
+# `api_key_env` stores is the long-lived **refresh** token; every request
+# mints a short-lived access token from it, so nothing here is sent verbatim.
+# xAI's refresh tokens are single-use: each mint rotates the pair, and the
+# rotation is written straight back into the key store.
+#
+# The API is xAI's own, `api.x.ai`, over the **Responses** API — hence
+# `wire_api` — with three differences the request builder makes for any
+# request to it (docs/xai.md *The wire*). No `api_model_base`: the listing is
+# two of xAI's own, `/language-models` for the rows and `/models` for each
+# model's context window, read from the chat base.
+#
+# This is an unofficial route: xAI documents no sign-in for other apps, and
+# the endpoints may change without notice. The description says so.
+[providers.xai_grok]
+name = "xAI Grok"
+auth = "xai_grok"
+wire_api = "responses"
+description = "Sign in with your xAI account to use Grok on your SuperGrok subscription — unofficial: xAI doesn't document this sign-in for other apps"
+api_key_env = "XAI_GROK_REFRESH_TOKEN"
+
+[providers.xai_grok.kwargs]
+api_base = "https://api.x.ai/v1"

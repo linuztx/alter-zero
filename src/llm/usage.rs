@@ -1098,6 +1098,30 @@ fn copilot_meter(
 }
 
 // ---------------------------------------------------------------------------
+// xAI Grok (pure)
+// ---------------------------------------------------------------------------
+
+/// Where a Grok subscription's usage is shown — the page both reference
+/// clients send a user to (`docs/xai.md` */usage*).
+pub const XAI_DASHBOARD: &str = "https://grok.com/?_s=usage";
+
+/// What the page says for an xAI Grok sign-in — asked of nobody. xAI
+/// publishes no usage or limits endpoint for a Grok sign-in, so the section
+/// says where the figures are rather than drawing an empty one, and minting a
+/// token for nothing would spend a single-use refresh token besides.
+#[must_use]
+pub fn xai_report() -> UsageReport {
+    UsageReport {
+        notes: vec![UsageNote::new(
+            NoteTone::Info,
+            "xAI publishes no usage figures for a Grok sign-in — see what your plan has left on \
+             grok.com.",
+        )],
+        ..UsageReport::default()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Anthropic Console (pure)
 // ---------------------------------------------------------------------------
 
@@ -1198,6 +1222,7 @@ pub fn dashboard_url(auth: AuthScheme) -> Option<&'static str> {
         AuthScheme::GithubCopilot => Some(COPILOT_DASHBOARD),
         AuthScheme::ClineAccount => Some(CLINEPASS_DASHBOARD),
         AuthScheme::AnthropicConsole => Some(CONSOLE_DASHBOARD),
+        AuthScheme::XaiGrok => Some(XAI_DASHBOARD),
         // Google publishes no page of Antigravity quotas; the app shows them
         // in its own settings, which no link can open.
         AuthScheme::GoogleAntigravity | AuthScheme::ApiKey | AuthScheme::OptionalKey => None,
@@ -1429,6 +1454,8 @@ pub fn fetch_usage(cfg: &ModelConfig, cancel: &CancelToken) -> Result<UsageRepor
         }
         // Nothing to read: a Console sign-in has no plan (`console_report`).
         AuthScheme::AnthropicConsole => console_report(),
+        // Nothing to read: xAI publishes no usage endpoint (`xai_report`).
+        AuthScheme::XaiGrok => xai_report(),
         // The catalog carries each model's quota: the same seam as the chat
         // request mints the bearer and finds the project, then one
         // `fetchAvailableModels` (`docs/antigravity.md` */usage*).
@@ -2443,8 +2470,29 @@ mod tests {
             dashboard_url(AuthScheme::AnthropicConsole),
             Some(CONSOLE_DASHBOARD)
         );
+        assert_eq!(dashboard_url(AuthScheme::XaiGrok), Some(XAI_DASHBOARD));
         assert_eq!(dashboard_url(AuthScheme::ApiKey), None);
         assert_eq!(dashboard_url(AuthScheme::OptionalKey), None);
+    }
+
+    // --- xAI Grok ---
+
+    #[test]
+    fn an_xai_sign_in_says_its_usage_lives_on_grok_com() {
+        // xAI publishes no usage endpoint for a Grok sign-in (`docs/xai.md`
+        // */usage*): the page says so instead of drawing an empty section,
+        // and links grok.com's own usage page.
+        assert_eq!(XAI_DASHBOARD, "https://grok.com/?_s=usage");
+        let report = xai_report();
+        assert_eq!(report.plan, None);
+        assert!(report.meters.is_empty());
+        assert_eq!(report.notes.len(), 1);
+        assert_eq!(report.notes[0].tone, NoteTone::Info);
+        assert!(
+            report.notes[0].text.contains("grok.com"),
+            "{:?}",
+            report.notes
+        );
     }
 
     #[test]

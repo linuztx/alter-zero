@@ -32,6 +32,26 @@ release heading when a version is cut.
   - `ALTER_ZERO_IMAGEGEN_MODEL` names another image model for a run, such as
     `gpt-image-2.6-flare` for speed (`docs/imagegen.md`).
 
+- **Sign in with an xAI account to use Grok on your SuperGrok subscription.**
+  `/login` → **Sign in with an account** → **xAI Grok** shows a one-time
+  code beside a link that already has the code filled in. Open the link and
+  approve the code, from any device, so this also works over SSH. `/model`
+  then lists the Grok models xAI's API offers your account, each with its
+  context window, whether it reads images, and the reasoning levels **Ctrl+T**
+  cycles. On grok-4.3, which can stop reasoning, that includes Off. Tool
+  schema keywords xAI's API refuses, such as an MCP server's `format` or
+  `pattern`, are left out of what is sent, so one such server can't fail
+  every request. A refusal says what to do: no active subscription, credits
+  used up, or a sign-in to renew, and an account whose plan lists no models
+  says so in `/model` rather than showing an empty list. A server error or a
+  rate limit while you approve the code doesn't end the sign-in: it keeps
+  waiting for your approval. Several sessions can use the sign-in at once:
+  when one renews it, the others pick up the new token instead of being
+  signed out, and a sign-in kept under a variable your own `providers.toml`
+  renames stays there. This is an unofficial route, as xAI
+  documents no sign-in for other apps, so it may stop working without notice
+  (`docs/xai.md`).
+
 ### Changed
 
 - **A long turn compacts while it runs, without stopping.** Compaction used
@@ -75,6 +95,14 @@ release heading when a version is cut.
   the summary repeated it.
 
 ### Fixed
+
+- **A pasted-key xAI provider handles MCP tools that use `format` or
+  `pattern`.** A tool schema's `format` keyword can make xAI fail or hang a
+  request, and a `pattern` it can't compile is refused outright, so one MCP
+  server with such a tool can make every request fail. Requests to xAI's API left
+  those keywords out only on the Responses API. They now do on Chat
+  Completions too, which an `xai` block in your own `providers.toml` uses by
+  default (`docs/xai.md`).
 
 - **Agent Zero API** now sends chat completions to `https://llm.agent-zero.ai/v1`.
   The model list still comes directly from Venice.

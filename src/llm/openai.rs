@@ -291,7 +291,21 @@ impl OpenAiClient {
             fields.insert("service_tier".to_string(), json!(tier));
         }
         if !self.tools.is_empty() {
-            fields.insert("tools".to_string(), json!(self.tools));
+            let mut tools = json!(self.tools);
+            // xAI's grammar compiler refuses a few schema keywords outright,
+            // on this wire as on `/responses`, and an MCP server's tools often
+            // carry one (`docs/xai.md` *The wire*). What is stripped is this
+            // request's copy, never the client's own schemas.
+            if super::xai::serves(&self.cfg)
+                && let Some(specs) = tools.as_array_mut()
+            {
+                for spec in specs {
+                    if let Some(parameters) = spec.pointer_mut("/function/parameters") {
+                        super::xai::sanitize_schema(parameters);
+                    }
+                }
+            }
+            fields.insert("tools".to_string(), tools);
             fields.insert("tool_choice".to_string(), json!("auto"));
         }
         for (k, v) in &self.cfg.extra_body {
@@ -642,6 +656,14 @@ impl OpenAiClient {
             // a spent quota, an account to verify, a model this account
             // cannot reach (`docs/antigravity.md`).
             super::AuthScheme::GoogleAntigravity => super::antigravity::auth_advice(*status, body),
+            // xAI's refusals are 403s in a `{code, error}` envelope, each
+            // wanting its own answer — and one refusing the bearer itself
+            // drops it, so the next request mints a new one instead of
+            // sending the dead one for the rest of its cached life
+            // (`docs/xai.md`).
+            super::AuthScheme::XaiGrok => {
+                super::xai::advise(*status, body, self.cfg.api_key.as_deref())
+            }
             // A pasted Anthropic key meets the same refusals, minus the ones
             // about a sign-in: the advice module tells them apart by status
             // and code, so it serves both.
@@ -2426,6 +2448,52 @@ mod tests {
     }
 
     #[test]
+    fn an_xai_sign_in_s_refusals_name_what_to_do() {
+        // xAI's refusals that matter are 403s in a `{code, error}` envelope,
+        // each wanting a different answer (`docs/xai.md`).
+        let mut cfg = ModelConfig::fallback();
+        cfg.auth = crate::llm::AuthScheme::XaiGrok;
+        let client = OpenAiClient::new(cfg);
+        let refused = |error: &str| LlmError::Api {
+            status: 403,
+            body: serde_json::json!({
+                "code": "The caller does not have permission to execute the specified operation",
+                "error": error,
+            })
+            .to_string(),
+        };
+        let stale = client
+            .explain(refused(
+                "The OAuth2 access token could not be validated. [WKE=unauthenticated:bad-credentials]",
+            ))
+            .to_string();
+        assert!(stale.contains("send your message again"), "{stale}");
+        let unsubscribed = client
+            .explain(refused(
+                "You have either run out of available resources or do not have an active Grok \
+                 subscription. Manage subscriptions at https://grok.com",
+            ))
+            .to_string();
+        assert!(
+            unsubscribed.contains("no active Grok subscription"),
+            "{unsubscribed}"
+        );
+        assert!(!unsubscribed.contains("\"code\""), "{unsubscribed}");
+        // The stream's own failure, status-less, is read the same way.
+        let in_band = client
+            .explain(LlmError::Api {
+                status: 0,
+                body: "You do not have an active Grok subscription".to_string(),
+            })
+            .to_string();
+        assert!(in_band.contains("grok.com/?_s=usage"), "{in_band}");
+        // And a pasted-key provider meeting the same words keeps them.
+        let plain = OpenAiClient::new(ModelConfig::fallback())
+            .explain(refused("You do not have an active Grok subscription"));
+        assert!(plain.to_string().contains("\"code\""), "{plain}");
+    }
+
+    #[test]
     fn a_copilot_failure_we_cannot_explain_keeps_its_own_body() {
         let failure = LlmError::Api {
             status: 500,
@@ -2714,6 +2782,50 @@ data: [DONE]
         assert_eq!(
             p["tools"].as_array().unwrap().len(),
             crate::llm::tools::TOOL_NAMES.len()
+        );
+    }
+
+    #[test]
+    fn a_chat_request_to_xai_s_api_drops_the_schema_keywords_it_refuses() {
+        // `pattern` and `format` break the grammar xAI builds for a tool
+        // call's arguments on Chat Completions as on `/responses`, so a
+        // pasted-key block on this wire is stripped the same way — and an
+        // `enum`, slashes and all, is a constraint xAI honours, so it stays
+        // (`docs/xai.md` *The wire*).
+        let tools = vec![json!({"type": "function", "function": {
+            "name": "fetch",
+            "description": "Fetch a page.",
+            "parameters": {"type": "object", "properties": {
+                "url": {"type": "string", "format": "uri"},
+                "model": {"type": "string", "enum": ["meta-llama/Llama-3", "gpt2"]},
+                "pattern": {"type": "string", "pattern": "^a"},
+            }},
+        }})];
+        let mut cfg = ModelConfig::fallback();
+        cfg.api_base = "https://api.x.ai/v1".to_string();
+        let client = OpenAiClient::new(cfg).with_tools(tools.clone());
+        let p = client.build_payload(&[ChatMessage::user("hi")]);
+        assert_eq!(
+            p["tools"][0]["function"]["parameters"],
+            json!({"type": "object", "properties": {
+                "url": {"type": "string"},
+                "model": {"type": "string", "enum": ["meta-llama/Llama-3", "gpt2"]},
+                "pattern": {"type": "string"},
+            }})
+        );
+        assert_eq!(p["tools"][0]["function"]["name"], "fetch");
+        // The request's copy is stripped, never the client's own schemas.
+        assert_eq!(client.tools, tools);
+        // Any other host's request carries the schema as written.
+        let plain = OpenAiClient::new(ModelConfig::fallback()).with_tools(tools);
+        let p = plain.build_payload(&[ChatMessage::user("hi")]);
+        assert_eq!(
+            p["tools"][0]["function"]["parameters"]["properties"]["url"]["format"],
+            "uri"
+        );
+        assert_eq!(
+            p["tools"][0]["function"]["parameters"]["properties"]["model"]["enum"][0],
+            "meta-llama/Llama-3"
         );
     }
 

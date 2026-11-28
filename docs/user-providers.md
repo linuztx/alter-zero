@@ -68,6 +68,12 @@ Other services take the same block with their own id, name and base:
 | `fireworks` | `https://api.fireworks.ai/inference/v1` | `FIREWORKS_API_KEY` |
 | `xai` | `https://api.x.ai/v1` | `XAI_API_KEY` |
 
+An `xai` block is a pasted xAI API key, a row of its own beside the shipped
+**xAI Grok** sign-in, whose id is `xai_grok` (`docs/xai.md`) so that this
+block never patches it. On either wire its requests leave out the tool-schema
+keywords xAI refuses, and `/model` reads xAI's own listings; add `wire_api =
+"responses"` to send the thinking level the way xAI's sign-in does.
+
 ## Where the table comes from
 
 | | the provider table |
@@ -134,8 +140,8 @@ is for.
 | `api_model_base` | where the model list is read from, when not the chat base — a URL, or a path **relative** to the chat base (`../api/v1`, `./x`, `/x`), resolved the way a browser resolves a link, so it follows the chat base to any host the base is pointed at (LM Studio's native listing, `docs/local-models.md`) |
 | `api_base_env` | a variable whose value replaces the chat base (`OLLAMA_HOST`'s role) — a bare host in it (`gpu-box:8080`) is a server, completed from the block's own base: its scheme, its port and its API path; a value with a path is the base itself |
 | `extra_headers` | a table of headers sent with every request |
-| `auth` | how it authenticates: a pasted key by default, `optional_key` for a server that needs none, or one of the sign-ins (`docs/copilot.md`, `docs/chatgpt.md`, `docs/claude.md`, `docs/cline.md`) |
-| `wire_api` | the request shape: Chat Completions by default, or `responses`, `anthropic`, `ollama` |
+| `auth` | how it authenticates: a pasted key by default, `optional_key` for a server that needs none, or one of the sign-ins (`docs/copilot.md`, `docs/chatgpt.md`, `docs/claude.md`, `docs/cline.md`, `docs/antigravity.md`, `docs/xai.md`) |
+| `wire_api` | the request shape: Chat Completions by default, or `responses`, `anthropic`, `ollama`, `cloud_code` |
 | `drop_params` | request fields the server refuses, taken out of every request (below) |
 | `reasoning_param` | the field a Chat Completions server reads the Ctrl+T thinking level from: OpenRouter's `reasoning` object by default, or `reasoning_effort` (below) |
 

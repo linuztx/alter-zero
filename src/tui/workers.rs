@@ -169,8 +169,9 @@ pub(crate) fn spawn_server_test(
 /// GitHub's device code (`docs/copilot.md`), OpenAI's browser PKCE or its
 /// device code (`docs/chatgpt.md` — the one scheme offering two, so its
 /// `kind` is what the user picked on the method choice), Anthropic's browser
-/// PKCE (`docs/claude.md`), Cline's WorkOS device code (`docs/cline.md`), or
-/// Google's browser PKCE for Antigravity (`docs/antigravity.md`) — the one
+/// PKCE (`docs/claude.md`), Cline's WorkOS device code (`docs/cline.md`), the
+/// device code Grok's own CLI runs for xAI (`docs/xai.md`), or Google's
+/// browser PKCE for Antigravity (`docs/antigravity.md`) — the one
 /// sign-in that also sets the account up, on `base`, the provider's own host.
 /// All report on the same two messages, because every page is the same page
 /// — something to show, then a wait.
@@ -194,6 +195,7 @@ pub(crate) fn spawn_signin(
         (AuthScheme::ChatGptCodex, SigninKind::BrowserLink) => spawn_chatgpt_login(cancel, tx),
         (AuthScheme::AnthropicConsole, _) => spawn_claude_login(cancel, tx),
         (AuthScheme::ClineAccount, _) => spawn_cline_login(cancel, tx),
+        (AuthScheme::XaiGrok, _) => spawn_xai_login(cancel, tx),
         (AuthScheme::GoogleAntigravity, _) => spawn_antigravity_login(base, cancel, tx),
         (AuthScheme::GithubCopilot, _) => spawn_copilot_login(cancel, tx),
         // A pasted key has nothing to sign in to. `start_device_login`
@@ -278,6 +280,39 @@ fn spawn_cline_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSender
             // other two sign-ins: *whose* account this is is what the
             // confirmation leaves open.
             .map(|signed_in| (signed_in.refresh_token, signed_in.email))
+            .map_err(|e| e.to_string());
+        if !cancel.is_cancelled() {
+            let _ = tx.send(DeviceEvent::Done(result));
+        }
+    });
+}
+
+/// Run the xAI device-code sign-in: ask for a code, publish it with the page
+/// to approve it at — the prefilled one, so a click is the whole step — then
+/// poll until the user approves it there. See `docs/xai.md`.
+fn spawn_xai_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>) {
+    std::thread::spawn(move || {
+        let device = match llm::xai::request_device_code() {
+            Ok(device) => device,
+            Err(e) => {
+                let _ = tx.send(DeviceEvent::Done(Err(e.to_string())));
+                return;
+            }
+        };
+        if tx
+            .send(DeviceEvent::Code {
+                verification_uri: device.verification_link().to_string(),
+                user_code: device.user_code().to_string(),
+                expires_at: std::time::Instant::now() + device.lifetime(),
+            })
+            .is_err()
+        {
+            return;
+        }
+        let result = llm::xai::await_approval(&device, &cancel)
+            // The account rides back with the token: *whose* account this is
+            // is what a browser approval leaves open.
+            .map(|signed_in| (signed_in.refresh_token, signed_in.account))
             .map_err(|e| e.to_string());
         if !cancel.is_cancelled() {
             let _ = tx.send(DeviceEvent::Done(result));

@@ -314,6 +314,15 @@ its `currentTier` (which reads `free-tier` even on a paid seat), and the
 account the `userinfo` email. Google publishes no quota page, so the section
 links none. `smoke.sh` Phase 148 reads it against a stub.
 
+### xAI Grok
+
+xAI publishes no usage or limits endpoint for a Grok sign-in — neither
+reference client calls one, and its API documents none (`docs/xai.md`). The
+section asks **nobody**: one dim line says the figures are on grok.com, and it
+links grok.com's own usage page (`https://grok.com/?_s=usage`), where both
+reference clients send a user to see what a plan has left. Minting a token for
+nothing would spend a single-use refresh token besides.
+
 ### Console sign-in
 
 A Console sign-in bills per token to the account's API organisation — there

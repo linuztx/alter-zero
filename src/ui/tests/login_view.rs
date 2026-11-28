@@ -570,6 +570,36 @@ fn a_subscription_is_still_findable_by_words_the_row_no_longer_shows() {
 // --- the device-code page (docs/copilot.md) ---
 
 #[test]
+fn a_device_link_that_carries_the_code_asks_to_confirm_it_not_enter_it() {
+    // xAI's device answer links the page with the code already filled in
+    // (`docs/xai.md`): the user lands on it typed, so the page asks them to
+    // confirm the code it shows rather than to enter it.
+    let mut app = login_app_device();
+    app.set_device_code(
+        "https://accounts.x.ai/oauth2/device?user_code=ABCD-1234",
+        "ABCD-1234",
+    );
+    let onboarding = app.key_onboarding.as_ref().unwrap();
+    let mut buf = buffer(72, 14);
+    render_key_onboarding(buf.area, &mut buf, onboarding);
+    assert!(
+        row(&buf, 4, 72).contains("and confirm this one-time code"),
+        "{:?}",
+        row(&buf, 4, 72)
+    );
+    assert!(
+        !row(&buf, 4, 72).contains("enter"),
+        "{:?}",
+        row(&buf, 4, 72)
+    );
+    // A link without the code keeps the instruction to enter it.
+    let plain = login_app_device();
+    let mut buf = buffer(72, 14);
+    render_key_onboarding(buf.area, &mut buf, plain.key_onboarding.as_ref().unwrap());
+    assert!(row(&buf, 4, 72).contains("and enter this one-time code"));
+}
+
+#[test]
 fn the_device_page_shows_the_url_and_the_code_in_a_box() {
     let app = login_app_device();
     let onboarding = app.key_onboarding.as_ref().unwrap();

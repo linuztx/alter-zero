@@ -41,6 +41,7 @@ network calls are boundary code (like `main.rs`/`term.rs`), verified by hand.
 | `llm/ollama.rs` | Ollama's **native** wire format (`wire_api = "ollama"`): the `OLLAMA_HOST` grammar, the `/api/chat` body (`options.num_ctx` — the reason it exists beside Ollama's `/v1`), the NDJSON fold, the catalog parse with the context-window rule, and the explained refusals (`docs/ollama.md`) | **pure** |
 | `llm/cloud_code.rs` | Google's **Cloud Code Assist** wire format (`wire_api = "cloud_code"`): the `{project, model, request}` envelope around Gemini's `generateContent` body, the per-family tool schemas (`parametersJsonSchema` for Gemini, the bridge's six keywords for Claude/GPT-OSS), thinking per family, the SSE fold, and the process-wide memo of the thought signatures (and Claude thinking) a later request must hand back (`docs/antigravity.md`) | mostly |
 | `llm/antigravity.rs` | the Google Antigravity sign-in: the PKCE URLs and grants, the agy CLI `User-Agent`, `loadCodeAssist`/`onboardUser`'s shapes, the catalog's curation and level grouping, the explained refusals (pure); the flow, the token cache, the project lookup and the catalog fetch (`docs/antigravity.md`) | split |
+| `llm/xai.rs` | the xAI Grok sign-in: the device-code/poll/refresh bodies and verdicts, the poll's cadence, the link check, the cache-lifetime rule, the account's name, the advice, and what a request to xAI's API does differently — the schema keywords it refuses, Off as the effort `none` (pure); the flow, the token cache with its single-use rotations, and the issuer override (`docs/xai.md`) | split |
 | `llm/backend.rs` | `LlmBackend: ReplySource` — bridges the SSE deltas to `StreamEvent`s | boundary |
 
 ### Why blocking `reqwest`, a transport thread, and a hand-rolled SSE reader
@@ -150,7 +151,8 @@ and what the `Authorization` header gets (`docs/copilot.md`,
 `optional_key` is the scheme for a server that needs none), and `wire_api`
 decides whether requests take the Chat Completions, Responses, Messages,
 native-Ollama or Cloud Code shape (`docs/chatgpt.md`, `docs/claude.md`,
-`docs/ollama.md`, `docs/antigravity.md`). They are
+`docs/ollama.md`, `docs/antigravity.md`; `docs/xai.md` for the Responses API
+as xAI serves it). They are
 deliberately independent — how you authenticate and what shape the request
 takes are two questions. A third optional key, `api_base_env`, names an
 environment variable that replaces the base (Ollama's `OLLAMA_HOST`). The
@@ -158,7 +160,8 @@ table is the shipped providers (`a0_venice` — the Agent Zero/Venice proxy —
 and `venice`, Venice's own API behind it, `docs/venice.md`; `openrouter`;
 `github_copilot`; `chatgpt_codex`; `anthropic` and `anthropic_console`;
 `cline` and `cline_pass` (`docs/cline.md`); `antigravity`
-(`docs/antigravity.md`); `ollama` and `ollama_cloud`; and `lmstudio`,
+(`docs/antigravity.md`); `xai_grok` (`docs/xai.md`); `ollama` and
+`ollama_cloud`; and `lmstudio`,
 `docs/local-models.md`), with
 the user's own `~/.alter-zero/providers.toml` **laid over** them: a block with
 a new id adds a provider, one naming a shipped provider changes only the keys

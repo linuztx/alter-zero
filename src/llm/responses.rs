@@ -1,5 +1,7 @@
 //! OpenAI's **Responses** API as a wire format — the one the ChatGPT backend
-//! speaks, and the only one it speaks. See `docs/chatgpt.md`.
+//! speaks, and the only one it speaks, and the one xAI's API serves the Grok
+//! sign-in on, with three differences [`super::xai::serves`] decides. See
+//! `docs/chatgpt.md` and `docs/xai.md`.
 //!
 //! Everything here is a **translation**, in both directions, between that
 //! format and the Chat Completions currency the rest of the crate already
@@ -61,7 +63,17 @@ fn request<'a>(cfg: &ModelConfig, tools: &[Value], messages: &'a [ChatMessage]) 
     fields.insert("store".to_string(), json!(false));
     fields.insert("stream".to_string(), json!(true));
     if !tools.is_empty() {
-        fields.insert("tools".to_string(), json!(responses_tools(tools)));
+        let mut specs = responses_tools(tools);
+        // xAI's `/responses` refuses a few schema keywords outright, and an
+        // MCP server's tools often carry one (`docs/xai.md` *The wire*).
+        if super::xai::serves(cfg) {
+            for spec in &mut specs {
+                if let Some(parameters) = spec.get_mut("parameters") {
+                    super::xai::sanitize_schema(parameters);
+                }
+            }
+        }
+        fields.insert("tools".to_string(), json!(specs));
         fields.insert("tool_choice".to_string(), json!("auto"));
         fields.insert("parallel_tool_calls".to_string(), json!(true));
     }
@@ -71,14 +83,22 @@ fn request<'a>(cfg: &ModelConfig, tools: &[Value], messages: &'a [ChatMessage]) 
     // The Responses API spells reasoning as an object with an `effort`, the
     // same word Chat Completions uses — but `enabled: false` is not a thing
     // here, so `Off` sends *no* reasoning field rather than a disable the
-    // server would reject.
-    if let Some(mode) = cfg.thinking
-        && let Some(effort) = super::reasoning::effort_label(mode)
-    {
-        fields.insert(
-            "reasoning".to_string(),
-            json!({"effort": effort, "summary": "auto"}),
-        );
+    // server would reject. Except on xAI's API, whose off switch is the
+    // effort `none` — offered only where a model's ladder lists it, so only
+    // ever sent where it is accepted (`docs/xai.md` *The wire*).
+    match cfg.thinking {
+        Some(super::reasoning::ThinkingMode::Off) if super::xai::serves(cfg) => {
+            fields.insert("reasoning".to_string(), json!({"effort": "none"}));
+        }
+        Some(mode) => {
+            if let Some(effort) = super::reasoning::effort_label(mode) {
+                fields.insert(
+                    "reasoning".to_string(),
+                    json!({"effort": effort, "summary": "auto"}),
+                );
+            }
+        }
+        None => {}
     }
     // Codex's fast mode (`docs/fast-mode.md`): the selected speed tier's id,
     // top-level — `priority` — and nothing for standard, which is the
@@ -555,6 +575,9 @@ fn failure_message(value: &Value, data: &str) -> String {
                 .and_then(Value::as_str)
                 .or_else(|| e.as_str())
         })
+        // OpenAI's own `error` event names its message at the top level, as
+        // does the frame xAI can open a stream with (`docs/xai.md`).
+        .or_else(|| value.get("message").and_then(Value::as_str))
         .filter(|m| !m.trim().is_empty())
         .map_or_else(|| data.to_string(), str::to_string)
 }
@@ -758,6 +781,77 @@ mod tests {
         );
     }
 
+    /// A config whose requests go to xAI's API (`docs/xai.md`).
+    fn xai() -> ModelConfig {
+        let mut cfg = ModelConfig::fallback();
+        cfg.auth = crate::llm::AuthScheme::XaiGrok;
+        cfg.api_base = "https://api.x.ai/v1".to_string();
+        cfg
+    }
+
+    #[test]
+    fn off_on_xai_s_api_is_an_explicit_none_effort() {
+        // Elsewhere `Off` is no field at all, which on grok-4.3 would leave it
+        // reasoning at its default. xAI offers Off only on a model whose
+        // ladder lists `none`, so the `none` is always one it accepts.
+        use crate::llm::{ReasoningEffort, ThinkingMode};
+        let mut cfg = xai();
+        cfg.thinking = Some(ThinkingMode::Off);
+        let payload = build_payload(&cfg, &[], &[user("hi")]);
+        assert_eq!(payload["reasoning"], json!({"effort": "none"}));
+        // An effort rides as it does everywhere.
+        cfg.thinking = Some(ThinkingMode::Effort(ReasoningEffort::XHigh));
+        let payload = build_payload(&cfg, &[], &[user("hi")]);
+        assert_eq!(
+            payload["reasoning"],
+            json!({"effort": "xhigh", "summary": "auto"})
+        );
+        // A model with no ladder carries no reasoning field.
+        cfg.thinking = None;
+        assert!(
+            build_payload(&cfg, &[], &[user("hi")])
+                .get("reasoning")
+                .is_none()
+        );
+        // And no `include`: reasoning is replayed on no provider, so asking
+        // for its encrypted form would only download it.
+        assert!(
+            build_payload(&cfg, &[], &[user("hi")])
+                .get("include")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_request_to_xai_s_api_drops_the_schema_keywords_it_refuses() {
+        // `pattern` and `format` break the grammar xAI's `/responses` builds
+        // for a tool call's arguments — and an MCP server's schemas often
+        // carry them.
+        let tools = vec![json!({"type": "function", "function": {
+            "name": "fetch",
+            "description": "Fetch a page.",
+            "parameters": {"type": "object", "properties": {
+                "url": {"type": "string", "format": "uri"},
+                "pattern": {"type": "string", "pattern": "^a"},
+            }},
+        }})];
+        let payload = build_payload(&xai(), &tools, &[user("hi")]);
+        assert_eq!(
+            payload["tools"][0]["parameters"],
+            json!({"type": "object", "properties": {
+                "url": {"type": "string"},
+                "pattern": {"type": "string"},
+            }})
+        );
+        assert_eq!(payload["tools"][0]["name"], "fetch");
+        // Any other provider's request carries the schema as written.
+        let plain = build_payload(&ModelConfig::fallback(), &tools, &[user("hi")]);
+        assert_eq!(
+            plain["tools"][0]["parameters"]["properties"]["url"]["format"],
+            "uri"
+        );
+    }
+
     // --- the event stream ---
 
     #[test]
@@ -937,6 +1031,9 @@ mod tests {
         for frame in [
             r#"{"type":"response.failed","response":{"error":{"message":"rate limited"}}}"#,
             r#"{"type":"error","error":{"message":"rate limited"}}"#,
+            // OpenAI's own `error` event names its message at the top level,
+            // and so does the frame xAI can open a stream with.
+            r#"{"type":"error","code":"rate_limit_exceeded","message":"rate limited","param":null,"sequence_number":1}"#,
         ] {
             assert_eq!(
                 parse_event(frame),
