@@ -3420,11 +3420,7 @@ first, a repeat counted twice, sent as the conversation's own copies
 round closure in `llm::backend` for the executor to read, so a call never
 sees a picture its own round just added; fewer than asked refused before
 anything is sent), no size, quality or `n` (the request sends `auto` and
-`auto`, the backend choosing), and **no GIF output** — a `gif` is
-refused as unknown before anything is sent, since tried live on a ChatGPT account the backend refused
-every GIF, ours and the reference's own `gpt-image-2` request alike, with
-`GIF output is not enabled for this request.`, the GIF preview being
-OpenAI's to enable per account (`docs/imagegen.md` *Tried live*); the model
+`auto`, the backend choosing); the model
 is `gpt-image-2.6-sunburst` (`IMAGE_MODEL`) — a backend refusing it by name
 (a 400/404/422 whose error's `param` is `model`, whose code names an unknown
 model, or whose message names it, `refuses_model`) is asked once more with
@@ -3466,21 +3462,7 @@ it so the encoder sends the same copy on every later turn, a restart
 included, decoded from the file with no throwaway encoding
 (`tests/image_fit_memory.rs`); a vision-less model gets no picture, and the
 round sends the `[image omitted: …]` note the replay sends
-(`ToolOutcome::image_withheld`), so the cached prefix holds. **A GIF never
-rides a request as itself** — read, pasted or referenced — since
-OpenAI's vision takes no GIF that moves, Gemini's no GIF at all, and the
-conversation re-sends every picture it holds: `images::gif` tiles its frames
-left to right and top to bottom on one PNG (sixteen evenly spaced for a
-longer one, at most 1024 pixels and redrawn smaller to the cap, decoded a
-frame at a time — `tests/gif_still_memory.rs`), the attachment encoder sends
-that still in every GIF's place, byte-identical on every turn and after a
-restart, and the model is told what it is looking at (`images::tiled_frames`;
-a GIF `read`'s fact line via `tools::format_read_gif`, naming the size sent)
-— while a GIF passed to `imagegen` as a reference goes up as its first
-frame, the picture an edit edits (`imagegen::reference_url`,
-`images::gif_first_frame`); an MCP tool's image
-has no file and goes up as the server sent it (`docs/imagegen.md` *A GIF the
-model looks at*). The executor arm is
+(`ToolOutcome::image_withheld`), so the cached prefix holds. The executor arm is
 `RealToolExecutor::with_imagegen`, the backend's `with_imagegen` (subagents
 through their `tools:` — `ImageGen`), the boundary's
 `ModelSession::refresh_imagegen` at each turn start (the `skills_attached`

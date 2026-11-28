@@ -1638,11 +1638,6 @@ mod tests {
             for codex in ["CODEX_HOME", "view_image", "skills/.system", "`image_gen`"] {
                 assert!(!text.contains(codex), "{file} still says {codex}");
             }
-            // GIF output is not offered (docs/imagegen.md *Tried live*), so
-            // nothing teaches the model to ask for one.
-            for gif in ["`gif`", "frame_count", "frame_duration_ms", "looping GIF"] {
-                assert!(!text.contains(gif), "{file} still teaches {gif}");
-            }
         }
     }
 

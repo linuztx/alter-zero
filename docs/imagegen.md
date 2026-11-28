@@ -50,7 +50,6 @@ differences are these:
 | Edit inputs | `referenced_image_paths` or `num_last_images_to_include` | the same two, never both: a path for a picture with a file (a paste, a `read`, a generated image), the count for one without (an MCP tool's), which goes up as the conversation's own copy (*Images already in the conversation*) |
 | Saved to | `$CODEX_HOME/generated_images/<thread>/<call>.png` | `~/.alter-zero/generated_images/<session>/<N>.png` |
 | What the model sees | the picture | the picture, or a copy held to the attachment cap when the picture is past it |
-| GIF output | behind an under-development flag | not offered: the backend refused every GIF tried (*Tried live*) |
 | Skill visibility | always | only while the tool is offered |
 | Switch | none | the `/settings` **Image generation** row, per directory |
 
@@ -82,7 +81,7 @@ per call, taking minutes, saved and shown with its path returned, no asking
 for confirmation, edits by `referenced_image_paths` after looking with `read`
 (where Codex names `view_image`) or, for a picture with no file, by
 `num_last_images_to_include`, and `transparent_background` for a cutout.
-There is no code mode and no GIF (*Tried live*).
+There is no code mode.
 
 The tool takes no size, quality or count parameter, because Codex's sends
 `size: "auto"` and `quality: "auto"` and lets the backend choose. A model
@@ -90,9 +89,7 @@ that needs those controls is pointed at the skill's CLI by the skill.
 
 An unknown argument is refused, with the list of accepted ones. That is
 Codex's `deny_unknown_fields`. A model that passes `size` learns at once that
-it does nothing, instead of believing it got a landscape image. A `gif` is
-refused the same way, before anything is sent: GIF output is not offered
-(*Tried live*).
+it does nothing, instead of believing it got a landscape image.
 
 ### Images already in the conversation
 
@@ -114,8 +111,8 @@ asks for the newest 1 to 5 images the conversation holds:
   twice, since a picture with no file has no name to tell a repeat by.
 - **What goes up.** The conversation's own copy: the encoding the request
   already carries, shared rather than copied (`docs/memory.md`). A picture
-  past the attachment cap goes up as the smaller copy the model saw, and a
-  GIF as its frames tiled. `referenced_image_paths` reads the file instead.
+  past the attachment cap goes up as the smaller copy the model saw.
+  `referenced_image_paths` reads the file instead.
 - **Refusals**, before anything is sent: a count outside 1 to 5 (`` `num_last_images_to_include` must be between 1 and 5 ``), a count
   beside paths (``provide only one of `referenced_image_paths` or
   `num_last_images_to_include` ``; an empty list of paths names none), and a
@@ -134,9 +131,8 @@ keywords.
    - At most 5 referenced images, or a count of the newest images in the
      conversation checked as *Images already in the conversation* says.
    - Each reference resolves against the working directory, the file tools'
-     rule. It must be a PNG, JPEG, WebP or GIF, judged by its content, and
-     under the Images API's 50 MB limit. A GIF goes up as its first frame
-     (*A GIF the model looks at*).
+     rule. It must be a PNG, JPEG or WebP, judged by its content, and under
+     the Images API's 50 MB limit.
 2. **Credential.** The sign-in is read from a shared handle the boundary
    keeps current, so a `/login` mid-session reaches the next call without a
    rebuild (`ImagegenSetup`). The access token is minted through the same
@@ -237,52 +233,6 @@ keywords.
    - is re-attached on every later turn from the path on the fact line, so
      a follow-up edit can look at what it is editing.
 
-### A GIF the model looks at
-
-A GIF with a file never goes up to a model as itself, whether it was read,
-pasted or referenced. OpenAI's vision takes only a GIF that does not move,
-Gemini's takes no GIF at all, and the conversation re-sends every picture it
-holds on every turn, so one refused GIF would fail every request after it.
-(An MCP tool's image result has no file: it goes up as the server sent it, a
-GIF included.) What goes up instead is a **still** (`images::gif`): one PNG
-of the frames tiled in a regular grid of equal cells, left to right and top
-to bottom, in the squarest grid that holds them (two frames side by side,
-nine in a 3×3, sixteen in a 4×4).
-
-- A GIF of one frame is that frame. One of more than 16 frames is shown by
-  16 of them, evenly spaced from its first frame to its last.
-- The still is drawn at most 1024 pixels on its long side, then redrawn
-  smaller until its PNG fits the attachment limit
-  (`tools::READ_IMAGE_MAX_BYTES`). 1536 was tried first: decoding nine
-  1024×1024 frames into a sheet that size left 8.5 MB resident beyond the
-  encodings the session keeps, against 2.2 MB at 1024, and a 1024-pixel still
-  costs the model fewer tokens on every turn that re-sends it.
-- The frames are decoded one at a time, each shrunk into its cell before the
-  next is read: a still costs one decoded frame and the sheet, whatever the
-  GIF's length, and what stays resident is the encoding the session keeps
-  (`tests/gif_still_memory.rs`).
-- It is deterministic, and drawn by one function every path shares
-  (`images::gif_still`, behind `images::attachment_data_url`): the turn that
-  read or pasted the GIF, every later turn and a `/resume` after a restart
-  all send the same bytes, which the prompt cache depends on
-  (`docs/prompt-caching.md`). A `read` draws it itself and keeps it as the
-  session's encoding, the way a `read` keeps a picture it shrank. No copy is
-  kept on disk.
-- The model is told what it is looking at: a `read` of a GIF that moves
-  says it on the fact line, with the size of the picture sent:
-  `Read image (GIF, 512x512, 9 frames, 1.2 MB; sent as its 9 frames tiled
-  left to right and top to bottom, 3 to a row, in one 1023x1023 picture)`.
-  A `read` of a GIF of one frame reads like any picture, and like one sent
-  resized when its frame was drawn smaller
-  (`… 1100x600, …; sent resized to 1024x558, …`).
-- Passed to `imagegen` in `referenced_image_paths`, a GIF goes up as its
-  **first frame** (`images::gif_first_frame`, drawn and capped the same
-  way): the picture being edited, not a grid of it. That encoding is made for
-  the one request and never kept.
-- A GIF whose frames cannot be drawn sends nothing in its place, never the
-  GIF: a `read` of it fails, saying to convert it to a PNG first, and a later
-  turn carries `[image unavailable: …]`.
-
 ### Errors the model reads
 
 | Situation | The result |
@@ -333,13 +283,6 @@ nine in a 3×3, sixteen in a 4×4).
   on (`docs/prompt-caching.md`). A `read`'s note is unchanged.
 - **`images::fitted_attachment_data_url`**: the attachment held to a cap,
   and the `.attachments/` copy the encoder prefers (`images::attachment`).
-- **`images::gif`**: a GIF as the still of its frames — the block walker
-  (`gif_info`), the layout (`sheet_grid`, `sheet_frames`, `sheet_cell`), the
-  words for it (`tiled_frames`), `gif_still` and `gif_first_frame`. The
-  attachment encoder sends the sheet in every GIF's place, and `llm::exec`'s
-  `read` of a GIF draws it the same way; an edit's GIF reference goes up as
-  its first frame, through `imagegen::reference_url` and
-  `images::gif_first_frame_data_url`.
 - **`settings::SettingKey::ImageGen`**: the **Image generation** row,
   `SessionSettings::imagegen_offered` its gate with **Tools**, and
   `SettingKey::unavailable_reason` the toast's way to make it available.
@@ -407,18 +350,8 @@ On a ChatGPT account's sign-in in November 2026, headless turns on
     of red, green, blue and yellow quadrants came back as a watercolour
     with each colour in its own quadrant, though the prompt named neither
     the colours nor where they go.
-- GIF output, asked for with `output_format: "gif"` and its frame controls,
-  was refused every time with `HTTP 400: GIF output is not enabled for this
-  request.` (the raw answer `{"detail": "GIF output is not enabled for this
-  request."}`): on a ChatGPT Pro plan, at quality `low` and `auto`, on
-  `gpt-image-2.6-flare`, and with the reference client's own request byte
-  for byte (`model: "gpt-image-2"`, `quality: "auto"`, `size: "auto"`, two
-  frames of 200 ms). Neither the model nor the quality is the gate, and
-  nothing about the request is: the reference keeps GIF output behind a
-  feature that is off by default and still under development, and OpenAI
-  enables the GIF preview per account. So the tool does not offer it. Its
-  schema has no `gif`, a call that passes one anyway is refused before
-  anything is sent, and the skill teaches none.
+- GIF output was refused on every try with `HTTP 400: GIF output is not
+  enabled for this request.`, so the tool makes still images only.
 
 ## When it is offered
 
@@ -467,9 +400,7 @@ app:
 - *Built-in edit semantics* in `SKILL.md` teaches which way to name the
   images: a path, or
   `num_last_images_to_include` only for a picture with no file, the smallest
-  count that holds every target, never both. *When not to use* sends an
-  animation elsewhere: the tool makes still images, and a GIF reference goes
-  up as its first frame.
+  count that holds every target, never both.
 
 **Gating.** The skill is always seeded, so the built-in sync never retires it
 while signed out and re-seeds it on sign-in (`docs/builtin-updates.md`).
@@ -498,7 +429,7 @@ while the tool is not offered (`llm::skill::load_skills`):
 
 - **Pure core:** `cargo test --lib llm::imagegen`. This covers:
   - the spec, the arguments (`num_last_images_to_include`'s bounds and its
-    rule against paths, and `size`, `quality` and `gif` refused as unknown),
+    rule against paths, and `size` and `quality` refused as unknown),
     the bodies, the decoder, the scanner over split and escaped input, the
     fact line and the error wording;
   - the newest images: a request's image parts in order whoever sent them,
@@ -509,7 +440,6 @@ while the tool is not offered (`llm::skill::load_skills`):
     with `gpt-image-2`, nothing more after an Esc, both answers when the
     older model fails too, a model the run named never replaced, and the
     note saying what made the image;
-  - a GIF reference: its first frame;
   - the cell's row: the outcome's note set only when the older model made
     the image, and `cargo test --lib llm::agent` for the loop raising an
     outcome's note after an approval's; `cargo test --lib ui::tests::image`
@@ -522,12 +452,6 @@ while the tool is not offered (`llm::skill::load_skills`):
 - **The attachment:** `cargo test --lib images:: llm::agent` — the fitted copy
   sent on a restart too, a stale copy never sent, and a vision-less model's
   live note equal to the replay's.
-- **A GIF's still:** `cargo test --lib images::` — the block walker (over
-  another encoder's blocks too: an application block, a graphic control
-  block per frame, a frame with its own colours, a file cut short), the
-  grid, the cells in order, a long GIF's first and last frames, the first
-  frame alone, the cap, and a GIF's attachment the same PNG on every turn;
-  `cargo test --lib llm::exec` for a `read` of a GIF and the size it names.
 - **Another provider's model draws:** `cargo test --test headless` runs a
   headless session on a stand-in Chat Completions provider with a ChatGPT
   sign-in beside it: the tool offered, the mint, the body and headers, the
@@ -542,9 +466,7 @@ while the tool is not offered (`llm::skill::load_skills`):
 - **Memory:** `cargo test --test image_generation_memory` streams a
   multi-megabyte answer and holds the growth under 2 MB;
   `cargo test --test image_fit_memory` fits three pictures past the cap and
-  holds the growth to the copies' encodings plus 4 MB;
-  `cargo test --test gif_still_memory` draws the stills of three GIFs of nine
-  1024×1024 frames and holds the growth to their encodings plus 4 MB.
+  holds the growth to the copies' encodings plus 4 MB.
 - **On screen:** `smoke.sh` Phase 168 drives a turn end to end against a
   stand-in for the ChatGPT backend, with no network:
   - a ChatGPT Codex session asks for an image;

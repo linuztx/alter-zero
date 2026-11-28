@@ -665,10 +665,7 @@ which Ctrl+V reads the clipboard from.
   quality parameter: the backend chooses. An edit names its
   images by path or, for a picture with no file, by
   `num_last_images_to_include`, the newest images the request the model
-  answered carried, as the conversation's own copies; never both. GIF output
-  is not offered: the backend refused every GIF tried. A GIF read or pasted
-  reaches a model as its frames tiled on one PNG, never as itself, since
-  providers refuse a GIF that moves.
+  answered carried, as the conversation's own copies; never both.
 - **A release reaches the built-ins it changed** (`docs/builtin-updates.md`):
   every launch syncs the built-in skills and agent types before the walks
   read them. A copy whose bytes `prompts/shipped.sha256` lists — every

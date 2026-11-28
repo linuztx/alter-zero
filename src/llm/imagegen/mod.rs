@@ -1017,14 +1017,13 @@ const FREE_PLAN: &str =
     "image generation needs a paid ChatGPT plan, and this account is on the Free plan";
 
 /// Check the images a call names and resolve each to an absolute path: a
-/// PNG, JPEG, WebP or GIF judged by its content, under the API's
-/// [`MAX_REFERENCE_BYTES`]. A GIF goes up as its first frame
-/// ([`reference_url`]). A relative path resolves against the working
+/// PNG, JPEG or WebP judged by its content, under the API's
+/// [`MAX_REFERENCE_BYTES`]. A relative path resolves against the working
 /// directory, the file tools' rule.
 ///
 /// # Errors
 /// The first image that is missing, not a file, too large, or not one of
-/// the four formats — named, so the model can fix the call.
+/// the three formats — named, so the model can fix the call.
 pub(crate) fn resolve_references(paths: &[String]) -> Result<Vec<PathBuf>, String> {
     paths
         .iter()
@@ -1046,27 +1045,17 @@ pub(crate) fn resolve_references(paths: &[String]) -> Result<Vec<PathBuf>, Strin
                 .map_err(|e| format!("could not read the referenced image {shown}: {e}"))?;
             match format {
                 Some(
-                    image::ImageFormat::Png
-                    | image::ImageFormat::Jpeg
-                    | image::ImageFormat::WebP
-                    | image::ImageFormat::Gif,
+                    image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::WebP,
                 ) => Ok(path),
+                Some(image::ImageFormat::Gif) => Err(format!(
+                    "the referenced image {shown} is a GIF — convert it to PNG first"
+                )),
                 _ => Err(format!(
-                    "the referenced image {shown} is not a PNG, JPEG, WebP or GIF image"
+                    "the referenced image {shown} is not a PNG, JPEG or WebP image"
                 )),
             }
         })
         .collect()
-}
-
-/// The `data:` URL a referenced image goes up as. A GIF never goes up as
-/// itself: it goes up as its first frame, the picture an edit edits. Any
-/// other image goes up as the session's own encoding of it.
-fn reference_url(path: &Path) -> Option<AttachmentUrl> {
-    if crate::images::is_gif(path) {
-        return crate::images::gif_first_frame_data_url(path);
-    }
-    crate::images::attachment_data_url(path)
 }
 
 /// What a saved image hands the model to look at.
@@ -1170,7 +1159,7 @@ pub(crate) fn run_imagegen(
             let mut images = references
                 .iter()
                 .map(|path| {
-                    reference_url(path).ok_or_else(|| {
+                    crate::images::attachment_data_url(path).ok_or_else(|| {
                         format!("could not read the referenced image {}", path.display())
                     })
                 })
@@ -1264,8 +1253,8 @@ mod tests {
             (&count["type"], &count["minimum"], &count["maximum"]),
             (&json!("integer"), &json!(1), &json!(5))
         );
-        // No size, quality, count, model, output format or GIF: the backend
-        // chooses the size and the quality, a call makes one still, and the
+        // No size, quality, count, model or output format: the backend
+        // chooses the size and the quality, a call makes one image, and the
         // model is the session's (docs/imagegen.md).
         let names: Vec<&str> = props
             .as_object()
@@ -1303,18 +1292,16 @@ mod tests {
             description.contains("`transparent_background`"),
             "{description}"
         );
-        // This app looks at a local image with `read`; `view_image` and code
-        // mode are another client's.
+        // This app looks at a local image with `read`; Codex's `view_image`,
+        // code mode and GIF output are not here.
         assert!(description.contains("`read`"), "{description}");
         assert!(
             description.contains("`num_last_images_to_include`"),
             "{description}"
         );
-        for absent in ["view_image", "@exec"] {
+        for absent in ["view_image", "@exec", "gif", "GIF"] {
             assert!(!description.contains(absent), "{absent}: {description}");
         }
-        // It makes stills: GIF output is not offered, so nothing promises one.
-        assert!(!description.contains("GIF"), "{description}");
         // Every parameter is short (CLAUDE.md's tool prose rule).
         let props = &spec["function"]["parameters"]["properties"];
         for (name, param) in props.as_object().unwrap() {
@@ -1365,12 +1352,6 @@ mod tests {
         let error = ImagegenArgs::parse(r#"{"prompt": "x", "n": 2}"#).unwrap_err();
         assert!(error.contains("`n`"), "{error}");
         assert!(error.contains("`referenced_image_paths`"), "{error}");
-        assert!(!error.contains("`gif`"), "{error}");
-        // GIF output is not offered (docs/imagegen.md *Tried live*): a call
-        // asking for one is refused before anything is sent.
-        let error =
-            ImagegenArgs::parse(r#"{"prompt": "x", "gif": {"frame_count": 4}}"#).unwrap_err();
-        assert!(error.contains("unknown field `gif`"), "{error}");
         // Nor a size or a quality: the backend chooses both.
         for (raw, field) in [
             (r#"{"prompt": "x", "size": "1536x1024"}"#, "`size`"),
@@ -2238,14 +2219,10 @@ mod tests {
             resolve_references(&[show(&png)]).unwrap(),
             std::slice::from_ref(&png)
         );
-        // A GIF is taken too: it goes up as a PNG of its first frame
-        // (docs/imagegen.md).
-        assert_eq!(
-            resolve_references(&[show(&gif)]).unwrap(),
-            std::slice::from_ref(&gif)
-        );
+        let error = resolve_references(&[show(&gif)]).unwrap_err();
+        assert!(error.contains("GIF"), "{error}");
         let error = resolve_references(&[show(&text)]).unwrap_err();
-        assert!(error.contains("not a PNG, JPEG, WebP or GIF"), "{error}");
+        assert!(error.contains("not a PNG, JPEG or WebP"), "{error}");
         let error = resolve_references(&[show(dir.path())]).unwrap_err();
         assert!(error.contains("not a file"), "{error}");
         let error = resolve_references(&[show(&dir.path().join("gone.png"))]).unwrap_err();
@@ -2274,48 +2251,6 @@ mod tests {
             size: (1024, 1536),
             bytes: 1_500_000,
         }
-    }
-
-    /// A GIF of `colours.len()` 4×4 frames, one colour each.
-    fn tiny_gif(colours: &[[u8; 3]]) -> Vec<u8> {
-        let mut out = Vec::new();
-        {
-            let mut encoder = image::codecs::gif::GifEncoder::new(&mut out);
-            for [r, g, b] in colours {
-                let frame = image::RgbaImage::from_pixel(4, 4, image::Rgba([*r, *g, *b, 255]));
-                encoder.encode_frame(image::Frame::new(frame)).unwrap();
-            }
-        }
-        out
-    }
-
-    /// The picture a `data:` URL carries.
-    fn data_url_picture(url: &AttachmentUrl) -> image::RgbaImage {
-        let (head, b64) = url.split_once(";base64,").expect("a data: URL");
-        assert_eq!(head, "data:image/png");
-        let mut bytes = Vec::new();
-        let mut decoder = scan::Base64Decoder::new();
-        decoder.push_slice(b64.as_bytes(), &mut bytes).unwrap();
-        decoder.finish(&mut bytes).unwrap();
-        image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
-            .unwrap()
-            .to_rgba8()
-    }
-
-    #[test]
-    fn a_gif_reference_goes_up_as_its_first_frame() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("loop.gif");
-        std::fs::write(&path, tiny_gif(&[[255, 0, 0], [0, 255, 0], [0, 0, 255]])).unwrap();
-        // An edit edits one picture: the first frame, never the GIF itself.
-        let first = data_url_picture(&reference_url(&path).unwrap());
-        assert_eq!(first.dimensions(), (4, 4));
-        assert_eq!(first.get_pixel(2, 2).0, [255, 0, 0, 255]);
-        // Any other picture goes up as the session's own encoding of it.
-        let png = dir.path().join("a.png");
-        std::fs::write(&png, tiny_png()).unwrap();
-        let as_it_is = crate::images::attachment_data_url(&png).unwrap();
-        assert_eq!(reference_url(&png).as_deref(), Some(as_it_is.as_str()));
     }
 
     #[test]

@@ -2252,40 +2252,6 @@ pub fn format_read_image_resized(
     )
 }
 
-/// [`format_read_image`] for a GIF, which goes up as the still of its frames
-/// rather than as itself (`crate::images::gif`). A GIF that moves has its
-/// frames counted after its size, and the still's layout and size named
-/// after what it weighs — `Read image (GIF, 512x512, 9 frames, 1.2 MB; sent
-/// as its 9 frames tiled left to right and top to bottom, 3 to a row, in one
-/// 1023x1023 picture)` — so the model knows what it is looking at. A GIF of
-/// one frame reads like any picture, [`format_read_image_resized`] when its
-/// still was drawn smaller. The file's own `WxH` still comes first
-/// ([`crate::images::read_image_size`]).
-#[must_use]
-pub fn format_read_gif(
-    (width, height): (u32, u32),
-    frames: u32,
-    bytes: usize,
-    sent: (u32, u32),
-    sent_bytes: usize,
-) -> String {
-    if frames <= 1 {
-        return if sent == (width, height) {
-            format_read_image("GIF", width, height, bytes)
-        } else {
-            format_read_image_resized("GIF", width, height, bytes, sent, sent_bytes)
-        };
-    }
-    format!(
-        "{READ_IMAGE_HEAD}(GIF, {width}x{height}, {frames} frames, {size}; sent as {tiled}, in \
-         one {sw}x{sh} picture)",
-        size = human_size(bytes),
-        tiled = crate::images::tiled_frames(frames),
-        sw = sent.0,
-        sh = sent.1,
-    )
-}
-
 /// Was this `read` output an image read ([`format_read_image`])? The context
 /// replay uses it to reconstruct the follow-up attachment message.
 #[must_use]

@@ -65,7 +65,6 @@ Fallback-only docs/resources for CLI mode:
 - Creating simple shapes, diagrams, wireframes, or icons that are better produced directly in SVG, HTML/CSS, or canvas
 - Making a small project-local asset edit when the source file already exists in an editable native format
 - Any task where the user clearly wants deterministic code-native output instead of a generated bitmap
-- An animated GIF or video: the built-in tool makes still images, and a GIF in `referenced_image_paths` goes up as its first frame. Build an animation another way (frames assembled with code, SVG or CSS animation, a video tool).
 
 ## Decision tree
 
