@@ -57,6 +57,7 @@ mod tool_arguments;
 pub mod tools;
 pub mod usage;
 mod wire_history;
+pub mod xai;
 
 use std::time::Duration;
 
