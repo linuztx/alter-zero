@@ -167,7 +167,10 @@ no index in the turn's own list has to be mapped onto history.
   leaves out: the ones recorded while it was written. The derivation becomes:
   the kept user texts and the bridge for everything before those `kept`
   items, then the `kept` items and everything after the marker derived
-  normally (the marker itself derives nothing). `0` is the old rule —
+  normally (the marker itself derives nothing) — the two parts one request,
+  so one set of call ids: an id handed out in the kept items is never handed
+  out again after the marker (Ollama names the first call of every request
+  `call_0`). `0` is the old rule —
   everything before the marker — so a rollout written before this parses and
   derives exactly as it did. A count larger than the history before the
   marker keeps all of it.

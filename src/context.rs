@@ -687,10 +687,14 @@ fn derive_history_into(out: &mut Derived, history: &[HistoryItem]) {
             vec![],
             TextOrigin::Summary,
         );
-        derive_into(out, &history[keep_from..cut]);
-        derive_into(out, &history[cut + 1..]);
+        // One request, so one set of call ids across the tail and what
+        // follows the marker: a fresh set for each would hand Ollama's
+        // `call_0` (or a synthesized one) out twice.
+        let mut ids = CallIds::default();
+        derive_into(out, &history[keep_from..cut], &mut ids);
+        derive_into(out, &history[cut + 1..], &mut ids);
     } else {
-        derive_into(out, history);
+        derive_into(out, history, &mut CallIds::default());
     }
 }
 
@@ -702,13 +706,14 @@ fn derive_history_into(out: &mut Derived, history: &[HistoryItem]) {
 /// every call under the provider's own ids, then every result, so the request
 /// re-sends the prefix the provider cached rather than one call per message
 /// under synthesized ids (`docs/prompt-caching.md`). A record with no batch
-/// is a round of its own, exactly as before the ids were recorded.
-fn derive_into(out: &mut Derived, history: &[HistoryItem]) {
-    let mut ids = CallIds::default();
+/// is a round of its own, exactly as before the ids were recorded. `ids` is
+/// the request's: a derivation in two runs (a background marker's kept tail,
+/// then the items after it) hands both the same set.
+fn derive_into(out: &mut Derived, history: &[HistoryItem], ids: &mut CallIds) {
     let mut position = 0;
     while position < history.len() {
         if let Some(round) = round_at(history, position) {
-            derive_round(out, &round, &mut ids);
+            derive_round(out, &round, ids);
             position = round.end;
             continue;
         }
@@ -2379,6 +2384,46 @@ mod tests {
             "the round while it was written stays, the one before it is summarized: {ctx:?}"
         );
         assert_eq!(ctx.last().map(|m| m.text.as_str()), Some("done"));
+    }
+
+    #[test]
+    fn call_ids_stay_unique_across_the_kept_tail_and_what_follows_the_marker() {
+        // The kept tail and the items after the marker are one request's
+        // calls, so no id is handed out twice across them: not Ollama's
+        // `call_0`, which it names the first call of every request, nor the
+        // synthesized one a call recorded without an id gets.
+        let read = |output: &str, id: Option<&str>| {
+            let HistoryItem::Tool(mut call) = tool("read", "a.rs", output, ToolStatus::Ok, false)
+            else {
+                unreachable!("tool builds a Tool");
+            };
+            call.call_id = id.map(str::to_string);
+            HistoryItem::Tool(call)
+        };
+        for id in [Some("call_0"), None] {
+            let history = vec![
+                message(Role::User, "port the module"),
+                read("summarized", id),
+                read("kept", id),
+                background("read a.rs", 1),
+                read("after", id),
+            ];
+            let ctx = context_messages(&history);
+            let calls: Vec<&str> = ctx
+                .iter()
+                .flat_map(|m| m.tool_calls.iter().map(|call| call.id.as_str()))
+                .collect();
+            let results: Vec<&str> = ctx
+                .iter()
+                .filter_map(|m| m.tool_call_id.as_deref())
+                .collect();
+            assert_eq!(calls.len(), 2, "{id:?}: {ctx:?}");
+            assert_ne!(calls[0], calls[1], "{id:?}: one id for two calls: {ctx:?}");
+            assert_eq!(
+                results, calls,
+                "{id:?}: each result answers its call: {ctx:?}"
+            );
+        }
     }
 
     #[test]
