@@ -41,6 +41,7 @@ network calls are boundary code (like `main.rs`/`term.rs`), verified by hand.
 | `llm/ollama.rs` | Ollama's **native** wire format (`wire_api = "ollama"`): the `OLLAMA_HOST` grammar, the `/api/chat` body (`options.num_ctx` — the reason it exists beside Ollama's `/v1`), the NDJSON fold, the catalog parse with the context-window rule, and the explained refusals (`docs/ollama.md`) | **pure** |
 | `llm/cloud_code.rs` | Google's **Cloud Code Assist** wire format (`wire_api = "cloud_code"`): the `{project, model, request}` envelope around Gemini's `generateContent` body, the per-family tool schemas (`parametersJsonSchema` for Gemini, the bridge's six keywords for Claude/GPT-OSS), thinking per family, the SSE fold, and the process-wide memo of the thought signatures (and Claude thinking) a later request must hand back (`docs/antigravity.md`) | mostly |
 | `llm/antigravity.rs` | the Google Antigravity sign-in: the PKCE URLs and grants, the agy CLI `User-Agent`, `loadCodeAssist`/`onboardUser`'s shapes, the catalog's curation and level grouping, the explained refusals (pure); the flow, the token cache, the project lookup and the catalog fetch (`docs/antigravity.md`) | split |
+| `llm/xai.rs` | the xAI Grok sign-in: the RFC 8628 device code's bodies, parse and poll verdict, the token set, the freshness rule, the claims, the explained refusals (pure); the code request and poll, the refresh, the token cache and the rotation write-back (`docs/xai.md`) | split |
 | `llm/backend.rs` | `LlmBackend: ReplySource` — bridges the SSE deltas to `StreamEvent`s | boundary |
 
 ### Why blocking `reqwest`, a transport thread, and a hand-rolled SSE reader
@@ -158,8 +159,8 @@ table is the shipped providers (`a0_venice` — the Agent Zero/Venice proxy —
 and `venice`, Venice's own API behind it, `docs/venice.md`; `openrouter`;
 `github_copilot`; `chatgpt_codex`; `anthropic` and `anthropic_console`;
 `cline` and `cline_pass` (`docs/cline.md`); `antigravity`
-(`docs/antigravity.md`); `ollama` and `ollama_cloud`; and `lmstudio`,
-`docs/local-models.md`), with
+(`docs/antigravity.md`); `xai_grok` (`docs/xai.md`); `ollama` and
+`ollama_cloud`; and `lmstudio`, `docs/local-models.md`), with
 the user's own `~/.alter-zero/providers.toml` **laid over** them: a block with
 a new id adds a provider, one naming a shipped provider changes only the keys
 it sets, and every problem in the file is a toast rather than a silence
@@ -189,6 +190,7 @@ directory's entry being only what a *new* session starts on
 | `ALTER_ZERO_ENV_FILE` | the `.env` key store `/login` reads and writes (and where a rotated ChatGPT refresh token is written back — `docs/chatgpt.md`) | `{config_home}/.env` |
 | `ALTER_ZERO_OPENAI_ISSUER` | the auth server ChatGPT Codex's browser and device-code sign-ins talk to — a fork's own, or the smoke suite's local stub (`docs/chatgpt.md`) | `https://auth.openai.com` |
 | `ALTER_ZERO_CLINE_AUTH_BASE` / `ALTER_ZERO_CLINE_API_BASE` | the two hosts Cline's account sign-in talks to — WorkOS and Cline's own API — a fork's own, or the smoke suite's local stub (`docs/cline.md`) | `https://api.workos.com` / `https://api.cline.bot` |
+| `ALTER_ZERO_XAI_ISSUER` | the issuer xAI Grok's device-code sign-in and its refresh talk to — a fork's own, or the smoke suite's local stub (`docs/xai.md`) | `https://auth.x.ai` |
 | `OLLAMA_HOST` / `OLLAMA_HOST_API_KEY` / `OLLAMA_CONTEXT_LENGTH` | the `ollama` provider's host (pointing at it is what configures it), that server's optional bearer, and the mirrored server default window (`docs/ollama.md`) | unset |
 | `OLLAMA_API_KEY` | `ollama_cloud`'s key alone — the two Ollama providers read two variables, so one does not configure the other (`docs/ollama.md`) | unset |
 | `LMSTUDIO_HOST` / `LM_API_TOKEN` | the `lmstudio` provider's address (a bare `localhost:1234` is completed to its `/v1`; pointing at it is what configures it, and `/login` → Sign in with a local model writes it once the connection test passes) and the token LM Studio's server wants when set to require one (`docs/local-models.md`) | unset |
@@ -574,15 +576,17 @@ local half — a server's address, **tested before it is saved** — is
   (`docs/cline.md`), ChatGPT Codex's browser PKCE **or** its device code for
   a headless machine (`docs/chatgpt.md` — Enter on that row opens a titled
   two-row choice, `Browser login (default)` / `Device code login (headless)`,
-  before any page), or Anthropic's Console PKCE (`docs/claude.md`), the row's
+  before any page), Anthropic's Console PKCE (`docs/claude.md`), Google
+  Antigravity's PKCE (`docs/antigravity.md`), or xAI Grok's device code
+  (`docs/xai.md`), the row's
   `SubscriptionChoice::kinds` (the first the default) naming which
   `SigninKind` pages it can open. All of them end in the same `.env` store,
   under the provider's own `api_key_env`, which is what makes the fork cheap:
   `/model`, the ✓ marks, the capability probe and the next launch need no
-  second mechanism. The two browser flows are the *same page* — a link and a
+  second mechanism. The browser flows are the *same page* — a link and a
   wait — so they share `SigninKind::BrowserLink` and differ only in their
-  constants; and ChatGPT's device code lands on the very page Copilot's and
-  Cline's do.
+  constants; and ChatGPT's and xAI's device codes land on the very page
+  Copilot's and Cline's do.
 - **Key step**: printable keys and Backspace edit the key, a **bracketed paste**
   (`App::paste_into_key_onboarding`) appends it with whitespace/newlines stripped
   (API keys are always pasted), `Enter` saves a non-empty key

@@ -865,7 +865,7 @@ fn catalog_or_error(models: Vec<ModelEntry>, auth: super::AuthScheme) -> Result<
 /// carries the `context_length` that `/language-models` leaves out. Joined by
 /// id and nothing more: a model the full listing doesn't name keeps no
 /// window rather than borrowing one, and a model only the full listing names
-/// — an image or video generator — is not added (`docs/xai.md`).
+/// — an image generator — is not added (`docs/xai.md`).
 fn with_windows(mut catalog: Vec<ModelEntry>, windows: &[ModelEntry]) -> Vec<ModelEntry> {
     for entry in &mut catalog {
         if entry.context.is_none() {
@@ -919,7 +919,7 @@ fn models_url(base: &str, auth: super::AuthScheme, wire: super::WireApi) -> Stri
             )
         }
         // xAI's catalog of the models that chat: `/models` lists its image
-        // and video generators beside them (`docs/xai.md`). The windows
+        // generators beside them (`docs/xai.md`). The windows
         // `/language-models` leaves out are joined from `/models` by
         // `fetch_models`.
         super::AuthScheme::XaiGrok => format!("{base}/language-models"),
@@ -2092,7 +2092,7 @@ mod tests {
     #[test]
     fn the_xai_catalog_is_its_language_model_listing() {
         // `/language-models` lists the models that chat (and see), never
-        // the image and video generators `/models` lists beside them.
+        // the image generators `/models` lists beside them.
         let mut cfg = ModelConfig::fallback();
         cfg.api_model_base = "https://api.x.ai/v1/".to_string();
         cfg.auth = super::super::AuthScheme::XaiGrok;

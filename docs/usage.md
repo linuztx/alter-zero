@@ -323,6 +323,18 @@ that the organisation is billed per token with no plan limits, and links the
 Console's usage page. Minting a token only to name the organisation would
 rotate the sign-in's refresh token for a fact the page doesn't need.
 
+### xAI Grok
+
+An xAI sign-in asks **nobody** either. xAI's API has usage reads only for API
+teams, on a management key; a Grok subscription's weekly usage pool is shown
+on the Grok dashboard, which xAI's own docs point at ("Check usage under
+**Usage** at grok.com/dashboard"). So the section is one dim note saying
+that, and links `https://grok.com/dashboard` (`usage::xai_report`,
+`usage::XAI_DASHBOARD`). Minting a bearer only to say nothing would rotate
+the sign-in's single-use refresh token for nothing (`docs/xai.md`).
+`smoke.sh` Phase 174 opens the page against a stub and counts that it asked
+the API for nothing.
+
 ### Failures
 
 A refused read is worded for what to do (`llm::usage::usage_advice`): a `401`

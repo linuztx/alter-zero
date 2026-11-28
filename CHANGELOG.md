@@ -12,6 +12,18 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **Sign in with a Grok subscription to use xAI's models.** `/login` →
+  **Sign in with an account** → **xAI Grok** shows a one-time code and the
+  page to enter it at, so it works over SSH and in containers too. When you
+  approve it there, the sign-in completes and names the account. `/model`
+  then lists the Grok models your subscription can reach, each with its
+  context window, and **Ctrl+T** cycles exactly the reasoning levels xAI says
+  that model accepts. Turns go to xAI's own API, and `/usage` points you at
+  the Grok dashboard, where xAI shows a subscription's weekly usage. The
+  sign-in uses the same public client xAI's Grok CLI does (`docs/xai.md`).
+
 ### Changed
 
 - **A long turn compacts while it runs, without stopping.** Compaction used

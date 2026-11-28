@@ -892,7 +892,8 @@ ChatGPT's `wham/usage` on the backend's root, Copilot's
 `access_type_sku` first, since a Free seat reports Pro's `individual` slug;
 `ALTER_ZERO_GITHUB_API_BASE` moves it and the token exchange), ClinePass's
 plan (named by its billing interval) then `usage-limits`, and **no request at
-all** for a Console sign-in, which bills per token and has nothing to read —
+all** for a Console sign-in, which bills per token and has nothing to read, or
+an xAI one, whose subscription usage xAI shows on its dashboard alone —
 each parsed leniently, section by section, into one
 `llm::usage::UsageReport`; results keyed on **rounds** the pure core hands out
 (`App::begin_usage_round`/`finish_usage_fetch`, the counter on `App` so a
@@ -1216,7 +1217,50 @@ its family, the plan off `paidTier` since `currentTier` reads free on a paid
 seat); `antigravity::auth_advice` words the verification link (Google's own
 host only), a spent quota and when it resets, a rate limit, no capacity and a
 model gone; `smoke.sh` Phase 148 plays the browser against a stub for the
-whole sign-in → onboarding → `/model` → turn → `/usage` path; the **user's own providers**
+whole sign-in → onboarding → `/model` → turn → `/usage` path; the **xAI Grok
+provider** — a Grok subscription (SuperGrok) reached with an **xAI
+sign-in** (`auth = "xai_grok"`, `wire_api = "responses"` on
+`https://api.x.ai/v1`, `src/llm/xai.rs`, `docs/xai.md`): an RFC 8628
+**device code** on xAI's issuer `auth.x.ai` and nothing else — the headless
+flow xAI documents for its own Grok CLI, whose public client id and scopes
+(`grok-cli:access api:access`, `offline_access` for the refresh token)
+hermes-agent and pi both send, both of them device-code only — so the row
+opens the Copilot device page at once, naming the plain `verification_uri`
+(never the one-click `_complete` one, which would make "enter this one-time
+code" false — Cline's rule), the page refusing one that is not `https`; the
+poll reads RFC 8628's errors plus xAI's `authorization_denied`, polls again
+through a 408/429/5xx that names none (a proxy page is not a denial), grows
+the interval on `slow_down` to the server's number or five seconds more,
+never faster and never past a minute, and refuses an approval with no
+refresh token; the confirmation names the account off the access token's
+`email` claim. The access token **is** the bearer — no exchange, no header
+beside it — cached from `expires_in` first and the token's `exp` second
+(ChatGPT's rule), the refresh token single-use and rotating, so the cache is
+Claude's gate, rotation chain, write-back guard and `forgotten` list, with
+one change: a refresh clears `forgotten` as it starts, since the sign-in's
+own `forget` of the token it stores used to make the first refresh after it
+discard its bearer (Phase 174 counts one refresh). Every field the
+Responses body sends is one xAI's API reference lists, and xAI routes its
+automatic cache on the body's `prompt_cache_key` (an `x-grok-conv-id`
+header is its equal, and loses to it), so no header is added; encrypted
+reasoning is not round-tripped, ChatGPT's posture. The catalog is
+`/v1/language-models` (the models that chat, `input_modalities` for vision)
+with each window joined in by id from `/v1/models`' `context_length`
+(`models::with_windows`, the image generators it also lists never added, a
+failed second read costing only the gauge), and `capabilities.reasoning_effort`
+— the values the model accepts — is the Ctrl+T ladder, with **no Off rung**
+even where `none` is listed (Off is an omission on this wire, and an xAI
+model sent no effort reasons at its default) and no ladder at all for a
+model listing none (grok-4.20-0309-*, which refuse the parameter); an empty
+catalog is an error naming the subscription. `xai::auth_advice` tells xAI's
+stale-bearer 403 (`[WKE=unauthenticated:…]`) and a 401 — sign in again —
+from every other 403, the account (no API access, usage spent), which
+signing in again cannot fix; `/usage` asks nobody and links
+`grok.com/dashboard`, where xAI shows a subscription's weekly pool;
+`ALTER_ZERO_XAI_ISSUER` points the issuer at a stub; `smoke.sh` Phase 174
+drives the sign-in, `/model`, Ctrl+T, a turn, the rotation written back and
+`/usage` against one, and `tests/live_caching.rs`' `live_xai_…` runs it on a
+real account; the **user's own providers**
 (`docs/user-providers.md`): `{config_home}/providers.toml` is **laid over**
 the embedded shipped table rather than replacing it —
 `ProvidersFile::with_user_layer`, a raw-TOML merge where a new id adds a
