@@ -22,6 +22,9 @@
 //! - [`fitted`] — pure. A PNG decoded at the size it will be shown or sent,
 //!   streaming its rows through an area-average shrink so the source picture
 //!   is never held whole (`docs/memory.md`).
+//! - [`gif`] — a GIF as the still that goes up in its place: its frames tiled
+//!   on one PNG, since providers refuse a GIF that moves, or any GIF at all
+//!   (`docs/imagegen.md`).
 //! - [`store`] — the paint boundary. What this terminal can draw (from the
 //!   environment and `TIOCGWINSZ`, and — where those name nothing — the
 //!   terminal's own answer inside the cursor query's read, never a stdin
@@ -31,6 +34,7 @@
 pub mod attachment;
 pub mod fitted;
 pub mod geometry;
+pub mod gif;
 pub mod payload;
 pub mod registry;
 pub mod store;
@@ -38,7 +42,8 @@ pub mod store;
 pub use attachment::{
     ATTACHMENT_CACHE_MAX_BYTES, AttachmentCache, AttachmentStamp, AttachmentUrl, FITTED_DIR,
     FittedAttachment, attachment_data_url, attachment_mime, base64_encode_reader,
-    clear_attachments, fitted_attachment_data_url, remember_attachment, retain_attachments,
+    clear_attachments, fitted_attachment_data_url, gif_first_frame_data_url, remember_attachment,
+    retain_attachments,
 };
 pub use fitted::{
     Downsampler, FIT_MAX_SOURCE_PIXELS, WHOLE_DECODE_MAX_PIXELS, decode_png_fitted, fit_box,
@@ -48,6 +53,10 @@ pub use geometry::{
     AUTO_RESIZE_MAX_PIXELS, DEFAULT_FONT_SIZE, DEFAULT_IMAGE_WIDTH, FontSize, IMAGE_GUTTER_COLS,
     IMAGE_ID_MAX, IMAGE_MAX_ROWS, IMAGE_WIDTH_CHOICES, carrier, carrier_parts, fit_cells,
     image_budget, image_cells,
+};
+pub use gif::{
+    GifInfo, GifStill, SHEET_MAX_FRAMES, gif_first_frame, gif_info, gif_still, is_gif, sheet_cell,
+    sheet_frames, sheet_grid, tiled_frames,
 };
 pub use payload::{
     Downscaled, PAYLOAD_CACHE_MAX_BYTES, cache_eviction, cached_downscale, cached_payload_file,

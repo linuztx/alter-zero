@@ -176,6 +176,10 @@ only three:
 Either way the size is only half of it: a picture reserves rows only while
 its file is still there to draw from (*A picture whose file is gone*, above).
 
+A GIF, read or pasted, is drawn by its first frame. What the model is sent of
+it is its frames tiled on one PNG, never the GIF itself (`images::gif`,
+`docs/imagegen.md` *A GIF the model looks at*).
+
 ## The geometry
 
 `images::image_budget` then `images::fit_cells`, both pure:

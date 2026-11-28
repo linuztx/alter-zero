@@ -92,6 +92,43 @@ fn a_generated_image_draws_the_file_its_fact_line_names() {
 }
 
 #[test]
+fn an_image_the_older_model_made_says_so_on_its_cell() {
+    // The fallback's dim row (docs/imagegen.md *The model*): the cell's last
+    // row, inline and in Ctrl+O, the picture still drawn under it.
+    let _guard = drawing(120);
+    let mut tool = match generated("/g/s/1.png", (1536, 1024)) {
+        HistoryItem::Tool(tool) => tool,
+        _ => unreachable!(),
+    };
+    tool.add_note("Made with gpt-image-2 (Images 2.6 not available)");
+    let row = |lines: Vec<Line<'static>>| {
+        lines
+            .last()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .unwrap_or_default()
+    };
+    let paths = crate::app::PathDisplay::VERBATIM;
+    for last in [
+        row(tool_lines(&tool, 100, &paths)),
+        row(crate::ui::tool::tool_full_lines(&tool, 100, &paths)),
+    ] {
+        assert!(last.contains("⎿"), "{last:?}");
+        assert!(
+            last.ends_with("Made with gpt-image-2 (Images 2.6 not available)"),
+            "{last:?}"
+        );
+    }
+    let item = HistoryItem::Tool(tool);
+    assert!(!marked_rows(&image_block_lines(&item, 100)).is_empty());
+    restore();
+}
+
+#[test]
 fn a_failed_generation_draws_nothing() {
     let _guard = drawing(120);
     let mut tool = match generated("/g/s/1.png", (1536, 1024)) {

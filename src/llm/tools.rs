@@ -110,6 +110,15 @@ pub struct ToolOutcome {
     /// a command stopped at its time limit. A failed outcome that names none
     /// is the tool's own failure ([`ToolOutcome::run`]).
     pub error_kind: Option<crate::stream::ToolErrorKind>,
+    /// `Some(text)` when the executor knows something about **how the call
+    /// ran** that its cell should say — an image the older model made
+    /// (`docs/imagegen.md` *The model*). The agent loop raises it as a
+    /// `StreamEvent::ToolNote`, the provenance channel an approval and a
+    /// hook already use, so it is the resolved cell's dim `⎿` row, in the
+    /// Ctrl+O transcript and the rollout too
+    /// ([`crate::app::ToolCall::approval_note`]). `None` for every other
+    /// outcome.
+    pub note: Option<String>,
 }
 
 impl ToolOutcome {
@@ -127,6 +136,7 @@ impl ToolOutcome {
             context: None,
             exit_code: None,
             error_kind: None,
+            note: None,
         }
     }
 
@@ -145,6 +155,7 @@ impl ToolOutcome {
             context: None,
             exit_code: None,
             error_kind: None,
+            note: None,
         }
     }
 
@@ -164,7 +175,15 @@ impl ToolOutcome {
             context: None,
             exit_code: None,
             error_kind: None,
+            note: None,
         }
+    }
+
+    /// Say how the call ran on its cell's dim row ([`Self::note`]).
+    #[must_use]
+    pub fn with_note(mut self, note: impl Into<String>) -> Self {
+        self.note = Some(note.into());
+        self
     }
 
     /// Mark the output as truncated at the byte cap.
@@ -2230,6 +2249,40 @@ pub fn format_read_image_resized(
         sw = sent.0,
         sh = sent.1,
         ssize = human_size(sent_bytes),
+    )
+}
+
+/// [`format_read_image`] for a GIF, which goes up as the still of its frames
+/// rather than as itself (`crate::images::gif`). A GIF that moves has its
+/// frames counted after its size, and the still's layout and size named
+/// after what it weighs — `Read image (GIF, 512x512, 9 frames, 1.2 MB; sent
+/// as its 9 frames tiled left to right and top to bottom, 3 to a row, in one
+/// 1023x1023 picture)` — so the model knows what it is looking at. A GIF of
+/// one frame reads like any picture, [`format_read_image_resized`] when its
+/// still was drawn smaller. The file's own `WxH` still comes first
+/// ([`crate::images::read_image_size`]).
+#[must_use]
+pub fn format_read_gif(
+    (width, height): (u32, u32),
+    frames: u32,
+    bytes: usize,
+    sent: (u32, u32),
+    sent_bytes: usize,
+) -> String {
+    if frames <= 1 {
+        return if sent == (width, height) {
+            format_read_image("GIF", width, height, bytes)
+        } else {
+            format_read_image_resized("GIF", width, height, bytes, sent, sent_bytes)
+        };
+    }
+    format!(
+        "{READ_IMAGE_HEAD}(GIF, {width}x{height}, {frames} frames, {size}; sent as {tiled}, in \
+         one {sw}x{sh} picture)",
+        size = human_size(bytes),
+        tiled = crate::images::tiled_frames(frames),
+        sw = sent.0,
+        sh = sent.1,
     )
 }
 

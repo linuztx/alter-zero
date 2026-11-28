@@ -656,13 +656,19 @@ which Ctrl+V reads the clipboard from.
   (`docs/imagegen.md`): with ChatGPT Codex signed in, every session is
   offered the `imagegen` tool, Codex's built-in `image_gen.imagegen` as a
   plain function. A Claude or Ollama turn makes images on the ChatGPT plan's
-  quota. The tool POSTs Codex's body to the Codex backend's
-  `/images/generations` or `/images/edits` with the shared bearer. It
-  streams the answer's base64 straight into
+  quota. The tool POSTs an Images 2.6 body (`gpt-image-2.6-sunburst`) to
+  the ChatGPT backend's `/images/generations` or `/images/edits` with the
+  shared bearer. It streams the answer's base64 straight into
   `~/.alter-zero/generated_images/<session>/N.png`, kilobytes whatever the
   image weighs. The cell names the file and draws it, and the picture rides
-  the model's context and is replayed like an image `read`. No size,
-  quality or model parameter, as in Codex: the backend chooses.
+  the model's context and is replayed like an image `read`. No size or
+  quality parameter: the backend chooses. An edit names its
+  images by path or, for a picture with no file, by
+  `num_last_images_to_include`, the newest images the request the model
+  answered carried, as the conversation's own copies; never both. GIF output
+  is not offered: the backend refused every GIF tried. A GIF read or pasted
+  reaches a model as its frames tiled on one PNG, never as itself, since
+  providers refuse a GIF that moves.
 - **A release reaches the built-ins it changed** (`docs/builtin-updates.md`):
   every launch syncs the built-in skills and agent types before the walks
   read them. A copy whose bytes `prompts/shipped.sha256` lists — every

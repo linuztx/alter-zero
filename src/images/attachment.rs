@@ -271,6 +271,17 @@ pub fn attachment_data_url(path: &Path) -> Option<AttachmentUrl> {
     Some(url)
 }
 
+/// The `data:` URL of the GIF at `path`'s first frame
+/// ([`super::gif::gif_first_frame`]), held to the attachment cap: what an
+/// `imagegen` edit of the GIF sends. Made for the one request that needs it and
+/// never kept — every later turn sends the GIF's frames tiled, its encoding
+/// ([`attachment_data_url`]).
+#[must_use]
+pub fn gif_first_frame_data_url(path: &Path) -> Option<AttachmentUrl> {
+    let still = super::gif::gif_first_frame(path, crate::llm::tools::READ_IMAGE_MAX_BYTES)?;
+    Some(encode_bytes(&still.bytes, "image/png"))
+}
+
 /// Hold `payload` (already the bytes the wire should carry, under `mime`) as
 /// the encoding of the picture at `path` — the `read` tool's seam, which has
 /// the bytes in hand and whose picture every later turn re-sends. The URL
@@ -332,6 +343,14 @@ fn attachment_format(mime: &str) -> Option<ImageFormat> {
 /// to shrink it, and only once: the shrunk copy is a sidecar on disk from
 /// then on ([`super::payload`]).
 fn encode_attachment(path: &Path) -> Option<AttachmentUrl> {
+    // A GIF never goes up as itself: a provider may refuse one that moves, or
+    // any GIF at all, and every later turn would re-send the refusal. Its
+    // frames go up tiled on a PNG ([`super::gif`]) — or, when they cannot be
+    // drawn, nothing does, which the request turns into a note.
+    if super::gif::is_gif(path) {
+        let still = super::gif::gif_still(path, crate::llm::tools::READ_IMAGE_MAX_BYTES)?;
+        return Some(encode_bytes(&still.bytes, "image/png"));
+    }
     // A picture too large to attach was sent as a smaller copy, kept beside
     // it so every later turn — a restart included — sends that copy again
     // ([`fitted_attachment_data_url`]).
@@ -389,6 +408,12 @@ pub struct FittedAttachment {
 /// when the file can't be read or no copy fits.
 #[must_use]
 pub fn fitted_attachment_data_url(path: &Path, cap: usize) -> Option<FittedAttachment> {
+    // A GIF goes up as the still of its frames, already held to the
+    // attachment cap: no copy to keep, since every turn draws the same one.
+    if super::gif::is_gif(path) {
+        let url = attachment_data_url(path)?;
+        return (payload_len(&url) <= cap).then_some(FittedAttachment { url, sent: None });
+    }
     // Decided before anything is encoded: a picture's encoding is its size
     // in memory again, and one made only to be thrown away is the residue
     // glibc keeps (`docs/memory.md`).

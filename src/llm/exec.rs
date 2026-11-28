@@ -92,6 +92,11 @@ pub struct RealToolExecutor {
     /// offers it (`docs/imagegen.md`). `None` declines a call recoverably —
     /// a model can name a tool it was never offered.
     imagegen: Option<crate::llm::imagegen::ImagegenSetup>,
+    /// The images the conversation holds as of the round being answered,
+    /// which the backend records each round (`docs/imagegen.md`): what an
+    /// `imagegen` call's `num_last_images_to_include` takes the newest of.
+    /// Empty when nothing records them.
+    conversation_images: crate::llm::imagegen::ConversationImages,
 }
 
 impl RealToolExecutor {
@@ -144,6 +149,17 @@ impl RealToolExecutor {
         self.imagegen = setup;
         self
     }
+
+    /// Read the conversation's images from `images`, the handle the backend
+    /// records each round's request into (`docs/imagegen.md`).
+    #[must_use]
+    pub fn with_conversation_images(
+        mut self,
+        images: crate::llm::imagegen::ConversationImages,
+    ) -> Self {
+        self.conversation_images = images;
+        self
+    }
 }
 
 impl ToolExecutor for RealToolExecutor {
@@ -194,9 +210,13 @@ impl ToolExecutor for RealToolExecutor {
             "write" => run_write(&call.arguments),
             "edit" => run_edit(&call.arguments),
             crate::llm::imagegen::IMAGEGEN_TOOL_NAME => match &self.imagegen {
-                Some(setup) => {
-                    crate::llm::imagegen::run_imagegen(&call.arguments, setup, self.vision, cancel)
-                }
+                Some(setup) => crate::llm::imagegen::run_imagegen(
+                    &call.arguments,
+                    setup,
+                    self.vision,
+                    &self.conversation_images,
+                    cancel,
+                ),
                 None => ToolOutcome::error(crate::llm::imagegen::UNAVAILABLE),
             },
             other => ToolOutcome::error(format!("unknown tool: {other}")),
@@ -529,6 +549,7 @@ fn run_piped(
         // The status the frame above names, as data (docs/rollout-records.md).
         exit_code,
         error_kind: None,
+        note: None,
     }
 }
 
@@ -1292,6 +1313,9 @@ fn read_image(path: &str, bytes: &[u8]) -> ToolOutcome {
             return ToolOutcome::error(format!("could not decode {path} as an image: {err}"));
         }
     };
+    if format == image::ImageFormat::Gif {
+        return read_gif(path, bytes, (width, height));
+    }
     // `/settings` **Auto-resize images**: a 12-megapixel photo is megabytes of
     // base64 the model reads no better than the same picture at 2000 pixels,
     // and past the byte cap it could not be sent at all. The *file* is
@@ -1336,6 +1360,32 @@ fn read_image(path: &str, bytes: &[u8]) -> ToolOutcome {
         ),
         None => tools::format_read_image(label, width, height, bytes.len()),
     };
+    ToolOutcome::ok(text).with_image(url)
+}
+
+/// A GIF `read`: it never goes up as itself — a provider may refuse one that
+/// moves, or any GIF, and every later turn would re-send the refusal — so its
+/// frames go up tiled on one PNG (`images::gif`), the same still the encoder
+/// draws for every later turn, and the fact line counts the frames and says
+/// how they are shown and at what size (`docs/imagegen.md`).
+fn read_gif(path: &str, bytes: &[u8], (width, height): (u32, u32)) -> ToolOutcome {
+    let Some(still) = crate::images::gif_still(Path::new(path), tools::READ_IMAGE_MAX_BYTES) else {
+        return ToolOutcome::error(format!(
+            "could not draw {path}'s frames as a picture to attach — convert it to a PNG with \
+             a bash command first"
+        ));
+    };
+    // The session keeps this one encoding: the still every later turn
+    // re-sends in the GIF's place, drawn the same after a restart.
+    let url = crate::images::remember_attachment(Path::new(path), &still.bytes, "image/png");
+    crate::images::remember_size(path, (width, height));
+    let text = tools::format_read_gif(
+        (width, height),
+        still.frames,
+        bytes.len(),
+        still.size,
+        still.bytes.len(),
+    );
     ToolOutcome::ok(text).with_image(url)
 }
 
@@ -1489,6 +1539,7 @@ mod tests {
             signin: crate::llm::imagegen::ChatGptSignin::default(),
             dir: std::path::PathBuf::from("/nowhere"),
             skill: None,
+            model: crate::llm::imagegen::IMAGE_MODEL.to_string(),
         };
         let outcome = RealToolExecutor::new().with_imagegen(Some(setup)).execute(
             &call(
@@ -1501,6 +1552,41 @@ mod tests {
         // The tool itself answered: nobody is signed in.
         assert!(!outcome.ok);
         assert_eq!(outcome.output, crate::llm::auth::NOT_SIGNED_IN);
+    }
+
+    #[test]
+    fn an_imagegen_call_counts_the_conversation_images_the_executor_holds() {
+        let setup = crate::llm::imagegen::ImagegenSetup {
+            signin: crate::llm::imagegen::ChatGptSignin::default(),
+            dir: std::path::PathBuf::from("/nowhere"),
+            skill: None,
+            model: crate::llm::imagegen::IMAGE_MODEL.to_string(),
+        };
+        let images = crate::llm::imagegen::ConversationImages::default();
+        let executor = RealToolExecutor::new()
+            .with_imagegen(Some(setup))
+            .with_conversation_images(images.clone());
+        let run = || {
+            executor.execute(
+                &call(
+                    crate::llm::imagegen::IMAGEGEN_TOOL_NAME,
+                    r#"{"prompt": "add a hat", "num_last_images_to_include": 1}"#,
+                ),
+                &CancelToken::new(),
+                &mut |_| {},
+            )
+        };
+        // Nothing recorded yet: there is no newest image to take.
+        assert_eq!(
+            run().output,
+            "requested the last 1 conversation images, but only 0 were available"
+        );
+        // The round records what it sends, and the call sees it at once.
+        images.record(&[crate::llm::ChatMessage::with_parts(
+            "user",
+            vec![crate::llm::ContentPart::image("data:image/png;base64,Zm9v")],
+        )]);
+        assert_eq!(run().output, crate::llm::auth::NOT_SIGNED_IN);
     }
 
     /// A running cell as the TUI keeps it: a `ToolScreen`'s settled text
@@ -1831,6 +1917,96 @@ os.write(1, b"\n")'"#;
             "the URL never pollutes the text output: {}",
             out.output
         );
+    }
+
+    /// Write a GIF of `w`×`h` frames, one per colour, at `path`.
+    fn write_gif(path: &Path, colours: &[[u8; 3]], (w, h): (u32, u32)) {
+        let mut out = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut out);
+            for [r, g, b] in colours {
+                let frame = image::RgbaImage::from_pixel(w, h, image::Rgba([*r, *g, *b, 255]));
+                encoder.encode_frame(image::Frame::new(frame)).unwrap();
+            }
+        }
+        std::fs::write(path, out).unwrap();
+    }
+
+    #[test]
+    fn a_read_of_an_animated_gif_sends_its_frames_tiled_never_the_gif() {
+        // A provider may refuse a GIF that moves, or any GIF, and the
+        // conversation re-sends every picture on every turn: the frames go up
+        // tiled on one PNG, and the fact line says so (docs/imagegen.md).
+        let path = temp_path("read-image-animated.gif");
+        write_gif(&path, &[[255, 0, 0], [0, 255, 0], [0, 0, 255]], (8, 8));
+        let out = exec("read", &format!(r#"{{"path":"{}"}}"#, path.display()));
+        std::fs::remove_file(&path).ok();
+        assert!(out.ok, "got {}", out.output);
+        assert!(
+            out.output.starts_with("Read image (GIF, 8x8, 3 frames, "),
+            "{}",
+            out.output
+        );
+        // Three 8x8 frames, two to a row, on one picture of two rows.
+        assert!(
+            out.output.ends_with(
+                "; sent as its 3 frames tiled left to right and top to bottom, 2 to a row, in \
+                 one 16x16 picture)"
+            ),
+            "{}",
+            out.output
+        );
+        assert_eq!(out.output.lines().count(), 1, "{}", out.output);
+        assert_eq!(crate::images::read_image_size(&out.output), Some((8, 8)));
+        let url = out.image.expect("attached");
+        assert!(url.starts_with("data:image/png;base64,"), "got {url}");
+    }
+
+    #[test]
+    fn a_read_of_a_one_frame_gif_reads_like_any_picture_and_sends_a_png() {
+        let path = temp_path("read-image-still.gif");
+        write_gif(&path, &[[9, 9, 9]], (4, 4));
+        let out = exec("read", &format!(r#"{{"path":"{}"}}"#, path.display()));
+        std::fs::remove_file(&path).ok();
+        assert!(out.ok, "got {}", out.output);
+        assert!(
+            out.output.starts_with("Read image (GIF, 4x4, "),
+            "{}",
+            out.output
+        );
+        assert!(!out.output.contains("frame"), "{}", out.output);
+        let url = out.image.expect("attached");
+        assert!(url.starts_with("data:image/png;base64,"), "got {url}");
+    }
+
+    #[test]
+    fn a_read_of_a_one_frame_gif_drawn_smaller_names_the_size_sent() {
+        // The still a GIF goes up as is at most 1024 pixels on its long side:
+        // the file's own size first, then what was sent, as for any picture
+        // sent resized (docs/images.md).
+        let path = temp_path("read-image-wide.gif");
+        write_gif(&path, &[[9, 9, 9]], (1100, 600));
+        let out = exec("read", &format!(r#"{{"path":"{}"}}"#, path.display()));
+        std::fs::remove_file(&path).ok();
+        assert!(out.ok, "got {}", out.output);
+        let (width, height) = crate::images::sheet_cell((1100, 600), (1, 1), 1024);
+        assert!(
+            out.output.starts_with("Read image (GIF, 1100x600, "),
+            "{}",
+            out.output
+        );
+        assert!(
+            out.output
+                .contains(&format!("; sent resized to {width}x{height}, ")),
+            "{}",
+            out.output
+        );
+        assert_eq!(
+            crate::images::read_image_size(&out.output),
+            Some((1100, 600))
+        );
+        let url = out.image.expect("attached");
+        assert!(url.starts_with("data:image/png;base64,"), "got {url}");
     }
 
     #[test]

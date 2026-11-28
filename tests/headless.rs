@@ -737,6 +737,21 @@ fn chat_reply(body: &str) -> String {
             serde_json::json!({"choices": [{"delta": {"content": STAND_IN_SUMMARY}}]}),
             serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
         ]
+    } else if said.contains(GENERATED_NOTE)
+        && body.contains(EDIT_NEWEST)
+        && body.matches(GENERATED_NOTE).count() == 1
+    {
+        // The picture just made, edited by count: the newest image the
+        // conversation holds (docs/imagegen.md).
+        vec![
+            serde_json::json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 0, "id": "call_2", "type": "function",
+                "function": {"name": "imagegen", "arguments": serde_json::json!(
+                    {"prompt": "add a hat", "num_last_images_to_include": 1}
+                ).to_string()},
+            }]}}]}),
+            serde_json::json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+        ]
     } else if last["role"] == "tool" || said.contains(GENERATED_NOTE) {
         // A round that ends on a generated picture's attachment ends on a
         // user message, the picture itself (docs/imagegen.md).
@@ -1912,6 +1927,10 @@ fn the_rollout_says_why_a_call_never_ran() {
 /// What a prompt says to make the stand-in model draw.
 const DRAW: &str = "HEADLESS_DRAW";
 
+/// What a prompt says, beside [`DRAW`], to make the stand-in model edit the
+/// picture it drew, naming it by count (`num_last_images_to_include`).
+const EDIT_NEWEST: &str = "HEADLESS_EDIT_NEWEST";
+
 /// What the note a generated picture rides under says, which tells the
 /// stand-in model its round is over.
 const GENERATED_NOTE: &str = "from the imagegen tool call above";
@@ -1935,6 +1954,17 @@ struct ChatGpt {
 
 impl ChatGpt {
     fn start() -> Self {
+        Self::serve(false)
+    }
+
+    /// A backend that does not take Images 2.6 yet: a request naming
+    /// `gpt-image-2.6-sunburst` is refused by name, the way the Images API
+    /// refuses a model it does not know.
+    fn without_images_2_6() -> Self {
+        Self::serve(true)
+    }
+
+    fn serve(refuses_images_2_6: bool) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
         let base = format!("http://{}", listener.local_addr().expect("an address"));
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -1945,14 +1975,20 @@ impl ChatGpt {
                 let Some((head, body)) = read_request(&mut stream) else {
                     continue;
                 };
+                let mut status = "200 OK";
                 let reply = if head.starts_with("POST /oauth/token ") {
                     format!(r#"{{"access_token":"{CHATGPT_ACCESS}","expires_in":3600}}"#)
+                } else if refuses_images_2_6 && body.contains(r#""model":"gpt-image-2.6-sunburst""#)
+                {
+                    status = "400 Bad Request";
+                    r#"{"error":{"message":"The model gpt-image-2.6-sunburst does not exist.","type":"invalid_request_error","param":"model"}}"#
+                        .to_string()
                 } else {
                     format!(r#"{{"created":1,"data":[{{"b64_json":"{PIXEL_PNG}"}}]}}"#)
                 };
                 log.lock().expect("the log").push((head, body));
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
                     reply.len()
                 );
                 let _ = stream.write_all(response.as_bytes());
@@ -1979,6 +2015,25 @@ fn draw_run(world: &World, chat: &StandIn, chatgpt: &ChatGpt, signed_in: bool) -
 
 /// [`draw_run`]'s command, for a run that adds to its environment.
 fn draw_command(world: &World, chat: &StandIn, chatgpt: &ChatGpt, signed_in: bool) -> Command {
+    imagegen_command(
+        world,
+        chat,
+        chatgpt,
+        signed_in,
+        &format!("{DRAW} draw a fox"),
+    )
+}
+
+/// A headless run of `prompt` on the stand-in chat provider, with the ChatGPT
+/// provider pointed at `chatgpt` — and, when `signed_in`, a ChatGPT sign-in
+/// stored for it.
+fn imagegen_command(
+    world: &World,
+    chat: &StandIn,
+    chatgpt: &ChatGpt,
+    signed_in: bool,
+    prompt: &str,
+) -> Command {
     let file = world.dir("providers.toml");
     std::fs::write(
         &file,
@@ -1992,8 +2047,7 @@ fn draw_command(world: &World, chat: &StandIn, chatgpt: &ChatGpt, signed_in: boo
         ),
     )
     .expect("the providers file");
-    let prompt = format!("{DRAW} draw a fox");
-    let mut command = world.command(&["-p", &prompt]);
+    let mut command = world.command(&["-p", prompt]);
     command
         .env("ALTER_ZERO_PROVIDERS_FILE", file)
         .env("ALTER_ZERO_PROVIDER", "stub")
@@ -2057,7 +2111,7 @@ fn a_chatgpt_sign_in_lets_another_providers_model_draw() {
         "{:?}",
         offered_tools(&chats[0])
     );
-    // The sign-in was minted, and the picture asked for as Codex asks.
+    // The sign-in was minted, and the picture asked for of Images 2.6.
     let requests = chatgpt.requests();
     assert_eq!(requests.len(), 2, "{requests:?}");
     let (head, body) = &requests[0];
@@ -2083,7 +2137,7 @@ fn a_chatgpt_sign_in_lets_another_providers_model_draw() {
     assert_eq!(
         sent,
         serde_json::json!({"prompt": "a fox mascot", "background": "opaque",
-            "model": "gpt-image-2", "quality": "auto", "size": "auto"})
+            "model": "gpt-image-2.6-sunburst", "quality": "auto", "size": "auto"})
     );
     // The picture landed in the session's generated-images folder…
     let pictures = generated_pictures(&world);
@@ -2141,6 +2195,141 @@ fn without_a_chatgpt_sign_in_no_model_is_offered_imagegen() {
     );
     assert!(chatgpt.requests().is_empty(), "{:?}", chatgpt.requests());
     assert!(generated_pictures(&world).is_empty());
+}
+
+#[test]
+fn the_newest_picture_in_the_conversation_is_edited_by_count() {
+    // `num_last_images_to_include` takes the newest images the request the
+    // model wrote its call against carried, as the conversation's own
+    // copies: here the picture it had just drawn (docs/imagegen.md).
+    let world = World::new("edit-newest");
+    let chat = StandIn::start();
+    let chatgpt = ChatGpt::start();
+    let out = imagegen_command(
+        &world,
+        &chat,
+        &chatgpt,
+        true,
+        &format!("{DRAW} {EDIT_NEWEST} draw a fox, then give it a hat"),
+    )
+    .stdin(Stdio::null())
+    .output()
+    .expect("the binary runs");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let chats = chat.chat_requests();
+    assert_eq!(chats.len(), 3, "draw, edit, done: {chats:?}");
+    // What the model saw of the first picture: its attachment, closing the
+    // request it answered with the edit.
+    let second: serde_json::Value = serde_json::from_str(&chats[1]).expect("a JSON request");
+    let seen = second["messages"]
+        .as_array()
+        .and_then(|messages| messages.last())
+        .and_then(|attachment| attachment["content"][1]["image_url"]["url"].as_str())
+        .expect("the first picture's attachment")
+        .to_string();
+    let images: Vec<(String, String)> = chatgpt
+        .requests()
+        .into_iter()
+        .filter(|(head, _)| head.contains("/images/"))
+        .collect();
+    assert_eq!(images.len(), 2, "{images:?}");
+    assert!(
+        images[0]
+            .0
+            .starts_with("POST /backend-api/codex/images/generations "),
+        "{}",
+        images[0].0
+    );
+    let (head, body) = &images[1];
+    assert!(
+        head.starts_with("POST /backend-api/codex/images/edits "),
+        "{head}"
+    );
+    let sent: serde_json::Value = serde_json::from_str(body).expect("a JSON body");
+    assert_eq!(sent["prompt"], "add a hat");
+    assert_eq!(sent["images"], serde_json::json!([{"image_url": seen}]));
+    assert_eq!(generated_pictures(&world).len(), 2);
+}
+
+#[test]
+fn a_backend_without_images_2_6_still_draws_with_the_older_model() {
+    // A refusal of the model by name is answered at once, nothing made or
+    // billed, so the same request goes once more with gpt-image-2 and the
+    // model is told which model made the picture (docs/imagegen.md).
+    let world = World::new("fallback");
+    let chat = StandIn::start();
+    let chatgpt = ChatGpt::without_images_2_6();
+    let out = draw_run(&world, &chat, &chatgpt, true);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let requests = chatgpt.requests();
+    assert_eq!(
+        requests.len(),
+        3,
+        "the mint, the refusal, the image: {requests:?}"
+    );
+    let models: Vec<serde_json::Value> = requests[1..]
+        .iter()
+        .map(|(_, body)| {
+            serde_json::from_str::<serde_json::Value>(body).expect("JSON")["model"].clone()
+        })
+        .collect();
+    assert_eq!(models, ["gpt-image-2.6-sunburst", "gpt-image-2"]);
+    assert_eq!(generated_pictures(&world).len(), 1);
+    let chats = chat.chat_requests();
+    let second: serde_json::Value = serde_json::from_str(&chats[1]).expect("a JSON request");
+    let result = second["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|message| message["role"] == "tool")
+        .and_then(|message| message["content"].as_str())
+        .expect("the tool result")
+        .to_string();
+    assert!(result.starts_with("Generated image (PNG, 2x2"), "{result}");
+    assert!(
+        result.contains("This image was made with gpt-image-2"),
+        "{result}"
+    );
+}
+
+#[test]
+fn the_image_cell_says_when_the_older_model_made_it() {
+    // The cell's dim row: what the stream's tool item carries as its note.
+    let world = World::new("fallback-note");
+    let chat = StandIn::start();
+    let chatgpt = ChatGpt::without_images_2_6();
+    let out = draw_command(&world, &chat, &chatgpt, true)
+        .args(["--output-format", "stream-json"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("the binary runs");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let tool = events(&out)
+        .into_iter()
+        .find(|e| e["type"] == "item.completed" && e["item"]["name"] == "imagegen")
+        .expect("the imagegen call completes");
+    assert_eq!(
+        tool["item"]["note"], "Made with gpt-image-2 (Images 2.6 not available)",
+        "{tool}"
+    );
+}
+
+#[test]
+fn the_run_can_name_another_image_model() {
+    // `ALTER_ZERO_IMAGEGEN_MODEL` names the model every request asks for —
+    // Flare for speed, or an older one the backend still takes.
+    let world = World::new("flare");
+    let chat = StandIn::start();
+    let chatgpt = ChatGpt::start();
+    let out = draw_command(&world, &chat, &chatgpt, true)
+        .env("ALTER_ZERO_IMAGEGEN_MODEL", "gpt-image-2.6-flare")
+        .stdin(Stdio::null())
+        .output()
+        .expect("the binary runs");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let requests = chatgpt.requests();
+    let sent: serde_json::Value = serde_json::from_str(&requests[1].1).expect("a JSON body");
+    assert_eq!(sent["model"], "gpt-image-2.6-flare", "{sent}");
 }
 
 #[test]

@@ -323,6 +323,13 @@ plots it just generated.
   follow-up `[image]` note names it for the model. That line is what the cell
   shows, what the session rollout records, and what the token tally counts;
   the pixels never enter `output`.
+- **A GIF never goes up as itself**: a provider may refuse one that moves, or
+  any GIF, and every later turn would re-send it. Its frames go up tiled on
+  one PNG, through the encoder every later turn uses (`images::gif`,
+  `docs/imagegen.md` *A GIF the model looks at*), and a GIF that moves says
+  so on its fact line with the size sent (`tools::format_read_gif`:
+  `Read image (GIF, 512x512, 9 frames, 1.2 MB; sent as its 9 frames tiled
+  left to right and top to bottom, 3 to a row, in one 1023x1023 picture)`).
 - **The pixels ride `ToolOutcome::image`** (a base64 `data:` URL, encoded at
   the executor boundary) and `run_agent` attaches them as a follow-up
   **user-role parts message** — the `[image] …` note

@@ -12,6 +12,34 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **Image generation uses Images 2.6 and can edit the newest images in the
+  conversation.** The `imagegen` tool now asks for OpenAI's newest image
+  model, `gpt-image-2.6-sunburst`.
+  - With `num_last_images_to_include` it edits, or takes as references, the
+    newest 1 to 5 images in the conversation: the way to name a picture that
+    has no file, such as one an MCP tool returned. They go up as the
+    conversation holds them, oldest first. A call names its images this way
+    or by `referenced_image_paths`, never both, and one asking for more
+    images than the conversation holds is refused before anything is sent.
+  - It makes still images. OpenAI's GIF output is a preview it turns on per
+    account, and the backend refused every GIF tried, so the tool does not
+    ask for one.
+  - A GIF you read or paste reaches the model as its frames tiled on one
+    picture, never as the GIF itself: providers refuse a GIF that moves, and
+    a conversation re-sends every picture on every turn. The read says how
+    large the picture sent was. A GIF passed to `imagegen` as a reference
+    goes up as its first frame.
+  - If the image backend does not take `gpt-image-2.6-sunburst` yet, the
+    image is made with `gpt-image-2` instead. The image's cell says so on a
+    dim row, `Made with gpt-image-2 (Images 2.6 not available)`, and the
+    model is told too. Nothing is billed for the refused request, nothing
+    more is sent if you press Esc meanwhile, and if `gpt-image-2` fails too
+    the error gives both answers.
+  - `ALTER_ZERO_IMAGEGEN_MODEL` names another image model for a run, such as
+    `gpt-image-2.6-flare` for speed (`docs/imagegen.md`).
+
 ### Changed
 
 - **A long turn compacts while it runs, without stopping.** Compaction used

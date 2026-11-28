@@ -65,6 +65,7 @@ Fallback-only docs/resources for CLI mode:
 - Creating simple shapes, diagrams, wireframes, or icons that are better produced directly in SVG, HTML/CSS, or canvas
 - Making a small project-local asset edit when the source file already exists in an editable native format
 - Any task where the user clearly wants deterministic code-native output instead of a generated bitmap
+- An animated GIF or video: the built-in tool makes still images, and a GIF in `referenced_image_paths` goes up as its first frame. Build an animation another way (frames assembled with code, SVG or CSS animation, a video tool).
 
 ## Decision tree
 
@@ -79,8 +80,11 @@ Intent:
 - If the user provides no images, treat the request as **generate**.
 
 Built-in edit semantics:
-- Built-in edit mode takes each image to edit, or to use as a reference, by its absolute path in `referenced_image_paths` (at most 5). Every image in this conversation has a file: a pasted image's path, one you read, or one generated earlier.
+- Built-in edit mode takes each image to edit, or to use as a reference, by its absolute path in `referenced_image_paths` (at most 5): a pasted image's path, one you read, or one generated earlier.
 - If you have not seen a local image yet, look at it with the `read` tool before editing it.
+- Use `num_last_images_to_include` only when at least one target image has no local file path, such as an image an MCP tool returned. Set it to the smallest number of the newest images in the conversation that includes every target image, up to 5. They go up as you saw them, oldest first.
+- Never provide both `referenced_image_paths` and `num_last_images_to_include`, and omit both when generating a brand new image.
+- If neither can include every target image, ask the user to attach the missing images again.
 - If a local file still needs masks or other explicit CLI-only parameters, use the explicit CLI fallback only when the user asks for it.
 - For edits, preserve invariants aggressively and save non-destructively by default.
 
