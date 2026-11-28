@@ -45,7 +45,11 @@ happens at **derivation time** — `context_messages` finds the *last* marker an
 emits, in place of everything before it:
 
 1. the pre-marker **typed user messages** (`Role::User` text only — images,
-   tool records, shell transcripts, and notices drop, codex-parity), walked
+   tool records, shell transcripts, and notices drop, codex-parity) and the
+   **hooks' added context** among them in its place (each hook note wrapped
+   in a `<system-reminder>` — the summarizer is never sent one and no
+   request makes it again, so this is where it survives;
+   `docs/background-compaction.md` *The marker*), walked
    newest→oldest under a `COMPACT_USER_MESSAGE_MAX_TOKENS` (20 000) budget:
    whole messages are kept while they fit, the first overflowing one is
    **middle-truncated** to the remaining budget (codex's

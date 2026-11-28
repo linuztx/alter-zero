@@ -110,9 +110,11 @@ fn is_typed(message: &ChatMessage) -> bool {
 }
 
 /// A subagent's list once `summary` takes the place of its head
-/// `messages[..cut]`: the system prompt and the briefing as they were, the
-/// user's texts the budget keeps, the summary's bridge, then everything from
-/// `cut` on verbatim — the shape the lead's derivation gives a marker.
+/// `messages[..cut]`: the system prompt and the briefing as they were, what
+/// the budget keeps of the user's texts and of the context a hook added (a
+/// `SubagentStart` hook's note, which the summarizer is never sent and no
+/// round makes again), the summary's bridge, then everything from `cut` on
+/// verbatim — the shape the lead's derivation gives a marker.
 #[must_use]
 pub fn spliced(messages: &[ChatMessage], cut: usize, summary: &str) -> Vec<ChatMessage> {
     let cut = cut.min(messages.len());
@@ -120,7 +122,7 @@ pub fn spliced(messages: &[ChatMessage], cut: usize, summary: &str) -> Vec<ChatM
     let kept = kept_user_texts(
         messages[lead..cut]
             .iter()
-            .filter(|message| is_typed(message))
+            .filter(|message| is_typed(message) || is_reminder(message))
             .filter_map(text_of)
             .collect::<Vec<_>>(),
     );
@@ -533,15 +535,24 @@ mod tests {
         );
     }
 
+    /// The note a launch opens on when a `SubagentStart` hook added context.
+    fn start_note() -> ChatMessage {
+        ChatMessage::user(
+            "<system-reminder>\nSubagentStart hook additional context: the repo is /srv\n</system-reminder>",
+        )
+    }
+
     #[test]
-    fn a_splice_keeps_what_the_user_wrote_and_nothing_the_app_or_a_summary_said() {
-        let mut messages = agent_list(1);
+    fn a_splice_keeps_what_the_user_wrote_and_hooks_added_and_nothing_the_app_or_a_summary_said() {
+        // A hook's added context is never sent to the summarizer, and no
+        // round makes it again: the splice keeps it as it was, after the task
+        // it came with.
+        let mut messages = agent_list(0);
+        messages.push(start_note());
+        messages.extend(round(0));
         messages.push(ChatMessage::user(crate::llm::agent::CUT_OFF_NOTE));
         messages.push(ChatMessage::user("also the refunds"));
         messages.push(ChatMessage::user(summary_bridge("an earlier summary")));
-        messages.push(ChatMessage::user(
-            "<system-reminder>\nPreToolUse hook additional context: x\n</system-reminder>",
-        ));
         let cut = messages.len();
         messages.extend(round(9));
         let rebuilt = spliced(&messages, cut, "now");
@@ -554,10 +565,31 @@ mod tests {
             users,
             vec![
                 "Port the payments module.".to_string(),
+                text_of(&start_note()).unwrap().to_string(),
                 "also the refunds".to_string(),
                 summary_bridge("now"),
             ]
         );
+    }
+
+    #[test]
+    fn hook_context_survives_every_splice_and_never_reaches_a_summarizer() {
+        let mut messages = agent_list(0);
+        messages.push(start_note());
+        messages.extend(round(0));
+        let cut = messages.len();
+        messages.extend(round(1));
+        let once = spliced(&messages, cut, "read 0.rs");
+        assert!(once.contains(&start_note()), "{once:#?}");
+        let mut grown = once;
+        let cut = grown.len();
+        grown.extend(round(2));
+        assert!(
+            !summarizer_input(&grown, cut).iter().any(is_reminder),
+            "the carried note is still kept from the summarizer"
+        );
+        let twice = spliced(&grown, cut, "read 1.rs");
+        assert!(twice.contains(&start_note()), "{twice:#?}");
     }
 
     #[test]

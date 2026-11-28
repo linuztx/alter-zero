@@ -48,8 +48,11 @@ release heading when a version is cut.
   the persona could pull the summarizer into carrying on the task. It now
   gets a short system prompt of its own and the conversation, with no
   `<system-reminder>` of any kind: not AGENTS.md, not the skill and agent
-  listings, not a hook's added context. Those still ride every request after
-  the compaction, as before.
+  listings, not a hook's added context. AGENTS.md and the listings still ride
+  every request after the compaction, as before. A SessionStart or
+  UserPromptSubmit hook's added context, which no request sends again, is now
+  kept word for word beside your messages, where it used to survive only if
+  the summary repeated it.
 
 ### Fixed
 

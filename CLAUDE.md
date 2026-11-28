@@ -3172,8 +3172,8 @@ model's handoff summary invisibly into `App::compact_buffer`,
 `finish_compact` appends a `HistoryItem::Compaction` marker — the transcript,
 recorder, checkpoint keys, and backtrack all untouched — and
 `context::context_messages` derives codex's compacted shape from the *last*
-marker: the 20k-approx-token budget of recent user texts + the
-`SUMMARY_PREFIX\n{summary}` bridge in place of everything before it, the
+marker: the 20k-approx-token budget of recent user texts and hook notes +
+the `SUMMARY_PREFIX\n{summary}` bridge in place of everything before it, the
 `● Context compacted · {before} → {after} tokens` cell the visible record;
 with the model's **context window** known — `/v1/models` `context_length`
 via `ModelEntry::context`, persisted in `config.json`, overridable via

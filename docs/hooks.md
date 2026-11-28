@@ -414,7 +414,10 @@ existing could express them:
   by `context_messages` as the user-role message the model actually read,
   and round-tripped through the rollout so a `/resume` keeps it. Context
   wire text uses Claude Code's exact shape — the
-  `<system-reminder>`-wrapped `{event} hook additional context: …`. The
+  `<system-reminder>`-wrapped `{event} hook additional context: …` — and
+  that wrapper is what a compaction goes by: the summarizer is never sent a
+  reminder, so the compaction keeps the note itself, word for word, beside
+  the user's messages (`docs/background-compaction.md` *The marker*). The
   agent loop's own continuation prompts ride it too — the note an empty or
   cut-off reply is answered with, under `Empty reply` / `Reply cut off`
   (`docs/unfinished-replies.md`) — because a continuation needs exactly what

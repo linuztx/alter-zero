@@ -54,11 +54,14 @@ The conversation, and nothing that every turn re-sends anyway:
 
 Nothing is lost by leaving them out: after the swap the system prompt goes
 back on unchanged and the reminder is re-rendered for the turn, as every turn
-already does. Leaving them out means the summary cannot restate AGENTS.md or
-the environment (opencode's prompt *asks* its summarizer not to; this one
-cannot), the persona cannot steer the summarizer into continuing the task, and
-a directive buried in a tool output competes with a user message rather than
-with the summarizer's own instructions (hermes's argument).
+already does. A hook's note is the one no request makes again — SessionStart's
+is drained once, UserPromptSubmit's comes with its prompt — so the compaction
+keeps it instead, word for word (*The marker*). Leaving them out means the
+summary cannot restate AGENTS.md or the environment (opencode's prompt *asks*
+its summarizer not to; this one cannot), the persona cannot steer the
+summarizer into continuing the task, and a directive buried in a tool output
+competes with a user message rather than with the summarizer's own
+instructions (hermes's argument).
 
 It costs no prompt cache relative to what it replaced: the summarization
 request was already sent with no tools, and the tools open the cached prefix
@@ -165,16 +168,30 @@ no index in the turn's own list has to be mapped onto history.
 
 - **`kept: usize`** — how many items just before the marker its summary
   leaves out: the ones recorded while it was written. The derivation becomes:
-  the kept user texts and the bridge for everything before those `kept`
-  items, then the `kept` items and everything after the marker derived
-  normally (the marker itself derives nothing) — the two parts one request,
-  so one set of call ids: an id handed out in the kept items is never handed
-  out again after the marker (Ollama names the first call of every request
-  `call_0`). `0` is the old rule —
+  the kept user texts and hook notes and the bridge for everything before
+  those `kept` items, then the `kept` items and everything after the marker
+  derived normally (the marker itself derives nothing) — the two parts one
+  request, so one set of call ids: an id handed out in the kept items is
+  never handed out again after the marker (Ollama names the first call of
+  every request `call_0`). `0` is the old rule —
   everything before the marker — so a rollout written before this parses and
   derives exactly as it did. A count larger than the history before the
   marker keeps all of it.
 - **`background: bool`** — the cell's `· background` tag in place of `· auto`.
+
+What a compaction keeps of what its summary covers is one walk, codex's: the
+user's own messages and **the hooks' added context** — every hook note wrapped
+in a `<system-reminder>`, the SessionStart and UserPromptSubmit
+`additionalContext` the summarizer is never sent — newest first within the 20k
+budget, the first that overflows cut in the middle, then back in the order
+they were recorded, so a note stays after the prompt it came with
+(`context::kept_texts`). Without it the note was in neither the summary nor
+the request after it, and a summary started right after the turn's opening
+hooks dropped their context before the agent had read it. One budget for both
+keeps the compacted part no larger than the user's texts alone could make it:
+a hook that adds context to every prompt gives way, oldest first, rather than
+growing the compacted part until it no longer fits. The summarizer's own
+derivation walks the user's messages alone.
 
 Both persist in the rollout's `compaction` record with serde defaults, left
 off the line at their defaults. The tail is a count back from the marker
@@ -297,9 +314,10 @@ prompt — never the agent's system prompt, never a `<system-reminder>` (its
 briefing, a hook's added context).
 
 **The splice** (`spliced`) keeps the agent's system prompt and its briefing,
-then the user's texts the 20k budget keeps — its task and the messages the
-user typed into its session; not a `[system]` note the app spoke, a reminder
-or an earlier bridge, the lead's typed-only rule read off the wire
+then what the 20k budget keeps of the user's texts — its task and the messages
+the user typed into its session — and of a hook's added context (its
+`SubagentStart` note), in their order; not a `[system]` note the app spoke or
+an earlier bridge: the lead's walk read off the wire
 (`context::kept_user_texts`) — then the summary's bridge, then every message
 from the summary's start on verbatim. A continuation over a list a summary
 was spliced into resumes its cycle at its first round top
