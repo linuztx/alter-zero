@@ -185,15 +185,20 @@ true`, the tools flattened with `strict: false`, `function_call` /
 the cache. What a request to xAI's API (`xai::serves` — the sign-in, or any
 provider whose base is an `x.ai` host) does differently:
 
-- **Tool schemas lose the keywords xAI refuses.** xAI's `/responses` answers a
-  tool whose schema carries a `pattern` or `format` keyword, or an `enum` with
-  a `/` in a value, with a 400 (hermes #27197). No built-in tool has one, but
-  an MCP server's tools often do (`format: "uri"`), and one such server would
-  fail every request. `xai::sanitize_schema` drops the keywords from the copy
-  the request carries — walking the schema's subschemas, so a *property* named
-  `pattern` or `format` is kept — and drops a slash-bearing `enum` whole,
-  leaving its `type`; the executor still validates nothing by them, so nothing
-  the tool accepts changes.
+- **Tool schemas lose the keywords xAI refuses, on either wire.** xAI answers
+  a tool whose schema carries a `pattern` or `format` keyword, or an `enum`
+  with a `/` in a value, with a 400 before any token (hermes #27197). No
+  built-in tool has one, but an MCP server's tools often do (`format: "uri"`),
+  and one such server would fail every request. `xai::sanitize_schema` drops
+  the keywords from the copy the request carries — walking the schema's
+  subschemas, so a *property* named `pattern` or `format` is kept — and drops
+  a slash-bearing `enum` whole, leaving its `type`; the executor still
+  validates nothing by them, so nothing the tool accepts changes. hermes met
+  the refusal on `/responses`, the only API it sends xAI requests to, but
+  what refuses is xAI's grammar compiler, which builds the decoding grammar
+  from the schemas behind Chat Completions as well. So a provider block on
+  that wire — a pasted xAI key, `docs/user-providers.md` — is stripped the
+  same way (`openai.rs`), the client's own schemas left whole.
 - **Off is `reasoning: {"effort": "none"}`.** The Responses API elsewhere has
   no explicit disable, so `Off` sends no `reasoning` field — which on grok-4.3
   would leave it reasoning at its default `low`. Off is only ever offered
@@ -204,6 +209,11 @@ provider whose base is an `x.ai` host) does differently:
   round-trips reasoning on no provider (`docs/chatgpt.md`), so asking for it
   would only download it. The cost is the one ChatGPT pays: the model reasons
   afresh each round.
+
+The other two differences belong to the Responses API. A pasted-key block on
+Chat Completions sends its thinking level by its `reasoning_param`, as any
+other provider does; `wire_api = "responses"` sends it the way both
+references do, Off included.
 
 `prompt_cache_key` is xAI's documented affinity key on the Responses API; the
 `x-grok-conv-id` header is its Chat Completions twin, and the body key wins

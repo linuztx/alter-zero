@@ -70,7 +70,9 @@ Other services take the same block with their own id, name and base:
 
 An `xai` block is a pasted xAI API key, a row of its own beside the shipped
 **xAI Grok** sign-in, whose id is `xai_grok` (`docs/xai.md`) so that this
-block never patches it.
+block never patches it. On either wire its requests leave out the tool-schema
+keywords xAI refuses, and `/model` reads xAI's own listings; add `wire_api =
+"responses"` to send the thinking level the way xAI's sign-in does.
 
 ## Where the table comes from
 

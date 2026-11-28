@@ -1246,7 +1246,9 @@ wire on `api.x.ai/v1`, and `xai::serves` (the scheme, or any `x.ai` base)
 makes three differences in `responses.rs`: tool schemas lose the `pattern`/
 `format` keywords and slash-bearing `enum`s xAI 400s on
 (`xai::sanitize_schema`, walking subschemas so a property *named* `pattern`
-stays), Off is `reasoning: {"effort": "none"}` (offered only where a
+stays — xAI's grammar compiler refuses them, and it sits behind Chat
+Completions too, so `openai.rs` strips the request's copy the same way for a
+pasted-key `xai` block on that wire), Off is `reasoning: {"effort": "none"}` (offered only where a
 model's ladder lists `none`), and no `include` is asked for, reasoning
 being replayed on no provider; the catalog is `/v1/language-models` (the
 chat models, their `input_modalities` and `capabilities.reasoning_effort`

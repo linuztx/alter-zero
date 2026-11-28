@@ -27,7 +27,8 @@
 //!
 //! And the API the bearer reaches has three differences from the Responses
 //! wire the ChatGPT backend speaks, which [`serves`] tells the request builder
-//! to make (`docs/xai.md` *The wire*).
+//! to make (`docs/xai.md` *The wire*). The first of them, the schema strip,
+//! applies on Chat Completions too, for a pasted-key block on that wire.
 //!
 //! The pure halves (the request bodies, the response parses, the poll's
 //! verdict, the link check, the freshness rule, the account's name, the
@@ -614,10 +615,12 @@ pub fn serves(cfg: &ModelConfig) -> bool {
     cfg.auth == AuthScheme::XaiGrok || is_api_base(&cfg.api_base)
 }
 
-/// Drop what xAI's `/responses` refuses from a tool's parameter `schema`, in
-/// place: the `pattern` and `format` keywords, and an `enum` with a `/` in a
-/// value (which takes its `enum` away, never its `type`). Each answers with a
-/// 400 (hermes #27197), and an MCP server's schemas often carry one.
+/// Drop what xAI refuses from a tool's parameter `schema`, in place: the
+/// `pattern` and `format` keywords, and an `enum` with a `/` in a value (which
+/// takes its `enum` away, never its `type`). Each answers with a 400 before
+/// any token (hermes #27197): it is xAI's grammar compiler that refuses them,
+/// and it sits behind Chat Completions as well as `/responses`, so both wires
+/// strip them. An MCP server's schemas often carry one.
 ///
 /// It walks the schema by its **subschemas** — `properties`, `items`,
 /// `anyOf` and the rest — so a property *named* `pattern` or `format` is

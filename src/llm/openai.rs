@@ -291,7 +291,21 @@ impl OpenAiClient {
             fields.insert("service_tier".to_string(), json!(tier));
         }
         if !self.tools.is_empty() {
-            fields.insert("tools".to_string(), json!(self.tools));
+            let mut tools = json!(self.tools);
+            // xAI's grammar compiler refuses a few schema keywords outright,
+            // on this wire as on `/responses`, and an MCP server's tools often
+            // carry one (`docs/xai.md` *The wire*). What is stripped is this
+            // request's copy, never the client's own schemas.
+            if super::xai::serves(&self.cfg)
+                && let Some(specs) = tools.as_array_mut()
+            {
+                for spec in specs {
+                    if let Some(parameters) = spec.pointer_mut("/function/parameters") {
+                        super::xai::sanitize_schema(parameters);
+                    }
+                }
+            }
+            fields.insert("tools".to_string(), tools);
             fields.insert("tool_choice".to_string(), json!("auto"));
         }
         for (k, v) in &self.cfg.extra_body {
@@ -2768,6 +2782,50 @@ data: [DONE]
         assert_eq!(
             p["tools"].as_array().unwrap().len(),
             crate::llm::tools::TOOL_NAMES.len()
+        );
+    }
+
+    #[test]
+    fn a_chat_request_to_xai_s_api_drops_the_schema_keywords_it_refuses() {
+        // xAI's grammar compiler answers `pattern`/`format` and a
+        // slash-bearing `enum` with a 400 before any token, and it sits
+        // behind Chat Completions as well as `/responses` — so a pasted-key
+        // block on this wire is stripped the same way (`docs/xai.md` *The
+        // wire*).
+        let tools = vec![json!({"type": "function", "function": {
+            "name": "fetch",
+            "description": "Fetch a page.",
+            "parameters": {"type": "object", "properties": {
+                "url": {"type": "string", "format": "uri"},
+                "model": {"type": "string", "enum": ["meta-llama/Llama-3", "gpt2"]},
+                "pattern": {"type": "string", "pattern": "^a"},
+            }},
+        }})];
+        let mut cfg = ModelConfig::fallback();
+        cfg.api_base = "https://api.x.ai/v1".to_string();
+        let client = OpenAiClient::new(cfg).with_tools(tools.clone());
+        let p = client.build_payload(&[ChatMessage::user("hi")]);
+        assert_eq!(
+            p["tools"][0]["function"]["parameters"],
+            json!({"type": "object", "properties": {
+                "url": {"type": "string"},
+                "model": {"type": "string"},
+                "pattern": {"type": "string"},
+            }})
+        );
+        assert_eq!(p["tools"][0]["function"]["name"], "fetch");
+        // The request's copy is stripped, never the client's own schemas.
+        assert_eq!(client.tools, tools);
+        // Any other host's request carries the schema as written.
+        let plain = OpenAiClient::new(ModelConfig::fallback()).with_tools(tools);
+        let p = plain.build_payload(&[ChatMessage::user("hi")]);
+        assert_eq!(
+            p["tools"][0]["function"]["parameters"]["properties"]["url"]["format"],
+            "uri"
+        );
+        assert_eq!(
+            p["tools"][0]["function"]["parameters"]["properties"]["model"]["enum"][0],
+            "meta-llama/Llama-3"
         );
     }
 
