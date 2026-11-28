@@ -767,6 +767,18 @@ fn chat_reply(body: &str) -> String {
         ]
     } else if said.contains(DRAW) {
         call("imagegen", serde_json::json!({"prompt": "a fox mascot"}))
+    } else if said.contains(DELEGATE) && said.contains(AGENT_DRAWS) {
+        // The drawing handed to a subagent, waited for: it draws, then edits
+        // its own picture by count.
+        call(
+            "agent",
+            serde_json::json!({
+                "description": "Draw a fox",
+                "prompt": format!("{DRAW} {EDIT_NEWEST} draw a fox, then give it a hat"),
+                "subagent_type": "general-purpose",
+                "run_in_background": false,
+            }),
+        )
     } else if said.contains(DELEGATE) {
         let task = if said.contains(STALL) {
             format!("{STALL} make the marker")
@@ -1931,6 +1943,11 @@ const DRAW: &str = "HEADLESS_DRAW";
 /// picture it drew, naming it by count (`num_last_images_to_include`).
 const EDIT_NEWEST: &str = "HEADLESS_EDIT_NEWEST";
 
+/// What a prompt says, beside [`DELEGATE`], to make the stand-in model hand
+/// the drawing to a foreground subagent, which draws and then edits its
+/// picture by count, the way [`DRAW`] and [`EDIT_NEWEST`] make the lead.
+const AGENT_DRAWS: &str = "HEADLESS_AGENT_DRAWS";
+
 /// What the note a generated picture rides under says, which tells the
 /// stand-in model its round is over.
 const GENERATED_NOTE: &str = "from the imagegen tool call above";
@@ -2240,6 +2257,61 @@ fn the_newest_picture_in_the_conversation_is_edited_by_count() {
         "{}",
         images[0].0
     );
+    let (head, body) = &images[1];
+    assert!(
+        head.starts_with("POST /backend-api/codex/images/edits "),
+        "{head}"
+    );
+    let sent: serde_json::Value = serde_json::from_str(body).expect("a JSON body");
+    assert_eq!(sent["prompt"], "add a hat");
+    assert_eq!(sent["images"], serde_json::json!([{"image_url": seen}]));
+    assert_eq!(generated_pictures(&world).len(), 2);
+}
+
+#[test]
+fn a_subagent_edits_the_newest_picture_of_its_own_conversation_by_count() {
+    // A subagent counts the images of its own conversation, the request it
+    // wrote its call against, never the lead's, which holds none here
+    // (docs/imagegen.md).
+    let world = World::new("agent-edit-newest");
+    let chat = StandIn::start();
+    let chatgpt = ChatGpt::start();
+    let out = imagegen_command(
+        &world,
+        &chat,
+        &chatgpt,
+        true,
+        &format!("{DELEGATE} {AGENT_DRAWS} have an agent draw a fox, then give it a hat"),
+    )
+    .stdin(Stdio::null())
+    .output()
+    .expect("the binary runs");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), "Done.", "{}", stderr(&out));
+    let chats = chat.chat_requests();
+    assert_eq!(
+        chats.len(),
+        5,
+        "the launch, the agent's draw, edit and done, the answer: {chats:?}"
+    );
+    // What the agent saw of its picture: the attachment closing the request
+    // it answered with the edit.
+    let seen = chats
+        .iter()
+        .filter(|body| body.matches(GENERATED_NOTE).count() == 1)
+        .find_map(|body| {
+            let request: serde_json::Value = serde_json::from_str(body).ok()?;
+            request["messages"].as_array()?.last()?["content"][1]["image_url"]["url"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .expect("the agent's request carrying its picture");
+    let images: Vec<(String, String)> = chatgpt
+        .requests()
+        .into_iter()
+        .filter(|(head, _)| head.contains("/images/"))
+        .collect();
+    assert_eq!(images.len(), 2, "{images:?}");
     let (head, body) = &images[1];
     assert!(
         head.starts_with("POST /backend-api/codex/images/edits "),

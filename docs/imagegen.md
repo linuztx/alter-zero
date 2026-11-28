@@ -521,8 +521,9 @@ while the tool is not offered (`llm::skill::load_skills`):
   headless session on a stand-in Chat Completions provider with a ChatGPT
   sign-in beside it: the tool offered, the mint, the body and headers, the
   saved file and the attachment on the next request; the picture just drawn
-  edited by count, the edit carrying the copy the model saw; a backend that
-  refuses
+  edited by count, the edit carrying the copy the model saw, and a
+  foreground subagent's the same way, counted in its own conversation; a
+  backend that refuses
   Images 2.6 by name drawn on with `gpt-image-2`, its stream item carrying
   the cell's row as its `note`; the model the run names;
   and signed out, or with the row off, nothing offered and nothing asked of
