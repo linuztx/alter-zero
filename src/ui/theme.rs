@@ -1336,6 +1336,9 @@ pub(super) const DEVICE_TITLE_PREFIX: &str = "Sign in to ";
 /// The device page's instruction, in two rows: `Visit {uri}` then this.
 pub(super) const DEVICE_VISIT_PREFIX: &str = "Visit ";
 pub(super) const DEVICE_ENTER_LINE: &str = "and enter this one-time code";
+/// The same row when the link already carries the code (xAI's prefilled
+/// page, `docs/xai.md`): the user lands on it typed, and only confirms it.
+pub(super) const DEVICE_CONFIRM_LINE: &str = "and confirm this one-time code";
 
 /// A **browser** sign-in's twin of the pair above (`docs/chatgpt.md`): there
 /// is no code to follow the link, because the browser redirects back to this

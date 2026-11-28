@@ -362,9 +362,17 @@ fn device_page_lines(device: &DeviceLogin, width: u16) -> Vec<Line<'static>> {
             },
             width,
         );
+        // A link that already carries the code (xAI's prefilled page) lands
+        // the user on it typed: the row asks them to confirm it, not to
+        // enter it.
+        let prefilled = device
+            .code()
+            .is_some_and(|code| device.verification_uri.contains(code));
         instruction.push(model_placeholder_row(
             if browser {
                 DEVICE_RETURN_LINE
+            } else if prefilled {
+                DEVICE_CONFIRM_LINE
             } else {
                 DEVICE_ENTER_LINE
             },
