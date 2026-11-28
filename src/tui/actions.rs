@@ -156,7 +156,7 @@ impl Session<'_> {
                 // derivation compacts the model's context from there on. The turn
                 // rides the normal `inflight` slot so Esc, /clear, and quit reap
                 // it like any other turn.
-                self.start_compact_turn(/*auto=*/ false);
+                self.start_compact_turn();
             }
             Action::Clear => self.clear_conversation()?,
             Action::KillBackground(id) => self.kill_background(&id),

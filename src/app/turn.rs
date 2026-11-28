@@ -308,9 +308,6 @@ impl App {
         // channel before the round boundary that closes it arrives
         // (docs/offline.md *A connection lost mid-reply*).
         self.attempt_floor = None;
-        // A new real turn re-arms the auto-compact trigger (one attempt per
-        // user turn — docs/compact.md).
-        self.auto_compact_blocked = false;
         // A fresh turn starts with the single-row preview; the boundary
         // re-injects the real count each frame (a forming table grows it).
         self.stream_preview_rows = 1;
@@ -539,11 +536,7 @@ impl App {
         let streamed = self.streaming.take()?;
         // A /compact turn's half summary dies with the request — the marker
         // lands only at StreamDone, so the old context stands (docs/compact.md).
-        // A failed compaction also blocks the auto re-trigger until the next
-        // real turn (it would fail the same way in a tight loop).
-        if self.compact_buffer.take().is_some() {
-            self.auto_compact_blocked = true;
-        }
+        self.compact_buffer = None;
         let partial = if streamed.is_empty() {
             None
         } else {
@@ -707,11 +700,6 @@ impl App {
         // it into the composer would undo a submission this turn never made.
         // See docs/compact.md.
         let compacting = self.compact_buffer.take().is_some();
-        if compacting {
-            // The user said no — don't restart it at this same turn end
-            // (docs/compact.md's one-attempt-per-turn rule).
-            self.auto_compact_blocked = true;
-        }
         // Take the partial first (empties the streaming buffer either way).
         let partial = self.streaming.take().filter(|text| !text.is_empty());
         // A file that was streaming into its cell is output the user saw —

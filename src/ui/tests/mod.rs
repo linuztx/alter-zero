@@ -18,6 +18,7 @@ mod ask_view;
 mod assistant;
 mod background_view;
 mod classifier_view;
+mod compaction_row;
 mod config_review_view;
 mod context_usage_view;
 mod context_view;
@@ -309,6 +310,8 @@ pub(super) fn bare_compaction(summary: &str) -> crate::app::Compaction {
         after: 0,
         auto: false,
         secs: 0,
+        kept: 0,
+        background: false,
     }
 }
 

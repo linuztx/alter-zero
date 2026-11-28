@@ -9,8 +9,9 @@
 //!
 //! Two settings deliberately need nothing here: **Hide thinking** and **Auto
 //! compact** are read straight off `App` where they are used
-//! (`tui::stream`'s `ThinkingStart` arm and `App::should_auto_compact`), so
-//! there is no second copy to keep in step.
+//! (`tui::stream`'s `ThinkingStart` arm, and `App::compaction_window`, which
+//! the loop bottom configures the turn's compaction slot from), so there is
+//! no second copy to keep in step.
 
 use std::io;
 

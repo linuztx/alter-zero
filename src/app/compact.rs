@@ -11,14 +11,6 @@ use super::*;
 /// `● Context compacted` cell being its record. See `docs/compact.md`.
 pub const COMPACT_VERB: &str = "Compacting";
 
-/// The auto-compact trigger's numerator/denominator: codex's threshold is
-/// **90% of the context window** (`(context_window * 9) / 10`,
-/// `ModelInfo::auto_compact_token_limit`). Past it, the loop starts a compact
-/// turn on its own at the next idle boundary. See `docs/compact.md`.
-const AUTO_COMPACT_NUMERATOR: u64 = 9;
-
-const AUTO_COMPACT_DENOMINATOR: u64 = 10;
-
 impl App {
     /// Begin a `/compact` turn (`docs/compact.md`), reusing the AI turn
     /// machinery like [`begin_shell`](App::begin_shell) so the summarization
@@ -106,6 +98,8 @@ impl App {
             after: 0,
             auto: self.compact_auto,
             secs: elapsed_secs,
+            kept: 0,
+            background: false,
         };
         self.history
             .push(HistoryItem::Compaction(compaction.clone()));
@@ -121,8 +115,6 @@ impl App {
         if let Some(HistoryItem::Compaction(recorded)) = self.history.last_mut() {
             recorded.after = self.context_used;
         }
-        // One attempt per user turn: no immediate auto re-trigger.
-        self.auto_compact_blocked = true;
         Some(compaction)
     }
 
@@ -263,40 +255,232 @@ impl App {
         }
     }
 
-    /// Whether the loop should start an **auto-compact** turn at the next idle
-    /// boundary: the `/settings` **Auto compact** knob is on, the window is
-    /// known, the gauge is past codex's 90% threshold, no turn is in flight,
-    /// the last compact attempt isn't still blocking (one per user turn), and
-    /// the conversation derives a non-empty context to summarize. See
-    /// `docs/compact.md` / `docs/settings.md`.
+    /// The window the running turn compacts against
+    /// (`docs/background-compaction.md` *The lines on the gauge*) — the
+    /// gauge's, while the `/settings` **Auto compact** knob is on; `None`
+    /// otherwise, and then nothing compacts on its own (`/compact` by hand
+    /// still works). The boundary configures the turn's slot with it.
     #[must_use]
-    pub fn should_auto_compact(&self) -> bool {
-        // The `/settings` knob (docs/settings.md): off means the loop never
-        // starts one on its own — `/compact` by hand still works.
-        if !self.settings.auto_compact {
+    pub const fn compaction_window(&self) -> Option<u64> {
+        if self.settings.auto_compact {
+            self.context_window
+        } else {
+            None
+        }
+    }
+
+    /// The context's size right after the last compaction in the history —
+    /// background compaction's cycle start (`docs/background-compaction.md`
+    /// *The lines on the gauge*) — or 0 for a conversation with none.
+    #[must_use]
+    pub fn compaction_cycle_start(&self) -> u64 {
+        self.history
+            .iter()
+            .rev()
+            .find_map(|item| match item {
+                HistoryItem::Compaction(compaction) => Some(compaction.after),
+                _ => None,
+            })
+            .unwrap_or(0)
+    }
+
+    /// The conversation's epoch: bumped when it is replaced or rewound (a
+    /// `/clear`, a `/resume` load, a backtrack) and by nothing else.
+    #[must_use]
+    pub const fn history_epoch(&self) -> u64 {
+        self.history_epoch
+    }
+
+    /// Whether a background compaction may start or land **between turns**:
+    /// no turn in flight (a running one compacts at its own round tops) and a
+    /// conversation to summarize.
+    #[must_use]
+    pub fn can_compact_idle(&self) -> bool {
+        !self.turn_active()
+            && !self.is_streaming()
+            && crate::context::derives_conversation(&self.history)
+    }
+
+    /// A background summary started as job `id`: its coverage ends here, at
+    /// everything recorded so far (`docs/background-compaction.md` *The
+    /// lifecycle*). The boundary calls it where the turn's
+    /// [`StreamEvent::CompactionStart`] lands, so no item of the round about
+    /// to start is in it.
+    pub fn begin_background_compaction(&mut self, id: u64) {
+        self.background_compaction = Some(BackgroundCompaction {
+            id,
+            start: self.history.len(),
+            epoch: self.history_epoch,
+            summary: None,
+            secs: 0,
+            waiting: false,
+        });
+    }
+
+    /// The background summary being written or held, if any.
+    #[must_use]
+    pub const fn background_compaction(&self) -> Option<&BackgroundCompaction> {
+        self.background_compaction.as_ref()
+    }
+
+    /// Whether the history moved under the background summary, so it covers
+    /// a conversation that is gone and must never land (codex's generation
+    /// check, narrowed): the conversation was replaced or rewound since it
+    /// started (a `/clear`, a `/resume`, a backtrack), or an item it covers
+    /// was taken back (the turn that started it undone before anything
+    /// streamed). A re-render, an agent's entry updated in place or a failed
+    /// attempt withdrawn leaves it standing.
+    #[must_use]
+    pub fn background_compaction_stale(&self) -> bool {
+        self.background_compaction
+            .as_ref()
+            .is_some_and(|job| self.covers_gone(job))
+    }
+
+    /// Whether `job`'s coverage is no longer this conversation's.
+    fn covers_gone(&self, job: &BackgroundCompaction) -> bool {
+        job.epoch != self.history_epoch || job.start > self.history.len()
+    }
+
+    /// Job `id`'s summary is written, in `secs`: hold it until it lands.
+    /// `false` — and nothing kept — for another job or a stale one.
+    pub fn background_compaction_written(&mut self, id: u64, summary: String, secs: u64) -> bool {
+        if self.background_compaction_stale() {
             return false;
         }
-        let Some(window) = self.context_window else {
-            return false;
+        match &mut self.background_compaction {
+            Some(job) if job.id == id => {
+                job.summary = Some(summary.trim().to_string());
+                job.secs = secs;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Land job `id`: append its marker (`docs/background-compaction.md`
+    /// *The marker*) — everything before the job's start summarized, the
+    /// items recorded since kept verbatim — re-read the gauge, and return the
+    /// marker for the boundary's `● Context compacted
+    /// · … · background` cell. `None`, and nothing appended, for another job,
+    /// a stale one or one not written yet.
+    pub fn land_background_compaction(&mut self, id: u64) -> Option<Compaction> {
+        let job = self.background_compaction.as_ref()?;
+        if job.id != id || self.covers_gone(job) {
+            return None;
+        }
+        let summary = job.summary.clone()?;
+        let job = self.background_compaction.take()?;
+        // What the summary replaces is the context at the swap: the turn kept
+        // working while it was written.
+        self.sync_context_used();
+        let mut compaction = Compaction {
+            summary,
+            timestamp: self.now_stamp(),
+            before: self.context_used,
+            after: 0,
+            auto: true,
+            secs: job.secs,
+            kept: self.history.len() - job.start,
+            background: true,
         };
-        if self.auto_compact_blocked || self.turn_active() || self.is_streaming() {
-            return false;
+        self.history
+            .push(HistoryItem::Compaction(compaction.clone()));
+        // The gauge re-reads the compacted derivation, and the newest frame
+        // described the conversation the marker just replaced
+        // (`docs/context-usage.md`) — `finish_compact`'s rule.
+        self.refresh_context_used();
+        self.last_usage = None;
+        compaction.after = self.context_used;
+        if let Some(HistoryItem::Compaction(recorded)) = self.history.last_mut() {
+            recorded.after = self.context_used;
         }
-        if self.context_used <= auto_compact_threshold(window) {
-            return false;
+        Some(compaction)
+    }
+
+    /// Forget the background summary — its history moved, or it failed —
+    /// returning its id for the boundary to forget it in the turn's slot.
+    pub fn drop_background_compaction(&mut self) -> Option<u64> {
+        self.background_compaction.take().map(|job| job.id)
+    }
+
+    /// A turn reached its ceiling with job `id` unwritten and waits for it —
+    /// the status line's fixed `Compacting…` until the swap ([`live_verb`]).
+    ///
+    /// [`live_verb`]: App::live_verb
+    pub fn set_compaction_waiting(&mut self, id: u64) {
+        if let Some(job) = &mut self.background_compaction
+            && job.id == id
+        {
+            job.waiting = true;
         }
-        crate::context::derives_conversation(&self.history)
+    }
+
+    /// A background summary's usage frame: billed, so it joins the
+    /// since-launch ledger (`docs/context-usage.md`) — and only that, its
+    /// request being the summarizer's rather than the conversation's.
+    pub fn record_compaction_usage(&mut self, usage: &crate::stream::TokenUsage) {
+        self.usage_since_launch.record(usage);
+    }
+
+    /// No turn waits for the background summary any more — the waiting turn
+    /// ended (an Esc, an error) with the summary still unwritten. The next
+    /// turn wears its own verb until it reaches its ceiling and waits again.
+    pub fn end_compaction_wait(&mut self) {
+        if let Some(job) = &mut self.background_compaction {
+            job.waiting = false;
+        }
+    }
+
+    /// The verb the live status line wears in place of the turn's own:
+    /// `Compacting…` while the turn waits for a background summary at its
+    /// ceiling, else the running task's activeForm (`docs/task-tools.md`),
+    /// else none.
+    #[must_use]
+    pub fn live_verb(&self) -> Option<&str> {
+        if self
+            .background_compaction
+            .as_ref()
+            .is_some_and(|job| job.waiting)
+        {
+            return Some(COMPACT_VERB);
+        }
+        self.task_verb()
+    }
+
+    /// How long the background summary has been written for — the
+    /// boundary's clock, injected per draw like the status line's
+    /// (`set_status_times`'s pattern).
+    pub const fn set_compaction_elapsed(&mut self, elapsed: Option<Duration>) {
+        self.compaction_elapsed = elapsed;
+    }
+
+    /// What the strip's row under the status line says about the background
+    /// summary (`docs/background-compaction.md` *What the user sees*): being
+    /// written and for how long, or written and held until the context
+    /// reaches the ceiling's share of the window.
+    #[must_use]
+    pub fn compaction_row(&self) -> Option<CompactionRow> {
+        let job = self.background_compaction.as_ref()?;
+        if job.summary.is_some() {
+            let window = self.context_window.filter(|&window| window > 0)?;
+            return Some(CompactionRow::Held {
+                percent: crate::compaction::ceiling(window).saturating_mul(100) / window,
+            });
+        }
+        Some(CompactionRow::Writing {
+            elapsed: self.compaction_elapsed.unwrap_or_default(),
+        })
     }
 }
 
-/// Where auto-compaction runs for a `window`-token context window: codex's
-/// 90% (`ModelInfo::auto_compact_token_limit`). The trigger
-/// ([`App::should_auto_compact`]) and the `/context` page's headroom
-/// (`docs/context-usage.md`) both read it, so the page can never show a
-/// threshold the loop does not act on.
+/// Where a running turn swaps a summary in for a `window`-token context
+/// window: background compaction's ceiling (`compaction::ceiling`). The
+/// `/context` page's reserve (`docs/context-usage.md`) reads it, so the page
+/// can never show a line the turn does not act on.
 #[must_use]
 pub(crate) const fn auto_compact_threshold(window: u64) -> u64 {
-    window.saturating_mul(AUTO_COMPACT_NUMERATOR) / AUTO_COMPACT_DENOMINATOR
+    crate::compaction::ceiling(window)
 }
 
 /// The estimate of a derived context: every message's text, a flat
@@ -359,4 +543,51 @@ pub struct Compaction {
     /// ` · {elapsed}` clause ([`format_elapsed`]-humanized). 0 = unknown (an
     /// old rollout), hiding the clause.
     pub secs: u64,
+    /// How many items just before the marker its summary leaves out — the
+    /// ones recorded while a background summary was being written, which
+    /// stay verbatim; 0 (a manual or pre-background compaction) covers
+    /// everything before the marker. A count back from the marker rather
+    /// than an index, so a resume that skips a record ahead of the tail
+    /// still keeps the tail (`docs/background-compaction.md` *The marker*).
+    pub kept: usize,
+    /// Whether the summary was written in the background while the agent
+    /// kept working — the cell's `· background` in place of `· auto`.
+    pub background: bool,
+}
+
+/// A summary being written in the background, or written and held until a
+/// turn swaps it in (`docs/background-compaction.md` *The lifecycle*).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackgroundCompaction {
+    /// The job's id in the turn's `compaction::CompactionSlot`.
+    pub id: u64,
+    /// Where the summary's coverage ends — the history's length when it
+    /// started. The marker keeps what was recorded from here on.
+    pub start: usize,
+    /// The conversation's epoch when it started: a `/clear`, a `/resume` or
+    /// a backtrack since makes the job stale.
+    pub epoch: u64,
+    /// The summary, once written.
+    pub summary: Option<String>,
+    /// How long the summary took to write — the cell's elapsed.
+    pub secs: u64,
+    /// Whether a turn is waiting for it at its ceiling.
+    pub waiting: bool,
+}
+
+/// What the strip's row under the status line says about a background
+/// summary (`docs/background-compaction.md` *What the user sees*).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactionRow {
+    /// Being written, for this long.
+    Writing {
+        /// How long it has been written for.
+        elapsed: Duration,
+    },
+    /// Written and held: it swaps in once the context reaches this share of
+    /// the window, in percent.
+    Held {
+        /// The ceiling's share of the window.
+        percent: u64,
+    },
 }

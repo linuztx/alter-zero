@@ -451,9 +451,11 @@ impl App {
     /// heard it end, must hear too — unless it still waits on it in a live
     /// group, whose result carries the run (`docs/agent-tools.md`).
     pub fn apply_agent_event(&mut self, id: &str, event: &StreamEvent) -> Option<AgentNotice> {
-        // Every request the session makes is billed, a subagent's included:
-        // the `/context` page's Since launch row (docs/context-usage.md).
-        if let StreamEvent::Usage(usage) = event {
+        // Every request the session makes is billed, a subagent's included
+        // — its background summary's too: the `/context` page's Since launch
+        // row (docs/context-usage.md, docs/background-compaction.md
+        // *Subagents*).
+        if let StreamEvent::Usage(usage) | StreamEvent::CompactionUsage(usage) = event {
             self.usage_since_launch.record(usage);
         }
         if !self.agents.iter().any(|agent| agent.id == id) {

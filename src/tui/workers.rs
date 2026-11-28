@@ -25,6 +25,10 @@
 //! - [`spawn_telemetry_ping`] — the once-a-day anonymous usage ping
 //!   (`docs/telemetry.md`), fire-and-forget: it reports only success, so the
 //!   loop can record the day, and a dead collector costs the user nothing.
+//! - [`spawn_background_compaction`] — one background summary of the
+//!   conversation, written while the agent keeps working
+//!   (`docs/background-compaction.md`): it drains the summarizer's own
+//!   stream and answers with the summary.
 //! - [`spawn_transcript_worker`] — the Ctrl+O transcript's rows for every
 //!   item the conversation commits (`docs/input-latency.md`), the one worker
 //!   that lives as long as the session: a whole file through the grammar is
@@ -496,6 +500,65 @@ pub(crate) fn spawn_update_check(
             let _ = tx.send(latest);
         }
     });
+}
+
+/// A background summary's outcome (`docs/background-compaction.md`): the job
+/// it answers, the summary or why there is none, how long it took to write,
+/// the compact hooks' reports for the cells above its `Context compacted`
+/// line, and the usage frames it was billed.
+#[derive(Debug)]
+pub(crate) struct CompactionDone {
+    pub(crate) id: u64,
+    pub(crate) summary: Result<String, String>,
+    pub(crate) secs: u64,
+    pub(crate) hooks: Vec<(String, alter_zero::hooks::HookReport)>,
+    pub(crate) usage: Vec<alter_zero::stream::TokenUsage>,
+}
+
+/// What a background summary answers when its summarizer went away without
+/// ending its stream — a cancel, or a thread that panicked.
+pub(crate) const SUMMARY_STOPPED: &str = "the summary stopped before it was written";
+
+/// Write background summary `id` off the loop (`docs/background-compaction.md`
+/// *The lifecycle*): drain the summarizer's private stream — `events`, sent by
+/// the `summarizer` thread the loop spawned — fold it into the summary
+/// (`compaction::SummaryStream`), and send the outcome back with how long it
+/// took since `started`. A summary the loop has stopped caring about (a
+/// `/clear` cancelled it, the history moved) is still answered; the loop
+/// drops what it no longer waits for. Never a stdin reader (invariant 1).
+pub(crate) fn spawn_background_compaction(
+    id: u64,
+    mut events: tokio::sync::mpsc::UnboundedReceiver<alter_zero::stream::StreamEvent>,
+    summarizer: JoinHandle<()>,
+    started: std::time::Instant,
+    tx: tokio::sync::mpsc::UnboundedSender<CompactionDone>,
+) -> JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut stream = alter_zero::compaction::SummaryStream::default();
+        let summary = loop {
+            match events.blocking_recv() {
+                Some(event) => {
+                    if let Some(end) = stream.push(event) {
+                        break end;
+                    }
+                }
+                // Every sender gone with the stream unended: the summarizer
+                // was cancelled, or died.
+                None => break Err(SUMMARY_STOPPED.to_string()),
+            }
+        };
+        // It has said all it will; this only waits out its thread's last
+        // instructions.
+        let _ = summarizer.join();
+        let (hooks, usage) = stream.into_parts();
+        let _ = tx.send(CompactionDone {
+            id,
+            summary,
+            secs: started.elapsed().as_secs(),
+            hooks,
+            usage,
+        });
+    })
 }
 
 /// Max entries the `@` picker's worker indexes — bounds each walk's

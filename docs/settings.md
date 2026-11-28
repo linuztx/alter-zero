@@ -314,8 +314,11 @@ docs`.
     it on first lets go of an open group, so the reads it held come back as
     cells of their own (`docs/tool-groups.md`).
   - **Hide thinking** and **Auto compact** need nothing beyond the pure flag:
-    `tui::stream` consults `App::settings().show_thinking()` per phase and
-    `App::should_auto_compact` gates on the flag.
+    `tui::stream` consults `App::settings().show_thinking()` per phase, and
+    `App::compaction_window` gates on the flag — the loop bottom configures
+    the running turn's compaction slot from it, so off stops a turn
+    compacting at its next round top and lets a background summary go
+    (`docs/background-compaction.md`).
   - **Animate mascot** needs nothing either: the frame that poses the banner
     reads the row (`App::banner_pose`), so off repaints it at rest on the
     next draw and no further frame is scheduled, and on picks the animation

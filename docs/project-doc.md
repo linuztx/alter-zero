@@ -160,7 +160,7 @@ The port keeps the project's pure-core / boundary split.
   case the tools-free `/compact` turn sends. It rides `push_text`, so a
   first user message merges after the block under the module's alternation
   convention — the tags keep the boundary unambiguous to the model. The
-  compaction budget walk (`budgeted_user_texts`) reads *history*, which the
+  compaction budget walk (`kept_texts`) reads *history*, which the
   instructions never enter, so a compact never re-summarizes them — codex
   needs a marker check (`is_user_instructions`) for the same exclusion.
 

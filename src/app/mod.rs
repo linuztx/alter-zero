@@ -84,7 +84,7 @@ pub use self::commands::{
     CommandEffect, CommandMenu, INIT_BUSY_NOTICE, INIT_PROMPT, RESUME_BUSY_NOTICE, SlashCommand,
     command_query, matching_commands,
 };
-pub use self::compact::{COMPACT_VERB, Compaction};
+pub use self::compact::{BackgroundCompaction, COMPACT_VERB, Compaction, CompactionRow};
 pub(crate) use self::compact::{estimate_messages_tokens, message_tokens};
 pub use self::composer::{SHELL_EMPTY_NOTICE, shell_query};
 pub use self::context_usage::{ContextUsagePage, ContextUsageRow};
@@ -149,11 +149,11 @@ pub use self::turn::{
     CONNECTION_LOST_NOTICE, INTERRUPT_NOTICE, InterruptedTurn, SHELL_VERB, STATUS_VERBS,
     StatusVerb, StreamError, VERB_ROTATION, Withdrawn, format_elapsed, format_timeout,
 };
-pub(crate) use self::types::count_tokens;
 pub use self::types::{
     DebugPage, EntryJump, HistoryItem, HookNote, Message, PagerMove, Role, SessionInfo, Toast,
     ToastKind, View,
 };
+pub(crate) use self::types::{IMAGE_INPUT_TOKENS, count_tokens};
 pub use self::usage::{
     USAGE_EMPTY_NOTICE, USAGE_REFRESH_SECS, UsagePage, UsageSection, UsageTarget,
 };
@@ -323,13 +323,15 @@ pub struct App {
     /// carries beside the conversation: part of every whole-context
     /// estimate, so the gauge counts them before any provider has.
     tools_estimate: u64,
-    /// One auto-compact attempt per user turn (codex's per-turn semantics):
-    /// set when a compact turn ends **any** way — landed, interrupted, or
-    /// failed — and cleared when the next real turn begins, so a compaction
-    /// that didn't (or couldn't) shrink the context never re-triggers in a
-    /// tight loop, and an Esc'd one isn't immediately restarted against the
-    /// user's wishes. See `docs/compact.md`.
-    auto_compact_blocked: bool,
+    /// The summary being written in the background, or written and held
+    /// until a turn swaps it in (`docs/background-compaction.md`). A history
+    /// that moves under it leaves it stale
+    /// ([`background_compaction_stale`](Self::background_compaction_stale)),
+    /// which the boundary drops at its next loop bottom.
+    background_compaction: Option<BackgroundCompaction>,
+    /// How long that summary has been written for — the boundary's clock,
+    /// injected per draw ([`set_compaction_elapsed`](Self::set_compaction_elapsed)).
+    compaction_elapsed: Option<Duration>,
     /// The streaming strip preview's row count, injected by the boundary before
     /// each draw ([`set_stream_preview_rows`], the [`set_status_times`]
     /// pattern): 1 for a normal reply's single-row preview, the forming block's
@@ -405,6 +407,15 @@ pub struct App {
     /// re-highlighting all of history every open. Read via
     /// [`history_generation`](Self::history_generation).
     history_generation: u64,
+    /// Bumped when the conversation is **replaced or rewound** — a `/clear`,
+    /// a `/resume` load, a backtrack — and by nothing else. Unlike
+    /// [`history_generation`](Self::history_generation), which also moves for
+    /// changes that leave what was said alone (a re-render, an agent's entry
+    /// updated in place, a failed attempt withdrawn), so a background summary
+    /// started in one epoch is never applied in another, and one already paid
+    /// for survives everything else (`docs/background-compaction.md`
+    /// *Failures and edges*).
+    history_epoch: u64,
     /// Which screen is showing (Ctrl+O toggles to the tool-output view).
     pub view: View,
     /// The Git review snapshot and navigation state, released on close.
@@ -1374,6 +1385,7 @@ impl App {
     fn clear_conversation(&mut self) {
         self.history.clear();
         self.history_generation += 1;
+        self.history_epoch += 1;
         // The group's calls went with the history they were held in.
         self.drop_tool_group();
         // A cleared slate holds no tasks — the boundary resets the shared
@@ -1387,9 +1399,8 @@ impl App {
         // A fresh slate — but the system prompt and the standing AGENTS.md
         // instructions still ride the next request, so the gauge re-seats on
         // the estimate rather than hard-zeroing (a bare session still reads
-        // 0). Auto-compact re-arms.
+        // 0).
         self.refresh_context_used();
-        self.auto_compact_blocked = false;
         // The last request described the conversation that just went; what
         // the session spent stays in the ledger (`docs/context-usage.md`).
         self.last_usage = None;

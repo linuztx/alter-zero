@@ -853,7 +853,8 @@ conversation a `/clear`, `/resume`, rewind or compaction replaces; the
 its session view): tokens in and out and the cache-hit share as a meter
 (`>99%` and `<1%` short of all or none); a window bar in category
 colours with the free space and the hatched auto-compact reserve allotted
-on cumulative cell boundaries, so the hatch starts at 90% to the cell; a
+on cumulative cell boundaries, so the hatch starts at background
+compaction's ceiling (85% of a 200k window) to the cell; a
 legend whose highlighted row's parts sit beside it from 76 columns, the
 highlight following the largest category until the user moves it; **live**
 — `tui::context_usage` hands over the tool set and re-counts at the loop
@@ -3171,8 +3172,8 @@ model's handoff summary invisibly into `App::compact_buffer`,
 `finish_compact` appends a `HistoryItem::Compaction` marker — the transcript,
 recorder, checkpoint keys, and backtrack all untouched — and
 `context::context_messages` derives codex's compacted shape from the *last*
-marker: the 20k-approx-token budget of recent user texts + the
-`SUMMARY_PREFIX\n{summary}` bridge in place of everything before it, the
+marker: the 20k-approx-token budget of recent user texts and hook notes +
+the `SUMMARY_PREFIX\n{summary}` bridge in place of everything before it, the
 `● Context compacted · {before} → {after} tokens` cell the visible record;
 with the model's **context window** known — `/v1/models` `context_length`
 via `ModelEntry::context`, persisted in `config.json`, overridable via
@@ -3185,9 +3186,52 @@ rides every request; before any frame the estimate, the tool schemas'
 included — `tokens::ContextMeter`,
 `docs/token-estimate.md`; **inside an agent
 session view it is the viewed agent's own** — `AgentRun::context_used` /
-`App::context_gauge`, `docs/agent-context-gauge.md`) and the loop **auto-runs** the
-same turn past codex's 90% threshold (`App::should_auto_compact`, one
-attempt per user turn, the cell tagged `· auto`)) in `docs/compact.md`; and
+`App::context_gauge`, `docs/agent-context-gauge.md`) and the conversation
+**compacts in the background** — **`docs/background-compaction.md`**: past a
+start line (the ceiling less 60k, or half the room the cycle had) a running
+turn's round top — measuring from the footer gauge it was spawned with
+until its first usage frame (`CompactionSlot::set_baseline`), the cycle start
+read off the last marker's `after` — sends `StreamEvent::CompactionStart` and
+goes on, the boundary notes the job's `start = history.len()` where the
+event lands (the channel is FIFO) and writes the summary on
+`compact_backend`'s tools-free
+one-off on a worker of its own (`tui::workers::spawn_background_compaction`,
+the stream folded by the pure `compaction::SummaryStream`), held until the
+**ceiling** (the window less the larger of 15% and 16k —
+`compaction::ceiling`, which `auto_compact_threshold` and the `/context`
+reserve read), where the round top sends `CompactionSwap` and the boundary
+appends the marker (`Compaction::kept` — the items recorded since the start,
+a count back from the marker so a rollout reader that skips a record ahead of
+them still keeps them, verbatim, everything before them summarized — and
+`background`, the cell's `· background`), commits the cell in place and
+answers through the shared
+`compaction::CompactionSlot` (the `SteerQueue` shape) with the context
+re-derived from history, which the turn rebuilds its list from
+(`RoundOutcome::Compacted`) — waiting (`CompactionWaiting`, the status verb
+`Compacting…`) only for a summary still unwritten; between turns the loop
+bottom's `Session::tick_background_compaction` starts one past the start
+line and lands one held, so no compaction turn ever blocks a message; a job
+dies with its conversation's **epoch** (`App::history_epoch`, bumped by
+`/clear`, `/resume` and a backtrack — never the render generation; the slot
+is let go of with it) or its start cut back, a job whose start an Esc's
+swapped channel dropped is let go of at the idle loop bottom
+(`CompactionSlot::drop_unknown`), two failures a cycle stop starts, a swap
+that leaves the context still past its ceiling is summarized once more, the
+tail included, and a second stops them for the rest of the turn
+(`MAX_PAST_LANDINGS`, `CompactionSlot::futile` — the old trigger's one
+attempt per turn, without which a window the system prompt and tools alone
+fill compacts for ever), and **a subagent compacts the same way on its own
+thread** — its conversation of record being its own message list, which its
+thread **splices** at its ceiling (`llm::compaction::AgentCompaction`, the
+summary on a tools-free run of the agent loop beside it, its window the
+gauge's rule read off the slot, `CompactionSlot::configure_pinned`/
+`agent_window`), its transcript recording the marker from
+`StreamEvent::CompactionLanded` and the summary's billing from
+`CompactionUsage` — and Phases 51, 171, 172 and 173 drive it between and
+inside turns and in a subagent's session view, `tests/headless.rs` holding
+the swapped request to the one the next turn derives and a subagent past its
+window to finishing) in
+`docs/compact.md`; and
 the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
 `ALTER_ZERO_*` environment variables — plus a hard-coded `retry::MAX_RETRIES`,
 a hard-coded `agent::MAX_TOOL_ITERATIONS`, and an always-on auto-compaction —
@@ -3323,8 +3367,9 @@ reloads or drops `App::user_instructions` at once, **Telemetry** writes its
 own `telemetry.json` and sends today's ping if none has gone yet
 (`Session::apply_telemetry_setting`, skipping the `settings.json` write), and **Hide thinking** /
 **Auto compact** need nothing — they are read where they are used
-(`tui::stream`'s `ThinkingStart` arm and `App::should_auto_compact`), so
-there is no second copy to drift. It persists to its own
+(`tui::stream`'s `ThinkingStart` arm, and `App::compaction_window`, which the
+loop bottom configures the turn's compaction slot from), so there is no
+second copy to drift. It persists to its own
 `~/.alter-zero/settings.json` — beside `config.json` and `permissions.json`,
 one file per feature that owns it — **per working directory**
 (`settings::SettingsFile`, `docs/per-directory-state.md`: one entry per cwd
@@ -4381,8 +4426,11 @@ anything) — in front of the post-`/compact` shape too, never entering
 counts it.
 **`/compact`→`Compact`** —
 codex's manual compaction (`docs/compact.md`): the loop runs the summarization
-turn on a one-off tools-free `LlmBackend::configure(cfg, system_prompt,
-false)` (the dummy scripts a text-only summary), the reply diverts into
+turn on a one-off tools-free `LlmBackend::configure(cfg,
+Some(COMPACT_SYSTEM_PROMPT), false)` over `context::conversation_messages` —
+the summarizer's own system prompt and the conversation alone, never the
+agent's persona or a `<system-reminder>` (`docs/background-compaction.md`,
+`smoke.sh` Phase 170; the dummy scripts a text-only summary), the reply diverts into
 `App::compact_buffer` (never rendered), and `StreamDone` appends the
 `HistoryItem::Compaction` marker + commits the cyan `● Context compacted`
 cell; mid-turn it is rejected with a `Toast` like `/resume`, an empty derived

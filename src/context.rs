@@ -25,6 +25,13 @@ use crate::app::{HistoryItem, Role, ToolCall};
 /// context. See `docs/compact.md`.
 pub const SUMMARIZATION_PROMPT: &str = include_str!("../prompts/compact_prompt.md");
 
+/// The summarizer's **own** system prompt (`prompts/compact_system.md`): what
+/// the messages are, that they are material and not instructions, and not to
+/// carry on the task — sent in place of the agent's persona, environment and
+/// scratchpad blocks, which the summarizer never reads
+/// (`docs/background-compaction.md` *What the summarizer reads*).
+pub const COMPACT_SYSTEM_PROMPT: &str = include_str!("../prompts/compact_system.md");
+
 /// Codex's summary prefix (`prompts/compact_summary_prefix.md`, verbatim — no
 /// trailing newline): the compacted context's bridge message opens with it,
 /// followed by a newline and the marker's summary. See `docs/compact.md`.
@@ -85,31 +92,76 @@ fn truncate_middle_to_tokens(text: &str, max_tokens: usize) -> String {
     )
 }
 
-/// The typed user messages of `items` that fit `budget` approx tokens —
-/// codex's `build_compacted_history` selection: walk newest→oldest keeping
-/// whole messages while they fit, middle-truncate the first overflowing one to
-/// the remaining budget, then restore chronological order. Only real
-/// [`Role::User`] messages collect (tool records, shell transcripts, notices,
-/// and earlier compaction markers all drop — codex's `collect_user_messages`).
-fn budgeted_user_texts(items: &[HistoryItem], budget: usize) -> Vec<String> {
+/// What a compaction keeps of the `items` its summary covers, each with its
+/// origin, within `budget` approx tokens — codex's `build_compacted_history`
+/// selection ([`budget_walk`]). Two kinds collect:
+///
+/// - the typed [`Role::User`] messages (tool records, shell transcripts, the
+///   app's notices, a hook's feedback and earlier compaction markers all drop
+///   — codex's `collect_user_messages`; the summary covers them);
+/// - when `reminders` is set — the request's derivation, never the
+///   summarizer's ([`conversation_messages`]) — every hook note wrapped in a
+///   `<system-reminder>`: the context a SessionStart or UserPromptSubmit
+///   hook added. The summarizer is never sent it and no request makes it
+///   again, so this is the one place it survives the compaction
+///   (`docs/background-compaction.md` *What the summarizer reads*).
+///
+/// One walk over both, so a note stays after the prompt it came with and the
+/// compacted part is no larger than the user's texts alone could make it.
+fn kept_texts(items: &[HistoryItem], budget: usize, reminders: bool) -> Vec<(String, TextOrigin)> {
+    budget_walk(
+        items.iter().filter_map(|item| match item {
+            HistoryItem::Message(message) if message.role == Role::User => {
+                Some((message.text.as_str(), TextOrigin::Typed))
+            }
+            HistoryItem::HookNote(note)
+                if reminders && crate::reminder::is_reminder(&note.text) =>
+            {
+                Some((note.text.as_str(), TextOrigin::Notice))
+            }
+            _ => None,
+        }),
+        budget,
+    )
+}
+
+/// The texts a compaction keeps of `texts`, given oldest first — the budget
+/// walk [`kept_texts`] runs over a history, at the same budget, over a
+/// **subagent's** wire messages, which are texts rather than history items
+/// (`docs/background-compaction.md` *Subagents*). The caller chooses which
+/// texts are walked, by the same rule.
+pub(crate) fn kept_user_texts<'a>(
+    texts: impl IntoIterator<Item = &'a str, IntoIter: DoubleEndedIterator>,
+) -> Vec<String> {
+    budget_walk(
+        texts.into_iter().map(|text| (text, ())),
+        COMPACT_USER_MESSAGE_MAX_TOKENS,
+    )
+    .into_iter()
+    .map(|(text, ())| text)
+    .collect()
+}
+
+/// The walk itself, over texts each carrying a `tag` it keeps:
+/// newest→oldest keeping whole texts while they fit `budget` approx tokens,
+/// middle-truncating the first that overflows to what is left, then back to
+/// chronological order.
+fn budget_walk<'a, T>(
+    texts: impl IntoIterator<Item = (&'a str, T), IntoIter: DoubleEndedIterator>,
+    budget: usize,
+) -> Vec<(String, T)> {
     let mut selected = Vec::new();
     let mut remaining = budget;
-    for item in items.iter().rev() {
-        let HistoryItem::Message(message) = item else {
-            continue;
-        };
-        if message.role != Role::User {
-            continue;
-        }
+    for (text, tag) in texts.into_iter().rev() {
         if remaining == 0 {
             break;
         }
-        let tokens = approx_token_count(&message.text);
+        let tokens = approx_token_count(text);
         if tokens <= remaining {
-            selected.push(message.text.clone());
+            selected.push((text.to_string(), tag));
             remaining -= tokens;
         } else {
-            selected.push(truncate_middle_to_tokens(&message.text, remaining));
+            selected.push((truncate_middle_to_tokens(text, remaining), tag));
             break;
         }
     }
@@ -120,7 +172,7 @@ fn budgeted_user_texts(items: &[HistoryItem], budget: usize) -> Vec<String> {
 /// The compacted context's bridge message: [`SUMMARY_PREFIX`], a newline, and
 /// the marker's summary — codex's `format!("{SUMMARY_PREFIX}\n{summary}")`,
 /// with its "(no summary available)" fallback when the model streamed nothing.
-fn summary_bridge(summary: &str) -> String {
+pub(crate) fn summary_bridge(summary: &str) -> String {
     let body = if summary.is_empty() {
         "(no summary available)"
     } else {
@@ -289,6 +341,9 @@ pub(crate) const MERGE_SEPARATOR: &str = "\n\n";
 struct Derived {
     messages: Vec<ContextMessage>,
     origins: Option<Vec<TextSegment>>,
+    /// Whether a hook note wrapped in a `<system-reminder>` is replayed —
+    /// always, but for the summarizer's input ([`conversation_messages`]).
+    reminders: bool,
 }
 
 impl std::ops::Deref for Derived {
@@ -469,13 +524,13 @@ pub fn context_messages(history: &[HistoryItem]) -> Vec<ContextMessage> {
 
 /// Whether `history` derives any conversation at all — i.e. whether
 /// [`context_messages`] would return anything — without building it. The
-/// gates that only need the yes/no (the context gauge's zero state, the
-/// auto-compact "anything to summarize" check, `/compact`'s `Nothing to
-/// compact` rejection) used to derive the whole window — every message text,
-/// tool output, and shell transcript cloned into fresh `String`s — just to
-/// test `.is_empty()`; on a long conversation that is hundreds of kilobytes
-/// of transient allocation per check, and `should_auto_compact` runs at the
-/// loop bottom. The match is deliberately exhaustive (no wildcard): adding a
+/// gates that only need the yes/no (the context gauge's zero state,
+/// background compaction's "anything to summarize" check, `/compact`'s
+/// `Nothing to compact` rejection) used to derive the whole window — every
+/// message text, tool output, and shell transcript cloned into fresh
+/// `String`s — just to test `.is_empty()`; on a long conversation that is
+/// hundreds of kilobytes of transient allocation per check, and the
+/// compaction check runs at the loop bottom. The match is deliberately exhaustive (no wildcard): adding a
 /// history variant forces this answer to be decided alongside its
 /// [`context_messages`] arm, and the equivalence test sweeps every kind so
 /// the two can never quietly disagree.
@@ -581,12 +636,34 @@ fn derive(leading: Option<String>, history: &[HistoryItem], origins: bool) -> De
     let mut out = Derived {
         messages: Vec::new(),
         origins: origins.then(Vec::new),
+        reminders: true,
     };
     if let Some(fragment) = leading.filter(|fragment| !fragment.trim().is_empty()) {
         push_user_text(&mut out, fragment, vec![], TextOrigin::Reminder);
     }
     derive_history_into(&mut out, history);
     out
+}
+
+/// The conversation alone, as the summarizer reads it
+/// (`docs/background-compaction.md` *What the summarizer reads*): the history
+/// derived exactly as [`context_messages`] derives it, with **no
+/// `<system-reminder>`** in it — no leading one (the window's AGENTS.md
+/// instructions and listings are never composed here) and no hook note
+/// stored wrapped in one ([`crate::reminder::is_reminder`]). Every turn
+/// re-sends both, so a summary has nothing to keep of them; and a summarizer
+/// that never reads them can neither restate them nor take them as its own
+/// instructions. An earlier compaction's bridge stays: it is the summary the
+/// next one updates.
+#[must_use]
+pub fn conversation_messages(history: &[HistoryItem]) -> Vec<ContextMessage> {
+    let mut out = Derived {
+        messages: Vec::new(),
+        origins: None,
+        reminders: false,
+    };
+    derive_history_into(&mut out, history);
+    out.messages
 }
 
 /// [`context_messages_full`] with the project's AGENTS.md instructions alone
@@ -619,8 +696,18 @@ fn derive_history_into(out: &mut Derived, history: &[HistoryItem]) {
         let HistoryItem::Compaction(compaction) = &history[cut] else {
             unreachable!("rposition matched a Compaction");
         };
-        for text in budgeted_user_texts(&history[..cut], COMPACT_USER_MESSAGE_MAX_TOKENS) {
-            push_user_text(out, text, vec![], TextOrigin::Typed);
+        // A background compaction leaves out the `kept` items just before
+        // its marker, which ran while it was written and stay verbatim
+        // (docs/background-compaction.md *The marker*); 0 is the old rule,
+        // everything before the marker.
+        let keep_from = cut - compaction.kept.min(cut);
+        let kept = kept_texts(
+            &history[..keep_from],
+            COMPACT_USER_MESSAGE_MAX_TOKENS,
+            out.reminders,
+        );
+        for (text, origin) in kept {
+            push_user_text(out, text, vec![], origin);
         }
         push_user_text(
             out,
@@ -628,9 +715,14 @@ fn derive_history_into(out: &mut Derived, history: &[HistoryItem]) {
             vec![],
             TextOrigin::Summary,
         );
-        derive_into(out, &history[cut + 1..]);
+        // One request, so one set of call ids across the tail and what
+        // follows the marker: a fresh set for each would hand Ollama's
+        // `call_0` (or a synthesized one) out twice.
+        let mut ids = CallIds::default();
+        derive_into(out, &history[keep_from..cut], &mut ids);
+        derive_into(out, &history[cut + 1..], &mut ids);
     } else {
-        derive_into(out, history);
+        derive_into(out, history, &mut CallIds::default());
     }
 }
 
@@ -642,13 +734,14 @@ fn derive_history_into(out: &mut Derived, history: &[HistoryItem]) {
 /// every call under the provider's own ids, then every result, so the request
 /// re-sends the prefix the provider cached rather than one call per message
 /// under synthesized ids (`docs/prompt-caching.md`). A record with no batch
-/// is a round of its own, exactly as before the ids were recorded.
-fn derive_into(out: &mut Derived, history: &[HistoryItem]) {
-    let mut ids = CallIds::default();
+/// is a round of its own, exactly as before the ids were recorded. `ids` is
+/// the request's: a derivation in two runs (a background marker's kept tail,
+/// then the items after it) hands both the same set.
+fn derive_into(out: &mut Derived, history: &[HistoryItem], ids: &mut CallIds) {
     let mut position = 0;
     while position < history.len() {
         if let Some(round) = round_at(history, position) {
-            derive_round(out, &round, &mut ids);
+            derive_round(out, &round, ids);
             position = round.end;
             continue;
         }
@@ -902,7 +995,8 @@ fn derive_item(out: &mut Derived, history: &[HistoryItem], position: usize) {
         // it gave the model nothing, so nothing is replayed (an empty entry
         // would merge into the next user message as a stray blank line).
         HistoryItem::HookNote(note) => {
-            if !note.text.is_empty() {
+            let replayed = out.reminders || !crate::reminder::is_reminder(&note.text);
+            if !note.text.is_empty() && replayed {
                 push_user_text(out, note.text.clone(), vec![], TextOrigin::Notice);
             }
         }
@@ -2268,7 +2362,347 @@ mod tests {
             after: 0,
             auto: false,
             secs: 0,
+            kept: 0,
+            background: false,
         })
+    }
+
+    /// A background compaction's marker: the `kept` items just before it ran
+    /// while its summary was written, and stay verbatim; everything before
+    /// them is what the summary covers.
+    fn background(summary: &str, kept: usize) -> HistoryItem {
+        HistoryItem::Compaction(crate::app::Compaction {
+            summary: summary.to_string(),
+            timestamp: String::new(),
+            before: 0,
+            after: 0,
+            auto: true,
+            secs: 0,
+            kept,
+            background: true,
+        })
+    }
+
+    // ── The marker's kept tail (docs/background-compaction.md *The marker*) ──
+
+    #[test]
+    fn a_background_marker_keeps_the_items_just_before_it_verbatim() {
+        // The summary covers history[..2]; the round recorded while it was
+        // written — before the marker landed — derives as it was.
+        let history = vec![
+            message(Role::User, "port the module"),
+            tool("read", "a.rs", "fn a() {}", ToolStatus::Ok, false),
+            tool("read", "b.rs", "fn b() {}", ToolStatus::Ok, false),
+            background("read a.rs", 1),
+            message(Role::Assistant, "done"),
+        ];
+        let ctx = context_messages(&history);
+        assert!(
+            ctx[0].text.contains("port the module") && ctx[0].text.contains(SUMMARY_PREFIX),
+            "the kept user text and the bridge lead: {ctx:?}"
+        );
+        let results: Vec<&str> = ctx
+            .iter()
+            .filter(|m| m.role == ContextRole::Tool)
+            .map(|m| m.text.as_str())
+            .collect();
+        assert_eq!(
+            results,
+            vec!["fn b() {}"],
+            "the round while it was written stays, the one before it is summarized: {ctx:?}"
+        );
+        assert_eq!(ctx.last().map(|m| m.text.as_str()), Some("done"));
+    }
+
+    #[test]
+    fn call_ids_stay_unique_across_the_kept_tail_and_what_follows_the_marker() {
+        // The kept tail and the items after the marker are one request's
+        // calls, so no id is handed out twice across them: not Ollama's
+        // `call_0`, which it names the first call of every request, nor the
+        // synthesized one a call recorded without an id gets.
+        let read = |output: &str, id: Option<&str>| {
+            let HistoryItem::Tool(mut call) = tool("read", "a.rs", output, ToolStatus::Ok, false)
+            else {
+                unreachable!("tool builds a Tool");
+            };
+            call.call_id = id.map(str::to_string);
+            HistoryItem::Tool(call)
+        };
+        for id in [Some("call_0"), None] {
+            let history = vec![
+                message(Role::User, "port the module"),
+                read("summarized", id),
+                read("kept", id),
+                background("read a.rs", 1),
+                read("after", id),
+            ];
+            let ctx = context_messages(&history);
+            let calls: Vec<&str> = ctx
+                .iter()
+                .flat_map(|m| m.tool_calls.iter().map(|call| call.id.as_str()))
+                .collect();
+            let results: Vec<&str> = ctx
+                .iter()
+                .filter_map(|m| m.tool_call_id.as_deref())
+                .collect();
+            assert_eq!(calls.len(), 2, "{id:?}: {ctx:?}");
+            assert_ne!(calls[0], calls[1], "{id:?}: one id for two calls: {ctx:?}");
+            assert_eq!(
+                results, calls,
+                "{id:?}: each result answers its call: {ctx:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_kept_tail_longer_than_the_history_keeps_everything_before_the_marker() {
+        // Clamped: the summary covers nothing, and every item before the
+        // marker stays — the bridge still leads them.
+        let history = vec![
+            message(Role::User, "port the module"),
+            tool("read", "a.rs", "fn a() {}", ToolStatus::Ok, false),
+            background("read a.rs", 99),
+            message(Role::Assistant, "done"),
+        ];
+        let ctx = context_messages(&history);
+        assert!(ctx[0].text.starts_with(SUMMARY_PREFIX), "{ctx:?}");
+        assert!(
+            ctx.iter().any(|m| m.text == "fn a() {}"),
+            "the whole history before the marker stays: {ctx:?}"
+        );
+    }
+
+    #[test]
+    fn a_marker_that_kept_nothing_derives_as_the_old_rule() {
+        let mut history = vec![
+            message(Role::User, "port the module"),
+            tool("read", "a.rs", "fn a() {}", ToolStatus::Ok, false),
+            background("read a.rs", 0),
+            message(Role::Assistant, "done"),
+        ];
+        let kept_nothing = context_messages(&history);
+        history[2] = compaction("read a.rs");
+        assert_eq!(kept_nothing, context_messages(&history));
+    }
+
+    #[test]
+    fn the_kept_tail_survives_a_resume_that_lost_a_record_ahead_of_it() {
+        // An older build reading a newer rollout skips a record type it does
+        // not know: an item ahead of the tail is gone, and the tail — counted
+        // back from the marker — is still the items the summary left out.
+        let full = vec![
+            message(Role::User, "port the module"),
+            hook_note("a note an older reader skips"),
+            tool("read", "a.rs", "fn a() {}", ToolStatus::Ok, false),
+            tool("read", "b.rs", "fn b() {}", ToolStatus::Ok, false),
+            background("read a.rs", 1),
+            message(Role::Assistant, "done"),
+        ];
+        let mut resumed = full.clone();
+        resumed.remove(1);
+        let results = |history: &[HistoryItem]| -> Vec<String> {
+            context_messages(history)
+                .into_iter()
+                .filter(|m| m.role == ContextRole::Tool)
+                .map(|m| m.text)
+                .collect()
+        };
+        assert_eq!(results(&full), vec!["fn b() {}".to_string()]);
+        assert_eq!(results(&resumed), results(&full));
+    }
+
+    fn hook_note(text: &str) -> HistoryItem {
+        HistoryItem::HookNote(crate::app::HookNote {
+            label: "SessionStart hook".into(),
+            text: text.into(),
+            report: None,
+            timestamp: String::new(),
+        })
+    }
+
+    // ── What the summarizer reads (docs/background-compaction.md) ────────
+
+    #[test]
+    fn the_summarizer_reads_no_system_reminder() {
+        // A hook's additional context is stored wrapped in a reminder, and the
+        // window's own reminder (AGENTS.md, the listings) is never in history
+        // at all: the summarizer is sent the conversation and nothing else.
+        let history = vec![
+            hook_note(
+                "<system-reminder>\nSessionStart hook additional context: the repo is /srv\n</system-reminder>",
+            ),
+            message(Role::User, "fix the parser"),
+            message(Role::Assistant, "on it"),
+            tool(
+                "read",
+                "src/parser.rs",
+                "fn parse() {}",
+                ToolStatus::Ok,
+                false,
+            ),
+        ];
+        let ctx = conversation_messages(&history);
+        assert!(
+            !ctx.iter().any(|m| m.text.contains("<system-reminder>")),
+            "{ctx:?}"
+        );
+        assert!(
+            ctx.iter().any(|m| m.text.contains("fix the parser")),
+            "{ctx:?}"
+        );
+        assert!(
+            ctx.iter()
+                .any(|m| m.tool_calls.iter().any(|c| c.name == "read")),
+            "the tool round stays: {ctx:?}"
+        );
+    }
+
+    // ── What a compaction carries (docs/background-compaction.md) ────────
+
+    /// A hook's `additionalContext` as the turn's opening hooks record it.
+    fn hook_context(event: &str, context: &str) -> String {
+        format!("<system-reminder>\n{event} hook additional context: {context}\n</system-reminder>")
+    }
+
+    #[test]
+    fn a_compaction_carries_the_hook_context_the_summarizer_is_not_sent() {
+        // A hook's added context is in the history once — SessionStart's at
+        // the turn that opened the conversation, UserPromptSubmit's with the
+        // prompt it came with — and no request makes it again. The
+        // summarizer is never sent it, so the compaction keeps it as it was,
+        // after the prompt it came with and ahead of the bridge.
+        let session = hook_context("SessionStart", "the repo is /srv");
+        let prompt = hook_context("UserPromptSubmit", "ticket 42");
+        let history = vec![
+            message(Role::User, "fix the parser"),
+            hook_note(&session),
+            hook_note(&prompt),
+            message(Role::Assistant, "on it"),
+            tool(
+                "read",
+                "src/parser.rs",
+                "fn parse() {}",
+                ToolStatus::Ok,
+                false,
+            ),
+            compaction("read the parser"),
+            message(Role::User, "and the lexer"),
+        ];
+        let ctx = context_messages(&history);
+        assert_eq!(
+            ctx[0].text,
+            [
+                "fix the parser",
+                &session,
+                &prompt,
+                &summary_bridge("read the parser"),
+                "and the lexer",
+            ]
+            .join(MERGE_SEPARATOR),
+            "{ctx:?}"
+        );
+    }
+
+    #[test]
+    fn a_background_compaction_carries_a_note_its_summary_started_after() {
+        // The summary can start at the round top right after the turn's
+        // opening hooks: their note is then in what the summary covers, and
+        // the agent has not read it yet.
+        let note = hook_context("UserPromptSubmit", "ticket 42");
+        let history = vec![
+            message(Role::User, "fix the parser"),
+            hook_note(&note),
+            tool(
+                "read",
+                "src/parser.rs",
+                "fn parse() {}",
+                ToolStatus::Ok,
+                false,
+            ),
+            background("nothing yet", 1),
+        ];
+        let ctx = context_messages(&history);
+        assert!(ctx[0].text.contains(&note), "{ctx:?}");
+    }
+
+    #[test]
+    fn a_carried_note_is_counted_as_the_notice_it_was() {
+        let note = hook_context("SessionStart", "the repo is /srv");
+        let history = vec![
+            message(Role::User, "fix the parser"),
+            hook_note(&note),
+            compaction("read the parser"),
+        ];
+        assert!(
+            named(&history)
+                .iter()
+                .any(|(_, text, origin)| *text == note && *origin == TextOrigin::Notice),
+            "{:?}",
+            named(&history)
+        );
+    }
+
+    #[test]
+    fn a_later_summarizer_is_not_sent_the_hook_context_a_compaction_carried() {
+        let note = hook_context("SessionStart", "the repo is /srv");
+        let history = vec![
+            message(Role::User, "fix the parser"),
+            hook_note(&note),
+            compaction("read the parser"),
+            message(Role::User, "and the lexer"),
+        ];
+        let read = conversation_messages(&history);
+        assert!(
+            !read.iter().any(|m| m.text.contains("<system-reminder>")),
+            "{read:?}"
+        );
+        assert!(
+            read.iter().any(|m| m.text.contains("fix the parser")),
+            "{read:?}"
+        );
+    }
+
+    #[test]
+    fn the_summarizer_keeps_hook_feedback_that_is_no_reminder() {
+        // A Stop hook's feedback is something the agent was told and acted
+        // on — conversation, not a reminder.
+        let history = vec![
+            message(Role::User, "fix the parser"),
+            hook_note("Stop hook feedback:\ntests are red"),
+        ];
+        let ctx = conversation_messages(&history);
+        assert!(
+            ctx.iter().any(|m| m.text.contains("Stop hook feedback")),
+            "{ctx:?}"
+        );
+    }
+
+    #[test]
+    fn the_summarizer_reads_an_earlier_compactions_bridge() {
+        // A second compaction updates the first: the earlier summary is part
+        // of the conversation it is sent.
+        let history = vec![
+            message(Role::User, "port the module"),
+            compaction("ported stripe.rs"),
+            message(Role::User, "now the ledger"),
+        ];
+        let ctx = conversation_messages(&history);
+        assert!(
+            ctx.iter()
+                .any(|m| m.text.contains(SUMMARY_PREFIX) && m.text.contains("ported stripe.rs")),
+            "{ctx:?}"
+        );
+    }
+
+    #[test]
+    fn without_reminders_the_summarizer_reads_what_the_request_carries() {
+        let history = vec![
+            message(Role::User, "fix the parser"),
+            message(Role::Assistant, "on it"),
+            tool("Bash", "cargo test", "Exit code: 0", ToolStatus::Ok, false),
+            hook_note("Stop hook feedback:\ntests are red"),
+        ];
+        assert_eq!(conversation_messages(&history), context_messages(&history));
     }
 
     #[test]
@@ -2306,7 +2740,21 @@ mod tests {
             message(Role::User, "abcd"), // 1 token
             message(Role::User, "efgh"), // 1 token
         ];
-        assert_eq!(budgeted_user_texts(&items, 2), vec!["abcd", "efgh"]);
+        assert_eq!(kept(&items, 2, true), vec!["abcd", "efgh"]);
+    }
+
+    #[test]
+    fn the_kept_user_texts_are_the_budget_walk_over_plain_texts() {
+        // A subagent's list is wire messages, not history items: the same
+        // walk over its user texts, at the same 20k budget
+        // (docs/background-compaction.md *Subagents*).
+        let texts = ["oldest", "abcd", "efgh"];
+        assert_eq!(kept_user_texts(texts), vec!["oldest", "abcd", "efgh"]);
+        let big = "x".repeat(COMPACT_USER_MESSAGE_MAX_TOKENS * APPROX_BYTES_PER_TOKEN);
+        let kept = kept_user_texts([big.as_str(), "abcd"]);
+        assert_eq!(kept.len(), 2, "the newest whole, the one before it cut");
+        assert!(kept[0].contains("tokens truncated…"), "{:?}", kept[0]);
+        assert_eq!(kept[1], "abcd");
     }
 
     #[test]
@@ -2316,27 +2764,60 @@ mod tests {
             message(Role::User, &big),
             message(Role::User, "abcd"), // 1 token, leaves 9 of 10
         ];
-        let texts = budgeted_user_texts(&items, 10);
+        let texts = kept(&items, 10, true);
         assert_eq!(texts.len(), 2);
         assert!(texts[0].contains("tokens truncated…"), "{:?}", texts[0]);
         assert!(texts[0].len() < big.len());
         assert_eq!(texts[1], "abcd");
     }
 
+    /// The texts [`kept_texts`] keeps, without their origins.
+    fn kept(items: &[HistoryItem], budget: usize, reminders: bool) -> Vec<String> {
+        kept_texts(items, budget, reminders)
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect()
+    }
+
     #[test]
-    fn only_typed_user_messages_enter_the_budget_walk() {
-        // Shell transcripts, notices, tool records, and summaries all drop —
-        // codex collects only real user messages.
+    fn only_typed_messages_and_hook_context_enter_the_budget_walk() {
+        // Shell transcripts, notices, tool records, a hook's feedback and
+        // summaries all drop — codex collects only real user messages — and
+        // so does a hook's added context when the summarizer is the reader.
+        let context = hook_context("SessionStart", "the repo is /srv");
         let items = vec![
             message(Role::User, "keep me"),
+            hook_note(&context),
             message(Role::Assistant, "reply"),
             message(Role::Error, "bang"),
             message(Role::System, "notice"),
             message(Role::Shell, "pwd"),
             tool("pwd", "", "/home", ToolStatus::Ok, true),
             tool("Read", "f", "L1", ToolStatus::Ok, false),
+            hook_note("Stop hook feedback:\ntests are red"),
         ];
-        assert_eq!(budgeted_user_texts(&items, 20_000), vec!["keep me"]);
+        assert_eq!(
+            kept(&items, 20_000, true),
+            vec!["keep me".to_string(), context]
+        );
+        assert_eq!(kept(&items, 20_000, false), vec!["keep me"]);
+    }
+
+    #[test]
+    fn hook_context_shares_the_user_texts_budget_newest_first() {
+        // One walk over what the user and their hooks brought in: the newest
+        // keeps first, an older note giving way before a newer prompt does,
+        // so the compacted part is no larger than the texts alone could make
+        // it.
+        let old = hook_context("SessionStart", "old");
+        let new = hook_context("UserPromptSubmit", "new");
+        let items = vec![
+            hook_note(&old),
+            message(Role::User, "abcd"),
+            hook_note(&new),
+        ];
+        let budget = approx_token_count(&new) + 1;
+        assert_eq!(kept(&items, budget, true), vec!["abcd".to_string(), new]);
     }
 
     #[test]

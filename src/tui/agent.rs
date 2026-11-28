@@ -131,6 +131,16 @@ impl Session<'_> {
                 compact: false,
             });
         }
+        // …and its background summary's, as a compaction's
+        // (docs/background-compaction.md *Subagents*).
+        if let StreamEvent::CompactionUsage(usage) = &event {
+            self.recorder.record_usage(RequestUsage {
+                after: self.app.history.len(),
+                usage: *usage,
+                agent: Some(id.to_string()),
+                compact: true,
+            });
+        }
         // Screen commits pause while a framed view's flow covers the agent
         // session view (a menu opened from its palette, `docs/view-flow.md`)
         // — the flow-exit rebuild regenerates the agent transcript from its
@@ -543,6 +553,12 @@ impl Session<'_> {
                     .report
                     .as_ref()
                     .map(|report| ui::hook_report_lines(report, width)),
+                // Its background summary, spliced in at its ceiling — the
+                // `● Context compacted · … · background` cell, in place
+                // (docs/background-compaction.md *Subagents*).
+                HistoryItem::Compaction(compaction) => {
+                    Some(ui::compaction_lines(compaction, width))
+                }
                 _ => None,
             })
             .filter(|lines| !lines.is_empty())

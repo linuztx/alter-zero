@@ -42,6 +42,7 @@ mod assistant;
 mod background_view;
 mod cached_lines;
 mod classifier_view;
+mod compaction_row;
 mod config_review_view;
 mod context_usage_view;
 mod context_view;

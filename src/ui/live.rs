@@ -479,9 +479,11 @@ pub(super) fn strip_lines(
         // in if the status somehow went while `has_status` said otherwise,
         // so the count still matches `strip_rows`' STATUS_ROWS.
         let line = if let Some(run) = app.viewed_agent() {
+            // `Compacting…` while its run waits for its summary at its
+            // ceiling (docs/background-compaction.md *Subagents*).
             Some(styled_status_line(
                 &agent_view_status(run),
-                None,
+                run.live_verb(),
                 app.spinner(),
                 width,
             ))
@@ -489,7 +491,7 @@ pub(super) fn strip_lines(
             // While some task is in progress the spinner wears its
             // activeForm instead of the turn's verb (docs/task-tools.md).
             app.status()
-                .map(|status| styled_status_line(status, app.task_verb(), app.spinner(), width))
+                .map(|status| styled_status_line(status, app.live_verb(), app.spinner(), width))
         };
         lines.push(line.unwrap_or_default());
         // The rows hanging off the status line, in `hang_rows`' sum: the
@@ -499,6 +501,9 @@ pub(super) fn strip_lines(
         // no wait, the tip, once the turn has run a few seconds
         // (docs/tips.md).
         lines.extend(super::offline::status_offline_lines(app, width));
+        // …then the background compaction's row, while a summary of the
+        // conversation is written or held (docs/background-compaction.md).
+        lines.extend(super::compaction_row::status_compaction_lines(app, width));
         lines.extend(tasks);
         lines.extend(super::tips::status_tip_lines(app, width));
         lines.push(Line::default()); // STATUS_GAP_ROWS

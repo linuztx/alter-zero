@@ -12,6 +12,48 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Changed
+
+- **A long turn compacts while it runs, without stopping.** Compaction used
+  to wait until a turn ended, so one long task (twenty rounds of file reads
+  and test logs) could fill the model's context window and end on the
+  provider's error before compaction ever started. Now, once the context
+  passes a start line, a summary of the conversation is written in the
+  background while the agent keeps working, shown as a dim `Compacting in the
+  background` row under the status line. It is swapped in at the next step
+  once the context reaches its ceiling, 85% of a 200k window. The agent only
+  waits, under a `Compacting…` status, when the summary isn't written by
+  then.
+  - Everything since the summary started stays word for word: the last tool
+    outputs, a test log's failures included, are not summarized away.
+  - Between turns there is no blocking `Compacting…` turn any more: the
+    summary is written in the background, and a message you send meanwhile
+    goes out at once.
+  - The `● Context compacted` line now ends in `· background` and shows the
+    size of the context at the moment it was replaced. A failed summary
+    shows an error toast, and after two failures none is tried again until
+    a compaction lands.
+  - Subagents compact the same way. A subagent that outgrew its model's
+    context window used to end on the provider's error (and on Ollama
+    silently lost its task). Now it summarizes its own conversation in the
+    background, swaps the summary in at its own ceiling and finishes. Its
+    session view shows the `Compacting…` wait and the `Context compacted`
+    line like the main one does.
+  - **Auto compact** in `/settings` still turns all of it off, and `/compact`
+    by hand works as before.
+- **The compaction summary is written from the conversation alone.**
+  `/compact` and auto-compact used to send the summarizer the agent's own
+  system prompt and the `<system-reminder>` that carries your AGENTS.md, so
+  the summary could restate instructions every request re-sends anyway, and
+  the persona could pull the summarizer into carrying on the task. It now
+  gets a short system prompt of its own and the conversation, with no
+  `<system-reminder>` of any kind: not AGENTS.md, not the skill and agent
+  listings, not a hook's added context. AGENTS.md and the listings still ride
+  every request after the compaction, as before. A SessionStart or
+  UserPromptSubmit hook's added context, which no request sends again, is now
+  kept word for word beside your messages, where it used to survive only if
+  the summary repeated it.
+
 ### Fixed
 
 - **Agent Zero API** now sends chat completions to `https://llm.agent-zero.ai/v1`.

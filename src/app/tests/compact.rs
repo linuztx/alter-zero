@@ -299,8 +299,8 @@ fn an_instructions_only_context_has_nothing_to_compact() {
     app.finish_stream();
     app.end_turn(1);
     assert!(
-        !app.should_auto_compact(),
-        "auto-compact never fires on an instructions-only context"
+        !app.can_compact_idle(),
+        "nothing compacts on an instructions-only context"
     );
 }
 
@@ -313,113 +313,277 @@ fn set_context_window_ignores_a_zero() {
     assert_eq!(app.context_window(), Some(100));
 }
 
+// --- background compaction (docs/background-compaction.md) ---
+
 #[test]
-fn auto_compact_triggers_past_ninety_percent_of_the_window() {
-    // Codex's threshold: (window * 9) / 10.
+fn the_compaction_window_is_the_gauges_while_auto_compact_is_on() {
+    // The boundary configures the turn's slot with it: no window, or the
+    // `/settings` **Auto compact** knob off, means no compaction on its own
+    // (`/compact` by hand still works).
     let mut app = App::new();
-    app.record_user_message("hello");
-    app.set_context_window(Some(1_000));
-    app.begin_stream();
-    app.apply_usage(&usage_of(950, 0));
-    app.finish_stream();
-    app.end_turn(1);
-    assert!(app.should_auto_compact());
+    assert_eq!(app.compaction_window(), None, "no window known");
+    app.set_context_window(Some(200_000));
+    assert_eq!(app.compaction_window(), Some(200_000));
+    app.settings_mut().auto_compact = false;
+    assert_eq!(app.compaction_window(), None);
 }
 
 #[test]
-fn auto_compact_does_not_trigger_at_or_below_the_threshold() {
+fn only_an_idle_conversation_compacts_between_turns() {
     let mut app = App::new();
-    app.record_user_message("hello");
-    app.set_context_window(Some(1_000));
+    assert!(!app.can_compact_idle(), "nothing to summarize");
+    app.record_user_message("port the payments module");
+    assert!(app.can_compact_idle());
     app.begin_stream();
-    app.apply_usage(&usage_of(900, 0));
-    app.finish_stream();
-    app.end_turn(1);
     assert!(
-        !app.should_auto_compact(),
-        "900 of 1000 is exactly the line"
+        !app.can_compact_idle(),
+        "a running turn compacts at its own round tops"
     );
 }
 
 #[test]
-fn auto_compact_needs_a_window_and_derivable_content() {
+fn a_background_compaction_starts_at_the_history_so_far() {
     let mut app = App::new();
-    // Over any threshold but no window known → never.
-    app.begin_stream();
-    app.apply_usage(&usage_of(1_000_000, 0));
-    app.finish_stream();
-    app.end_turn(1);
-    assert!(!app.should_auto_compact(), "no window, no trigger");
-    // A window but an empty conversation → nothing to summarize.
-    app.set_context_window(Some(100));
-    assert!(!app.should_auto_compact(), "empty context, no trigger");
+    app.record_user_message("port the payments module");
+    app.begin_background_compaction(7);
+    let job = app.background_compaction().expect("a job");
+    assert_eq!(job.id, 7);
+    assert_eq!(job.start, app.history.len(), "everything so far");
+    assert_eq!(job.summary, None, "still being written");
 }
 
 #[test]
-fn auto_compact_never_fires_mid_turn() {
+fn a_written_summary_is_held_until_it_lands() {
     let mut app = App::new();
-    app.record_user_message("hello");
-    app.set_context_window(Some(100));
-    app.begin_stream();
-    app.apply_usage(&usage_of(990, 0));
-    assert!(!app.should_auto_compact(), "a turn is in flight");
-}
-
-#[test]
-fn auto_compact_is_blocked_after_a_compaction_until_the_next_turn() {
-    // One attempt per user turn (codex's per-turn semantics): a compaction
-    // that leaves the gauge high must not immediately re-trigger — the
-    // next completed turn re-arms it.
-    let mut app = App::new();
-    app.record_user_message("hello there my friend");
-    app.set_context_window(Some(10)); // tiny: the bridge alone exceeds it
-    app.begin_compact(false);
-    app.push_chunk("a summary");
-    app.finish_compact(0);
-    assert!(
-        app.context_used() > 9,
-        "precondition: still over the threshold after compacting"
+    app.record_user_message("port the payments module");
+    app.begin_background_compaction(1);
+    app.record_user_message("and the ledger");
+    let length = app.history.len();
+    assert!(app.background_compaction_written(1, "ported stripe.rs".into(), 47));
+    assert_eq!(
+        app.background_compaction()
+            .and_then(|job| job.summary.as_deref()),
+        Some("ported stripe.rs")
     );
+    assert_eq!(app.history.len(), length, "held, not applied");
+}
+
+#[test]
+fn landing_appends_a_background_marker_that_keeps_what_ran_meanwhile() {
+    let mut app = App::new();
+    app.set_context_window(Some(200_000));
+    app.record_user_message("port the payments module");
+    app.begin_background_compaction(1);
+    // Recorded while the summary was being written: kept verbatim.
+    app.record_user_message("and the ledger");
+    app.record_user_message("and the refunds");
+    app.background_compaction_written(1, "ported stripe.rs".into(), 47);
+    let marker = app.land_background_compaction(1).expect("it lands");
+    assert_eq!(marker.kept, 2, "the two messages recorded meanwhile");
+    assert!(marker.background && marker.auto, "{marker:?}");
+    assert_eq!(marker.secs, 47);
+    assert_eq!(marker.summary, "ported stripe.rs");
     assert!(
-        !app.should_auto_compact(),
-        "blocked right after a compaction"
+        matches!(app.history.last(), Some(HistoryItem::Compaction(last)) if *last == marker),
+        "appended"
     );
-    app.begin_stream();
-    app.finish_stream();
-    app.end_turn(1);
+    assert!(app.background_compaction().is_none(), "the job is done");
+    let ctx = crate::context::context_messages(&app.history);
+    let text: Vec<&str> = ctx.iter().map(|m| m.text.as_str()).collect();
+    let text = text.join("\n");
+    let bridge = text
+        .find(crate::context::SUMMARY_PREFIX)
+        .expect("the summary bridge");
     assert!(
-        app.should_auto_compact(),
-        "the next turn re-arms the trigger"
+        text[bridge..].contains("and the ledger") && text.ends_with("and the refunds"),
+        "what ran while it was written stays verbatim, after the bridge: {ctx:?}"
     );
 }
 
 #[test]
-fn an_interrupted_compaction_blocks_the_auto_retrigger() {
-    // Esc'ing a compaction must not spawn another one at the same turn end
-    // — the user just said no.
+fn the_cell_measures_the_context_the_swap_replaced() {
+    // The turn kept working while the summary was written: what the summary
+    // replaced is the context at the swap, not the smaller one it started
+    // from.
     let mut app = App::new();
-    app.record_user_message("hello");
-    app.set_context_window(Some(10));
-    app.begin_stream();
-    app.apply_usage(&usage_of(100, 0));
-    app.finish_stream();
-    app.end_turn(1);
-    assert!(app.should_auto_compact(), "precondition: over threshold");
-    app.begin_compact(true);
-    app.push_chunk("half");
-    app.interrupt_turn(0);
-    assert!(!app.should_auto_compact(), "an Esc'd compaction stays down");
+    app.set_context_window(Some(200_000));
+    app.record_user_message("port the payments module");
+    app.sync_context_used();
+    let at_start = app.context_used();
+    app.begin_background_compaction(1);
+    app.record_user_message(&"and the ledger, the refunds and the payouts ".repeat(40));
+    app.sync_context_used();
+    let at_swap = app.context_used();
+    assert!(at_swap > at_start, "the context grew meanwhile");
+    app.background_compaction_written(1, "ported stripe.rs".into(), 47);
+    let marker = app.land_background_compaction(1).expect("it lands");
+    assert_eq!(marker.before, at_swap);
 }
 
 #[test]
-fn a_failed_compaction_blocks_the_auto_retrigger() {
+fn the_cycle_starts_where_the_last_compaction_left_the_context() {
+    // Read off the history rather than kept beside it, so a /clear, a
+    // /resume or a rewind can never leave another conversation's cycle in
+    // place.
     let mut app = App::new();
-    app.record_user_message("hello");
-    app.set_context_window(Some(10));
-    app.begin_compact(true);
-    app.push_chunk("half");
-    app.fail_stream("boom");
-    assert!(!app.should_auto_compact(), "a failed compaction stays down");
+    app.set_context_window(Some(200_000));
+    app.record_user_message("port the payments module");
+    assert_eq!(app.compaction_cycle_start(), 0, "no compaction yet");
+    app.begin_background_compaction(1);
+    app.background_compaction_written(1, "ported stripe.rs".into(), 4);
+    let marker = app.land_background_compaction(1).expect("it lands");
+    app.record_user_message("and the ledger");
+    assert_eq!(app.compaction_cycle_start(), marker.after);
+    let epoch = app.history_epoch();
+    app.clear_conversation();
+    assert_eq!(app.compaction_cycle_start(), 0, "a new conversation");
+    assert_ne!(app.history_epoch(), epoch);
+}
+
+#[test]
+fn news_of_another_job_changes_nothing() {
+    let mut app = App::new();
+    app.record_user_message("port the payments module");
+    app.begin_background_compaction(2);
+    assert!(!app.background_compaction_written(1, "old".into(), 3));
+    assert!(app.land_background_compaction(1).is_none());
+    assert_eq!(app.background_compaction().map(|job| job.id), Some(2));
+}
+
+#[test]
+fn a_job_whose_history_moved_never_lands() {
+    // `/clear`, a backtrack, a `/resume`: the summary covers a history that
+    // is gone (codex's generation check).
+    let mut app = App::new();
+    app.record_user_message("port the payments module");
+    app.begin_background_compaction(1);
+    app.background_compaction_written(1, "ported".into(), 5);
+    app.clear_conversation();
+    app.record_user_message("something else");
+    assert!(app.background_compaction_stale());
+    assert!(app.land_background_compaction(1).is_none());
+    assert!(
+        !app.history
+            .iter()
+            .any(|item| matches!(item, HistoryItem::Compaction(_))),
+        "no marker over the new conversation"
+    );
+}
+
+#[test]
+fn a_job_outlives_changes_that_leave_what_was_said_alone() {
+    // A re-render, an agent's entry updated in place, a failed attempt
+    // withdrawn: the history's render generation moves while the
+    // conversation the summary covers does not — and a summary already paid
+    // for is kept.
+    let mut app = App::new();
+    app.record_user_message("port the payments module");
+    app.begin_background_compaction(1);
+    app.invalidate_rendered_history();
+    assert!(!app.background_compaction_stale());
+    assert!(app.background_compaction_written(1, "ported".into(), 5));
+    assert!(app.land_background_compaction(1).is_some());
+}
+
+#[test]
+fn a_job_whose_coverage_was_cut_back_is_stale() {
+    // The turn that started it, undone before anything streamed: the
+    // message the summary covers went back to the composer.
+    let mut app = App::new();
+    app.record_user_message("port the payments module");
+    app.begin_stream();
+    app.begin_background_compaction(1);
+    assert_eq!(app.interrupt_turn(0), Some(InterruptedTurn::Undone));
+    assert!(app.background_compaction_stale());
+    assert!(!app.background_compaction_written(1, "ported".into(), 5));
+}
+
+#[test]
+fn a_rewind_makes_the_job_stale() {
+    let mut app = App::new();
+    app.record_user_message("port the payments module");
+    app.record_message(Role::Assistant, "ported");
+    app.record_user_message("now the tests");
+    app.begin_background_compaction(1);
+    app.backtrack.selected = Some(1);
+    app.confirm_backtrack();
+    assert!(app.background_compaction_stale());
+}
+
+#[test]
+fn a_finished_wait_wears_the_turns_own_verb_again() {
+    // A turn that waited at its ceiling and was stopped: the next turn
+    // starts on its own verb, not on the last one's `Compacting…`.
+    let mut app = App::new();
+    app.record_user_message("port the payments module");
+    app.begin_stream();
+    app.begin_background_compaction(1);
+    app.set_compaction_waiting(1);
+    app.end_compaction_wait();
+    assert_eq!(app.live_verb(), None);
+}
+
+#[test]
+fn a_background_summarys_usage_counts_since_launch_and_nowhere_else() {
+    // It was billed, so the launch's ledger has it; the summarizer's request
+    // is not the conversation's, so the last request and the gauge do not.
+    let mut app = App::new();
+    app.record_user_message("port the payments module");
+    let frame = crate::stream::TokenUsage {
+        input: 120_000,
+        output: 2_000,
+        ..crate::stream::TokenUsage::default()
+    };
+    let used = app.context_used();
+    app.record_compaction_usage(&frame);
+    let ledger = app.usage_since_launch();
+    assert_eq!(
+        (ledger.requests, ledger.input, ledger.output),
+        (1, 120_000, 2_000)
+    );
+    assert_eq!(app.last_usage(), None);
+    assert_eq!(app.context_used(), used);
+}
+
+#[test]
+fn waiting_at_the_ceiling_wears_the_compacting_verb() {
+    let mut app = App::new();
+    app.record_user_message("port the payments module");
+    app.begin_stream();
+    assert_eq!(app.live_verb(), None, "the turn's own verb");
+    app.begin_background_compaction(1);
+    assert_eq!(
+        app.live_verb(),
+        None,
+        "a summary being written changes nothing"
+    );
+    app.set_compaction_waiting(1);
+    assert_eq!(app.live_verb(), Some(COMPACT_VERB));
+    app.background_compaction_written(1, "s".into(), 2);
+    app.land_background_compaction(1);
+    assert_eq!(app.live_verb(), None, "back to work after the swap");
+}
+
+#[test]
+fn the_row_shows_the_summary_being_written_then_held() {
+    let mut app = App::new();
+    app.set_context_window(Some(200_000));
+    app.record_user_message("port the payments module");
+    assert_eq!(app.compaction_row(), None);
+    app.begin_background_compaction(1);
+    app.set_compaction_elapsed(Some(Duration::from_secs(12)));
+    assert_eq!(
+        app.compaction_row(),
+        Some(CompactionRow::Writing {
+            elapsed: Duration::from_secs(12)
+        })
+    );
+    app.background_compaction_written(1, "s".into(), 30);
+    assert_eq!(
+        app.compaction_row(),
+        Some(CompactionRow::Held { percent: 85 }),
+        "it swaps in at the ceiling: 85% of the window"
+    );
 }
 
 #[test]

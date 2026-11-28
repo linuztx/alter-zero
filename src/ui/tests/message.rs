@@ -481,6 +481,8 @@ fn the_compaction_cell_appends_the_token_shrink_and_auto_tag() {
         after: 2_100,
         auto: true,
         secs: 0,
+        kept: 0,
+        background: false,
     };
     let text = plain(&compaction_lines(&compaction, 120)[0]);
     assert!(text.starts_with(&format!("● {COMPACTED_NOTICE}")), "{text}");
@@ -497,6 +499,8 @@ fn a_manual_compaction_cell_shows_the_shrink_without_the_auto_tag() {
         after: 300,
         auto: false,
         secs: 0,
+        kept: 0,
+        background: false,
     };
     let text = plain(&compaction_lines(&compaction, 120)[0]);
     assert!(text.contains("1k → 300 tokens"), "{text}");
@@ -515,6 +519,8 @@ fn the_compaction_cell_appends_its_duration_between_the_shrink_and_the_auto_tag(
         after: 507,
         auto: true,
         secs: 36,
+        kept: 0,
+        background: false,
     };
     let text = plain(&compaction_lines(&compaction, 120)[0]);
     assert!(text.contains("2.1k → 507 tokens · 36s · auto"), "{text}");
@@ -523,6 +529,28 @@ fn the_compaction_cell_appends_its_duration_between_the_shrink_and_the_auto_tag(
     long.auto = false;
     let text = plain(&compaction_lines(&long, 120)[0]);
     assert!(text.ends_with("tokens · 1m 36s"), "{text}");
+}
+
+#[test]
+fn a_background_compaction_cell_says_so_in_place_of_auto() {
+    // `● Context compacted · 170k → 82k tokens · 47s · background` — a
+    // summary written while the agent kept working (docs/background-compaction.md).
+    let compaction = crate::app::Compaction {
+        summary: "s".into(),
+        timestamp: String::new(),
+        before: 170_000,
+        after: 82_000,
+        auto: true,
+        secs: 47,
+        kept: 3,
+        background: true,
+    };
+    let text = plain(&compaction_lines(&compaction, 120)[0]);
+    assert!(
+        text.ends_with("170k → 82k tokens · 47s · background"),
+        "{text}"
+    );
+    assert!(!text.contains("auto"), "{text}");
 }
 
 #[test]

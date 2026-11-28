@@ -88,6 +88,7 @@ pub(crate) mod ask;
 pub(crate) mod background;
 pub(crate) mod bootstrap;
 pub(crate) mod commit;
+pub(crate) mod compaction;
 pub(crate) mod config;
 pub(crate) mod context_usage;
 pub(crate) mod diff;
@@ -348,6 +349,24 @@ pub(crate) struct Session<'t> {
     /// survives a turn that ended without reading them, which is why the
     /// reclaim at every turn end goes through both.
     steer: alter_zero::steer::SteerQueue,
+    /// Background compaction's slot (`docs/background-compaction.md`): the
+    /// running turn's round tops ask it whether to start, swap in or wait for
+    /// a summary; this side writes the summary and answers the swap. Every
+    /// backend build attaches this one handle.
+    compaction: alter_zero::compaction::CompactionSlot,
+    /// The background summary's worker reports here: the summary, or why
+    /// there is none.
+    compaction_tx: tokio::sync::mpsc::UnboundedSender<workers::CompactionDone>,
+    compaction_rx: tokio::sync::mpsc::UnboundedReceiver<workers::CompactionDone>,
+    /// The background summary's worker while it writes: its job, its cancel
+    /// token and when it started (the strip row's clock).
+    compaction_worker: Option<compaction::CompactionWorker>,
+    /// The compact hooks' reports from the background summary, held for the
+    /// cells above its `Context compacted` line when it lands.
+    compaction_hooks: Vec<(String, alter_zero::hooks::HookReport)>,
+    /// The conversation epoch the slot was last kept for: a new one lets go
+    /// of the slot's whole cycle (`App::history_epoch`).
+    compaction_epoch: u64,
     /// The tool-permission gate and this project's saved rules
     /// (`docs/permissions.md`).
     permissions: PermissionStore,
