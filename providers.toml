@@ -218,6 +218,24 @@ api_model_base = "https://openrouter.ai/api/v1"
 [providers.openrouter.kwargs]
 api_base = "https://openrouter.ai/api/v1"
 
+# MartLLM is a marketplace, not a model host: one prepaid key reaches
+# open-weight models (DeepSeek, GLM, Kimi, Qwen, …) and uncensored ones, and
+# each request is sent to a third-party seller's provider that serves the
+# model asked for. On the wire it is OpenRouter-shaped, which is why the block
+# is a base and a key page and nothing else: `/models` carries
+# `context_length`, `architecture.input_modalities` and `supported_parameters`
+# (the three the catalog reads, docs/llm.md), and chat completions takes the
+# `reasoning` object, `prompt_cache_key` and `stream_options.include_usage`
+# the payload builder sends. It lists where it chats, so there is no
+# `api_model_base`, and the key variable is the id's default, `MARTLLM_API_KEY`.
+[providers.martllm]
+name = "MartLLM"
+description = "A marketplace for model API calls: open-weight and uncensored models served by third-party sellers, behind one prepaid key."
+api_key_url = "https://martllm.com/dashboard/keys"
+
+[providers.martllm.kwargs]
+api_base = "https://api.martllm.com/v1"
+
 # OpenAI's ChatGPT seat is a *subscription* too, and a second kind of sign-in:
 # `/login` runs OpenAI's PKCE loopback flow in the browser — or, on a headless
 # machine, Codex's own device code; Enter on the row asks which

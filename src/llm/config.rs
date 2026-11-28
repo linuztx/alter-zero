@@ -1803,6 +1803,22 @@ api_base = "http://127.0.0.1:11434"
     }
 
     #[test]
+    fn the_builtin_file_ships_martllm_as_a_pasted_key_provider() {
+        // A base and a key page, nothing else: it lists where it chats, on
+        // the default wire, and reads the id's default key variable — so a
+        // key saved for it configures this row and no other.
+        let file = ProvidersFile::builtin();
+        let martllm = file.get("martllm").expect("shipped");
+        assert_eq!(martllm.name, "MartLLM");
+        assert_eq!(martllm.auth, AuthScheme::ApiKey);
+        assert_eq!(martllm.wire_api, WireApi::Chat);
+        assert_eq!(martllm.kwargs.api_base, "https://api.martllm.com/v1");
+        assert_eq!(martllm.models_base(), "https://api.martllm.com/v1");
+        assert_eq!(martllm.key_env("martllm"), "MARTLLM_API_KEY");
+        assert_eq!(martllm.api_base_env, None);
+    }
+
+    #[test]
     fn the_builtin_file_ships_lm_studio_as_a_local_server() {
         // LM Studio's server, reached the way Ollama's is: no key needed, its
         // address in a variable of its own — `/login` → Sign in with a local
