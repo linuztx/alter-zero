@@ -733,6 +733,53 @@ fn live_chatgpt_cache_diagnostics() {
 }
 
 // ---------------------------------------------------------------------------
+// xAI Grok (Responses wire on api.x.ai; automatic caching + prompt_cache_key)
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore = "hits the network; needs XAI_GROK_REFRESH_TOKEN + ALTER_ZERO_LIVE_TOKEN_STORE"]
+fn live_xai_grok_lists_its_models_and_reads_the_prefix_from_cache() {
+    // The xAI sign-in end to end (`docs/xai.md`): the refresh token minted
+    // into a bearer — and rotated, which is why the store must be writable —
+    // the two listings merged into rows with a window, and the Responses
+    // wire's `prompt_cache_key` pinning both turns to one server, whose
+    // automatic prefix cache the second turn reads.
+    alter_zero::llm::xai::set_store_path(token_store());
+    let salt = salt();
+    let refresh = credential("XAI_GROK_REFRESH_TOKEN");
+    let probe = config("xai_grok", "probe", Some(refresh.clone()), salt);
+    let listed = fetch_models(&probe, &CancelToken::new()).expect("the xAI model listing");
+    for model in &listed {
+        println!(
+            "xAI model {}: window {:?}, vision {:?}, reasoning {:?}",
+            model.id, model.context, model.vision, model.reasoning
+        );
+    }
+    assert!(
+        listed.iter().any(|m| m.context.is_some()),
+        "/v1/models lent the rows their windows"
+    );
+    let model = std::env::var("ALTER_ZERO_LIVE_XAI_MODEL").unwrap_or_else(|_| {
+        listed
+            .iter()
+            .map(|m| m.id.as_str())
+            .find(|id| id.starts_with("grok-4"))
+            .or_else(|| listed.first().map(|m| m.id.as_str()))
+            .expect("the listing names a model")
+            .to_string()
+    });
+    println!("model under test: {model}");
+    let cfg = config("xai_grok", &model, Some(refresh), salt);
+    let backend = LlmBackend::configure(cfg, Some(big_system_prompt(salt)), false);
+    let (first, second) = two_turns(&backend);
+    assert!(first.total() > 1_000, "the whole prefix billed: {first:?}");
+    assert!(
+        second.cached > 1_000,
+        "turn 2 read the prefix from xAI's cache: {second:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Ollama Cloud (native wire; usage reported, no cache detail exists)
 // ---------------------------------------------------------------------------
 

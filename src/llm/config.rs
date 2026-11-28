@@ -79,6 +79,15 @@ pub enum AuthScheme {
     /// the value the provider file uses. A test pins it for the same silent
     /// degradation reason [`Self::AnthropicConsole`]'s does.
     GoogleAntigravity,
+    /// An **xAI account** on a Grok subscription: `/login` runs the device
+    /// code Grok's own CLI signs in with and stores the resulting **refresh**
+    /// token, which each request mints a short-lived access token from —
+    /// single-use, so every refresh rotates it. See `docs/xai.md`.
+    ///
+    /// `rename_all = "snake_case"` spells this `xai_grok`, which is the value
+    /// the provider file uses. A test pins it for the same silent degradation
+    /// reason [`Self::AnthropicConsole`]'s does.
+    XaiGrok,
     /// A key that is **accepted but not required** — a model server the user
     /// runs. Ollama's or LM Studio's local server takes no credential unless
     /// it was set to, while a hosted one (or a proxy in front of one) takes
@@ -125,7 +134,8 @@ impl AuthScheme {
 pub enum WireApi {
     /// OpenAI's **Responses** API: `{api_base}/responses`, an `input` array of
     /// typed items under a top-level `instructions`, and its own SSE event
-    /// vocabulary. See `docs/chatgpt.md`.
+    /// vocabulary — the ChatGPT backend's, and xAI's. See `docs/chatgpt.md`
+    /// and `docs/xai.md`.
     Responses,
     /// Anthropic's **Messages** API: `{api_base}/messages`, a top-level
     /// `system` beside a `messages` array of typed content blocks, and its own
@@ -1363,6 +1373,50 @@ api_base = "https://api.cline.bot/api/v1"
         let account = file.get("cline_account").unwrap();
         assert_eq!(account.auth, AuthScheme::ClineAccount);
         assert!(account.auth.is_subscription());
+    }
+
+    #[test]
+    fn a_provider_can_declare_the_xai_grok_sign_in() {
+        // The sixth sign-in: the stored secret is an xAI refresh token, and
+        // every request mints the short-lived access token from it
+        // (`docs/xai.md`). The spelling is pinned because a mismatch degrades
+        // *silently* into a pasted-key row.
+        let text = r#"
+[providers.grok]
+name = "Grok"
+auth = "xai_grok"
+wire_api = "responses"
+[providers.grok.kwargs]
+api_base = "https://api.x.ai/v1"
+"#;
+        let file = ProvidersFile::parse(text).unwrap();
+        let grok = file.get("grok").unwrap();
+        assert_eq!(grok.auth, AuthScheme::XaiGrok);
+        assert!(grok.auth.is_subscription());
+        assert!(!grok.auth.key_optional(), "no request goes out unsigned");
+    }
+
+    #[test]
+    fn the_builtin_file_ships_the_xai_grok_sign_in_on_the_responses_wire() {
+        let file = ProvidersFile::builtin();
+        let grok = file.get("xai_grok").expect("shipped");
+        assert_eq!(grok.name, "xAI Grok");
+        assert_eq!(grok.auth, AuthScheme::XaiGrok);
+        assert_eq!(grok.wire_api, WireApi::Responses);
+        assert_eq!(grok.key_env("xai_grok"), "XAI_GROK_REFRESH_TOKEN");
+        assert_eq!(grok.kwargs.api_base, "https://api.x.ai/v1");
+        // The listing is the API's own two (`docs/xai.md`): no override base.
+        assert_eq!(grok.api_model_base, None);
+        let description = grok
+            .description
+            .as_deref()
+            .expect("a sign-in row needs one");
+        assert!(description.contains("SuperGrok"), "{description}");
+        assert!(description.contains("unofficial"), "{description}");
+        assert!(
+            grok.extra_headers.is_empty(),
+            "nothing claims to be the Grok CLI"
+        );
     }
 
     #[test]

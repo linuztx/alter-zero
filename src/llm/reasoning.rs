@@ -180,6 +180,9 @@ impl ReasoningSupport {
 /// having a disable to send. On Copilot an unrecognised value earns the
 /// misleading `model_not_supported` 400 rather than a useful error, so the
 /// levels offered are gated on what the model's own record advertised.
+///
+/// One Responses server has a word for Off: xAI's API, whose `none` the
+/// request builder sends there itself (`docs/xai.md` *The wire*).
 #[must_use]
 pub fn effort_label(mode: ThinkingMode) -> Option<&'static str> {
     match mode {

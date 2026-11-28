@@ -319,6 +319,13 @@ impl ModelSession {
         if let Some(base) = config::cline_api_base() {
             llm::cline::set_api_base(base);
         }
+        // xAI's refresh tokens are single-use — every mint rotates one — and
+        // its sign-in talks to one auth host, overridable for the smoke
+        // suite's local stand-in (`docs/xai.md`).
+        llm::xai::set_store_path(env_file_path.clone());
+        if let Some(issuer) = config::xai_issuer() {
+            llm::xai::set_issuer(issuer);
+        }
         // Google's refresh token can rotate too, and the Antigravity sign-in
         // reads three overrides: its OAuth host (the smoke suite's stub), the
         // `User-Agent` the backend gates its catalog on, and a project to

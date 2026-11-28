@@ -642,6 +642,14 @@ impl OpenAiClient {
             // a spent quota, an account to verify, a model this account
             // cannot reach (`docs/antigravity.md`).
             super::AuthScheme::GoogleAntigravity => super::antigravity::auth_advice(*status, body),
+            // xAI's refusals are 403s in a `{code, error}` envelope, each
+            // wanting its own answer — and one refusing the bearer itself
+            // drops it, so the next request mints a new one instead of
+            // sending the dead one for the rest of its cached life
+            // (`docs/xai.md`).
+            super::AuthScheme::XaiGrok => {
+                super::xai::advise(*status, body, self.cfg.api_key.as_deref())
+            }
             // A pasted Anthropic key meets the same refusals, minus the ones
             // about a sign-in: the advice module tells them apart by status
             // and code, so it serves both.
@@ -2423,6 +2431,52 @@ mod tests {
         // Another provider's key meeting the same words keeps them.
         let plain = OpenAiClient::new(ModelConfig::fallback()).explain(failure());
         assert_eq!(plain.to_string(), failure().to_string());
+    }
+
+    #[test]
+    fn an_xai_sign_in_s_refusals_name_what_to_do() {
+        // xAI's refusals that matter are 403s in a `{code, error}` envelope,
+        // each wanting a different answer (`docs/xai.md`).
+        let mut cfg = ModelConfig::fallback();
+        cfg.auth = crate::llm::AuthScheme::XaiGrok;
+        let client = OpenAiClient::new(cfg);
+        let refused = |error: &str| LlmError::Api {
+            status: 403,
+            body: serde_json::json!({
+                "code": "The caller does not have permission to execute the specified operation",
+                "error": error,
+            })
+            .to_string(),
+        };
+        let stale = client
+            .explain(refused(
+                "The OAuth2 access token could not be validated. [WKE=unauthenticated:bad-credentials]",
+            ))
+            .to_string();
+        assert!(stale.contains("send your message again"), "{stale}");
+        let unsubscribed = client
+            .explain(refused(
+                "You have either run out of available resources or do not have an active Grok \
+                 subscription. Manage subscriptions at https://grok.com",
+            ))
+            .to_string();
+        assert!(
+            unsubscribed.contains("no active Grok subscription"),
+            "{unsubscribed}"
+        );
+        assert!(!unsubscribed.contains("\"code\""), "{unsubscribed}");
+        // The stream's own failure, status-less, is read the same way.
+        let in_band = client
+            .explain(LlmError::Api {
+                status: 0,
+                body: "You do not have an active Grok subscription".to_string(),
+            })
+            .to_string();
+        assert!(in_band.contains("grok.com/?_s=usage"), "{in_band}");
+        // And a pasted-key provider meeting the same words keeps them.
+        let plain = OpenAiClient::new(ModelConfig::fallback())
+            .explain(refused("You do not have an active Grok subscription"));
+        assert!(plain.to_string().contains("\"code\""), "{plain}");
     }
 
     #[test]

@@ -360,20 +360,31 @@ fn flat_reasoning(record: &serde_json::Value) -> Option<ReasoningSupport> {
         .and_then(serde_json::Value::as_array)
         .map(|list| list.iter().filter_map(serde_json::Value::as_str).collect())
         .unwrap_or_default();
-    let mut efforts: Vec<ReasoningEffort> = tiers
-        .iter()
-        .filter_map(|t| ReasoningEffort::parse(t))
-        .collect();
-    efforts.sort_by_key(|e| ReasoningEffort::LADDER.iter().position(|l| l == e));
-    efforts.dedup();
+    let (efforts, offers_none) = listed_efforts(&tiers);
     if efforts.is_empty() {
         return None;
     }
     Some(ReasoningSupport {
-        can_disable: tiers.iter().any(|t| t.trim().eq_ignore_ascii_case("none")),
+        can_disable: offers_none,
         efforts,
         default_effort: None,
     })
+}
+
+/// The efforts a provider's list of level labels names, canonically ordered
+/// and deduplicated, and whether it offers `"none"` — the off switch, which
+/// is not a rung.
+fn listed_efforts(labels: &[&str]) -> (Vec<ReasoningEffort>, bool) {
+    let mut efforts: Vec<ReasoningEffort> = labels
+        .iter()
+        .filter_map(|label| ReasoningEffort::parse(label))
+        .collect();
+    efforts.sort_by_key(|e| ReasoningEffort::LADDER.iter().position(|l| l == e));
+    efforts.dedup();
+    let offers_none = labels
+        .iter()
+        .any(|label| label.trim().eq_ignore_ascii_case("none"));
+    (efforts, offers_none)
 }
 
 /// Can this client actually call the model? Copilot's list carries records
@@ -580,6 +591,35 @@ fn reasoning_support_of(record: &serde_json::Value) -> Option<ReasoningSupport> 
             efforts,
             default_effort: record
                 .get("default_reasoning_level")
+                .and_then(serde_json::Value::as_str)
+                .and_then(ReasoningEffort::parse),
+        });
+    }
+    // xAI's `capabilities.reasoning_effort` (`docs/xai.md`) — the third
+    // provider after Copilot and ChatGPT to publish the **exact** rungs a
+    // model takes, on both its listings, beside the model's own
+    // `default_reasoning_effort`. A listed `"none"` is the off switch, and
+    // only a listed one: xAI answers `none` with a 400 on a model whose list
+    // does not name it, since that model's reasoning is mandatory.
+    if let Some(levels) = record
+        .get("capabilities")
+        .and_then(|caps| caps.get("reasoning_effort"))
+        .and_then(serde_json::Value::as_array)
+    {
+        let labels: Vec<&str> = levels
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        let (efforts, offers_none) = listed_efforts(&labels);
+        if efforts.is_empty() {
+            return None;
+        }
+        return Some(ReasoningSupport {
+            efforts,
+            can_disable: offers_none,
+            default_effort: record
+                .get("capabilities")
+                .and_then(|caps| caps.get("default_reasoning_effort"))
                 .and_then(serde_json::Value::as_str)
                 .and_then(ReasoningEffort::parse),
         });
@@ -940,6 +980,30 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
             .map_err(|e| LlmError::Http(e.to_string()))?;
         Ok(body)
     };
+    // xAI's API splits a model's facts across two listings (`docs/xai.md`
+    // *What `/model` lists*): `/language-models` for the rows — the chat
+    // models alone, with their modalities and ladders — and `/models` for
+    // each one's window. A sign-in's refusal is worded as a turn's is.
+    if super::xai::serves(cfg) {
+        let base = auth
+            .base
+            .as_deref()
+            .unwrap_or(&cfg.api_model_base)
+            .trim_end_matches('/');
+        let languages = get(&format!("{base}/language-models"));
+        if cancel.is_cancelled() {
+            return Err(LlmError::Cancelled);
+        }
+        let listed = get(&format!("{base}/models"));
+        return xai_catalog(languages, listed, &cfg.provider_id).map_err(|error| match error {
+            LlmError::Api { status, body } if cfg.auth == super::AuthScheme::XaiGrok => {
+                let body =
+                    super::xai::advise(status, &body, cfg.api_key.as_deref()).unwrap_or(body);
+                LlmError::Api { status, body }
+            }
+            other => other,
+        });
+    }
     // A listing of its own that the server does not have stands down for the
     // chat base's `/models`, which every chat-completions server answers
     // (`docs/local-models.md`): a server answers such a path 404 — or, as
@@ -962,6 +1026,45 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
         return ollama_catalog(&client, cfg, &auth, &base, &body, cancel);
     }
     catalog_or_error(parse_models(&body, &cfg.provider_id)?, cfg.auth)
+}
+
+/// An xAI catalog out of its two listings' answers (`docs/xai.md` *What
+/// `/model` lists*): the rows are `/language-models`' — each borrowing the
+/// window, and a ladder it lacks, from the `/models` record of the same id —
+/// so an image or video model `/models` also lists is no row. Not having
+/// `/models` costs only the windows. A server that answers no
+/// `/language-models` (a 404, or a body that is no listing) is listed from
+/// `/models` alone, the OpenAI-compatible list every route to xAI serves.
+///
+/// # Errors
+/// `/language-models`' own failure; or, where that listing is not served,
+/// `/models`' failure or a body it cannot read.
+fn xai_catalog(
+    languages: Result<String>,
+    listed: Result<String>,
+    provider: &str,
+) -> Result<Vec<ModelEntry>> {
+    let rows = match languages {
+        Ok(body) if is_listing(&body) => parse_models(&body, provider)?,
+        Ok(_) | Err(LlmError::Api { status: 404, .. }) => return parse_models(&listed?, provider),
+        Err(error) => return Err(error),
+    };
+    let Ok(listed) = listed else {
+        return Ok(rows);
+    };
+    let facts = parse_models(&listed, provider).unwrap_or_default();
+    Ok(rows
+        .into_iter()
+        .map(|mut row| {
+            if let Some(record) = facts.iter().find(|record| record.id == row.id) {
+                row.context = row.context.or(record.context);
+                if row.reasoning.is_none() {
+                    row.reasoning.clone_from(&record.reasoning);
+                }
+            }
+            row
+        })
+        .collect())
 }
 
 /// The Cloud Code catalog for `cfg`'s account (boundary — real HTTP): the
@@ -2824,5 +2927,168 @@ mod tests {
         let err = fetch_models(&cfg, &CancelToken::new()).unwrap_err();
         assert!(matches!(err, LlmError::Api { status: 404, .. }), "{err:?}");
         assert_eq!(*seen.lock().unwrap(), ["/v1/models"]);
+    }
+
+    #[test]
+    fn an_xai_effort_list_is_the_thinking_ladder_itself() {
+        // xAI's `/v1/models` and `/v1/language-models` both name the exact
+        // levels a model takes under `capabilities` (`docs/xai.md`), so
+        // Ctrl+T cycles what the API accepts — and the model's own default
+        // is kept. Without `"none"` in the list the model cannot stop
+        // reasoning: xAI answers `none` there with a 400, so Off is no rung.
+        let body = r#"{"data":[{"id":"grok-4.7","object":"model","owned_by":"xai",
+            "context_length":500000,
+            "capabilities":{"reasoning_effort":["low","medium","high","xhigh"],
+                            "default_reasoning_effort":"high"}}],"object":"list"}"#;
+        let models = parse_models(body, "xai_grok").unwrap();
+        let support = models[0].reasoning.clone().expect("a reasoning model");
+        assert_eq!(
+            support.efforts,
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::XHigh
+            ]
+        );
+        assert!(!support.can_disable, "no `none` in the list: no Off");
+        assert_eq!(support.default_effort, Some(ReasoningEffort::High));
+        assert_eq!(models[0].context, Some(500_000));
+    }
+
+    #[test]
+    fn an_xai_none_effort_is_the_off_switch_rather_than_a_rung() {
+        let body = r#"{"models":[{"id":"grok-4.3","input_modalities":["text","image"],
+            "output_modalities":["text"],
+            "capabilities":{"reasoning_effort":["none","low","medium"],
+                            "default_reasoning_effort":"low"}}]}"#;
+        let models = parse_models(body, "xai_grok").unwrap();
+        let support = models[0].reasoning.clone().expect("a reasoning model");
+        assert_eq!(
+            support.efforts,
+            vec![ReasoningEffort::Low, ReasoningEffort::Medium]
+        );
+        assert!(support.can_disable, "the listed `none` is Off");
+        assert_eq!(support.default_effort, Some(ReasoningEffort::Low));
+        assert_eq!(models[0].vision, Some(true), "`input_modalities` decides");
+    }
+
+    /// An xAI sign-in's config listing from the stub at `port`.
+    fn xai_cfg(port: u16) -> ModelConfig {
+        let mut cfg = ModelConfig::fallback();
+        cfg.provider_id = "xai_grok".to_string();
+        cfg.auth = crate::llm::AuthScheme::XaiGrok;
+        cfg.wire_api = crate::llm::WireApi::Responses;
+        cfg.api_base = format!("http://127.0.0.1:{port}/v1");
+        cfg.api_model_base = cfg.api_base.clone();
+        cfg
+    }
+
+    #[test]
+    fn an_xai_catalog_is_its_language_models_with_each_window_from_models() {
+        // xAI splits a model's facts across two listings (`docs/xai.md`):
+        // `/language-models` names the chat models, their modalities and
+        // their ladders, `/models` every model's window — image models
+        // included, which are no row.
+        let (port, seen) = serve(|path| match path {
+            "/v1/language-models" => (
+                "200 OK",
+                r#"{"models":[
+                    {"id":"grok-4.7","input_modalities":["text","image"],"output_modalities":["text"],
+                     "capabilities":{"reasoning_effort":["low","medium","high","xhigh"],
+                                     "default_reasoning_effort":"high"}},
+                    {"id":"grok-4.3","input_modalities":["text"],"output_modalities":["text"],
+                     "capabilities":{"reasoning_effort":["none","low","medium"],
+                                     "default_reasoning_effort":"low"}}]}"#,
+            ),
+            "/v1/models" => (
+                "200 OK",
+                r#"{"object":"list","data":[
+                    {"id":"grok-4.7","object":"model","context_length":500000},
+                    {"id":"grok-4.3","object":"model","context_length":1000000},
+                    {"id":"grok-imagine-image","object":"model","context_length":null}]}"#,
+            ),
+            _ => ("404 Not Found", "{}"),
+        });
+        let models = fetch_models(&xai_cfg(port), &CancelToken::new()).expect("listed");
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["grok-4.3", "grok-4.7"], "the image model is no row");
+        let (light, heavy) = (&models[0], &models[1]);
+        assert_eq!(heavy.context, Some(500_000));
+        assert_eq!(heavy.vision, Some(true));
+        assert_eq!(
+            heavy.reasoning.as_ref().map(|r| r.default_effort),
+            Some(Some(ReasoningEffort::High))
+        );
+        assert_eq!(light.context, Some(1_000_000));
+        assert_eq!(light.vision, Some(false));
+        assert!(light.reasoning.as_ref().is_some_and(|r| r.can_disable));
+        let mut asked = seen.lock().unwrap().clone();
+        asked.sort();
+        assert_eq!(asked, ["/v1/language-models", "/v1/models"]);
+    }
+
+    #[test]
+    fn an_xai_server_without_language_models_is_listed_from_models_alone() {
+        // The OpenAI-compatible list every route to xAI's API serves.
+        let (port, _) = serve(|path| match path {
+            "/v1/models" => (
+                "200 OK",
+                r#"{"data":[{"id":"grok-4.7","context_length":500000,
+                    "capabilities":{"reasoning_effort":["low","high"]}}]}"#,
+            ),
+            _ => (
+                "404 Not Found",
+                r#"{"code":"not-found","error":"Not found"}"#,
+            ),
+        });
+        let models = fetch_models(&xai_cfg(port), &CancelToken::new()).expect("listed");
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].context, Some(500_000));
+        assert!(models[0].reasoning.is_some());
+    }
+
+    #[test]
+    fn an_xai_catalog_without_models_loses_only_the_windows() {
+        let (port, _) = serve(|path| match path {
+            "/v1/language-models" => (
+                "200 OK",
+                r#"{"models":[{"id":"grok-4.7","input_modalities":["text","image"]}]}"#,
+            ),
+            _ => ("500 Internal Server Error", r#"{"error":"upstream"}"#),
+        });
+        let models = fetch_models(&xai_cfg(port), &CancelToken::new()).expect("listed");
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].context, None, "only the window is lost");
+        assert_eq!(models[0].vision, Some(true));
+    }
+
+    #[test]
+    fn an_xai_sign_in_s_refused_listing_says_what_to_do() {
+        // The listing meets the refusals a turn does, and reads the same.
+        let (port, _) = serve(|_| {
+            (
+                "403 Forbidden",
+                r#"{"code":"The caller does not have permission to execute the specified operation","error":"You have either run out of available resources or do not have an active Grok subscription. Manage subscriptions at https://grok.com"}"#,
+            )
+        });
+        let err = fetch_models(&xai_cfg(port), &CancelToken::new()).unwrap_err();
+        let shown = err.to_string();
+        assert!(shown.contains("no active Grok subscription"), "{shown}");
+        assert!(!shown.contains("\"code\""), "{shown}");
+    }
+
+    #[test]
+    fn an_xai_model_with_an_empty_effort_list_takes_no_ladder() {
+        // A model that does not reason names no level, or no list at all.
+        for caps in [
+            r#","capabilities":{"reasoning_effort":[],"default_reasoning_effort":null}"#,
+            r#","capabilities":{}"#,
+            "",
+        ] {
+            let body = format!(r#"{{"data":[{{"id":"grok-4.20-0309-non-reasoning"{caps}}}]}}"#);
+            let models = parse_models(&body, "xai_grok").unwrap();
+            assert_eq!(models[0].reasoning, None, "{caps}");
+        }
     }
 }
