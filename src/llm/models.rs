@@ -584,6 +584,42 @@ fn reasoning_support_of(record: &serde_json::Value) -> Option<ReasoningSupport> 
                 .and_then(ReasoningEffort::parse),
         });
     }
+    // xAI's `capabilities.reasoning_effort` — on both `/v1/models` and
+    // `/v1/language-models` — names **exactly** the values the model accepts
+    // for `reasoning.effort`, beside the model's own default (`docs/xai.md`).
+    // A model that refuses the parameter lists no `capabilities` at all and
+    // falls through to no reasoning, which is what keeps the field off its
+    // requests.
+    //
+    // There is no Off rung even where `none` is listed: the Responses wire
+    // says Off by leaving the field out, and an xAI model sent no effort
+    // reasons at its own default — so Off would be a footer reading `off`
+    // over a model that is thinking at `high`.
+    if let Some(levels) = record
+        .get("capabilities")
+        .and_then(|caps| caps.get("reasoning_effort"))
+        .and_then(serde_json::Value::as_array)
+    {
+        let mut efforts: Vec<ReasoningEffort> = levels
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .filter_map(ReasoningEffort::parse)
+            .collect();
+        efforts.sort_by_key(|e| ReasoningEffort::LADDER.iter().position(|l| l == e));
+        efforts.dedup();
+        if efforts.is_empty() {
+            return None;
+        }
+        return Some(ReasoningSupport {
+            efforts,
+            can_disable: false,
+            default_effort: record
+                .get("capabilities")
+                .and_then(|caps| caps.get("default_reasoning_effort"))
+                .and_then(serde_json::Value::as_str)
+                .and_then(ReasoningEffort::parse),
+        });
+    }
     // A gateway's flat `capabilities` (OmniRoute's). Its `effort_tiers` is the
     // ladder whether or not a `thinking` key stands beside it: the gateway
     // writes `thinking` only for a model one of its capability sources knows,
@@ -1929,6 +1965,100 @@ mod tests {
             models_endpoint(&cfg),
             "https://chatgpt.com/backend-api/codex/models"
         );
+    }
+
+    // --- xAI's own record shapes (docs/xai.md) ---
+
+    /// One `GET /v1/language-models` record in xAI's own shape: the array is
+    /// `models`, vision is a top-level `input_modalities`, and the effort
+    /// levels the model accepts sit in `capabilities` — the shape xAI's API
+    /// reference documents.
+    fn xai_language_models(record: &str) -> Vec<ModelEntry> {
+        parse_models(&format!(r#"{{"models":[{record}]}}"#), "xai_grok").unwrap()
+    }
+
+    #[test]
+    fn an_xai_records_reasoning_efforts_are_the_ctrl_t_ladder() {
+        // xAI lists the exact values the model accepts for
+        // `reasoning.effort`, so Ctrl+T offers those and never a level the
+        // model would refuse.
+        let models = xai_language_models(
+            r#"{"id":"grok-4.7","object":"model","owned_by":"xai","aliases":[],
+                "input_modalities":["text","image"],"output_modalities":["text"],
+                "capabilities":{"reasoning_effort":["low","medium","high","xhigh"],
+                    "default_reasoning_effort":"high"}}"#,
+        );
+        let support = models[0].reasoning.clone().expect("reasoning-capable");
+        assert_eq!(
+            support.efforts,
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::XHigh,
+            ]
+        );
+        assert_eq!(support.default_effort, Some(ReasoningEffort::High));
+        // The Responses wire says Off by leaving the field out, and an xAI
+        // model left without one reasons at its own default effort — so an
+        // Off rung would be a footer reading `off` over a model thinking hard.
+        assert!(!support.can_disable);
+        assert_eq!(models[0].vision, Some(true));
+    }
+
+    #[test]
+    fn an_xai_records_none_effort_is_not_offered_as_off() {
+        // grok-4.3 accepts `none`; the Responses wire never sends it (Off is
+        // an omission there), so it is neither a rung nor an Off switch.
+        let models = xai_language_models(
+            r#"{"id":"grok-4.3","input_modalities":["text","image"],
+                "capabilities":{"reasoning_effort":["none","low","medium","high","xhigh"],
+                    "default_reasoning_effort":"low"}}"#,
+        );
+        let support = models[0].reasoning.clone().unwrap();
+        assert_eq!(
+            support.efforts,
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::XHigh,
+            ]
+        );
+        assert!(!support.can_disable);
+        assert_eq!(support.default_effort, Some(ReasoningEffort::Low));
+    }
+
+    #[test]
+    fn an_xai_record_without_effort_levels_takes_no_reasoning_parameter() {
+        // A model that reasons but refuses the parameter ("does not support
+        // parameter reasoningEffort") lists no capabilities at all; one that
+        // lists only `none`, or nothing, has no level to send either. Each is
+        // offered no Ctrl+T, so the request never carries the field.
+        for record in [
+            r#"{"id":"grok-4.20-0309-reasoning","input_modalities":["text","image"]}"#,
+            r#"{"id":"m","capabilities":{"reasoning_effort":["none"]}}"#,
+            r#"{"id":"m","capabilities":{"reasoning_effort":[]}}"#,
+        ] {
+            let models = xai_language_models(record);
+            assert_eq!(models[0].reasoning, None, "{record}");
+        }
+    }
+
+    #[test]
+    fn an_xai_models_record_names_its_window_in_context_length() {
+        // `/v1/models` carries the window `/v1/language-models` leaves out,
+        // under OpenRouter's own key.
+        let models = parse_models(
+            r#"{"data":[{"id":"grok-4.7","aliases":[],"context_length":500000,
+                "created":1776556800,"object":"model","owned_by":"xai",
+                "capabilities":{"reasoning_effort":["low","medium","high","xhigh"],
+                    "default_reasoning_effort":"high"}}],"object":"list"}"#,
+            "xai_grok",
+        )
+        .unwrap();
+        assert_eq!(models[0].context, Some(500_000));
+        assert!(models[0].reasoning.is_some());
     }
 
     // --- GitHub Copilot's own record shape (docs/copilot.md) ---
